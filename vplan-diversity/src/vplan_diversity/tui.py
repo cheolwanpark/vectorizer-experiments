@@ -13,6 +13,7 @@ from .models import BenchResult
 
 def _build_app_class():
     """Build and return the TUI App class (deferred import of textual)."""
+    from rich.text import Text
     from textual.app import App, ComposeResult
     from textual.binding import Binding
     from textual.containers import Horizontal, VerticalScroll
@@ -20,6 +21,12 @@ def _build_app_class():
         DataTable, Footer, Header, Input, Label, ProgressBar,
         Static, TabbedContent, TabPane,
     )
+
+    _NUMERIC_COLUMNS = {
+        "#Loops", "#Plans", "Min Cost", "#Funcs", "Avg Plans/Loop",
+        "Fixed VFs", "Scalable VFs", "Failed", "Occurrences",
+        "Selections", "Max Cost",
+    }
 
     class StatCard(Static):
         def __init__(self, title: str, value: str, **kwargs):
@@ -148,11 +155,13 @@ def _build_app_class():
 
         BINDINGS = [
             Binding("q", "quit", "Quit"),
-            Binding("d", "switch_tab('dashboard')", "Dashboard", show=False),
-            Binding("b", "switch_tab('benchmarks')", "Benchmarks", show=False),
-            Binding("c", "switch_tab('categories')", "Categories", show=False),
-            Binding("v", "switch_tab('vf-dist')", "VF Dist", show=False),
+            Binding("d", "switch_tab('dashboard')", "Dashboard"),
+            Binding("b", "switch_tab('benchmarks')", "Benchmarks"),
+            Binding("c", "switch_tab('categories')", "Categories"),
+            Binding("v", "switch_tab('vf-dist')", "VF Dist"),
+            Binding("f", "switch_tab('failed-logs')", "Failed Logs"),
             Binding("r", "rerun", "Re-run"),
+            Binding("s", "cycle_sort", "Sort"),
         ]
 
         def __init__(self, results: list[BenchResult] | None = None,
@@ -161,7 +170,10 @@ def _build_app_class():
             self._results: list[BenchResult] = results or []
             self._runner_args = runner_args or {}
             self._all_bench_rows: list[tuple] = []
+            self._all_failed_rows: list[tuple] = []
             self._progress_screen: ProgressScreen | None = None
+            self._sort_state: dict = {}
+            self._col_labels: dict = {}
 
         def compose(self) -> ComposeResult:
             yield Header()
@@ -221,18 +233,68 @@ def _build_app_class():
                         yield Label("\n[bold]Scalable VFs[/bold]")
                         yield DataTable(id="scalable-vf-table")
 
+                with TabPane("Failed Logs", id="failed-logs"):
+                    from textual.containers import Vertical as V2
+                    with V2():
+                        yield DataTable(id="failed-table")
+                        yield DetailPanel(id="failed-detail-panel")
+
         def on_mount(self) -> None:
             self.title = "VPlan Diversity"
             self.sub_title = self._runner_args.get("subtitle", "")
             if self._results:
                 self._populate_tables()
 
+        def _register_columns(self, table, *labels):
+            padded = [f"{l}  " for l in labels]
+            keys = table.add_columns(*padded)
+            self._col_labels[table.id] = dict(zip(keys, labels))
+
+        def _make_sort_key(self, label):
+            if label in _NUMERIC_COLUMNS:
+                def _num(val):
+                    try:
+                        return float(val)
+                    except (ValueError, TypeError):
+                        return float("inf")
+                return _num
+            return lambda val: str(val).lower()
+
+        def _apply_sort(self, table, col_key, reverse):
+            tid = table.id
+            orig = self._col_labels[tid][col_key]
+            table.sort(col_key, key=self._make_sort_key(orig), reverse=reverse)
+            for ck in table.columns:
+                base = self._col_labels[tid][ck]
+                table.columns[ck].label = Text(f"{base}  ")
+            indicator = " \u25bc" if reverse else " \u25b2"
+            table.columns[col_key].label = Text(f"{orig}{indicator}")
+            self._sort_state[tid] = (col_key, reverse)
+
+        def _clear_sort(self, table):
+            tid = table.id
+            for ck in table.columns:
+                base = self._col_labels[tid][ck]
+                table.columns[ck].label = Text(f"{base}  ")
+            self._sort_state.pop(tid, None)
+
+        def _reapply_sort(self, table):
+            tid = table.id
+            prev = self._sort_state.get(tid)
+            if prev is None:
+                return
+            col_key, reverse = prev
+            if col_key in table.columns:
+                orig = self._col_labels[tid][col_key]
+                table.sort(col_key, key=self._make_sort_key(orig), reverse=reverse)
+
         def _populate_tables(self) -> None:
             try:
                 bt = self.query_one("#bench-table", DataTable)
             except Exception:
                 return
-            bt.add_columns(
+            self._register_columns(
+                bt,
                 "Benchmark", "Category", "#Loops", "#Plans",
                 "VFs", "Min Cost", "Selected VF", "Status",
             )
@@ -265,7 +327,8 @@ def _build_app_class():
                 bt.add_row(*row, key=r.func_name)
 
             ct = self.query_one("#cat-table", DataTable)
-            ct.add_columns(
+            self._register_columns(
+                ct,
                 "Category", "#Funcs", "#Loops", "Avg Plans/Loop",
                 "Fixed VFs", "Scalable VFs", "Failed",
             )
@@ -280,7 +343,9 @@ def _build_app_class():
             fixed_t = self.query_one("#fixed-vf-table", DataTable)
             scalable_t = self.query_one("#scalable-vf-table", DataTable)
             for t in (fixed_t, scalable_t):
-                t.add_columns("VF", "Occurrences", "Selections", "Min Cost", "Max Cost")
+                self._register_columns(
+                    t, "VF", "Occurrences", "Selections", "Min Cost", "Max Cost",
+                )
 
             for e in vf_dist:
                 min_c = str(e.min_cost) if e.min_cost is not None else "-"
@@ -290,6 +355,21 @@ def _build_app_class():
                     scalable_t.add_row(*row)
                 else:
                     fixed_t.add_row(*row)
+
+            # Failed logs table
+            try:
+                ft = self.query_one("#failed-table", DataTable)
+            except Exception:
+                return
+            self._register_columns(ft, "Benchmark", "Category", "Error")
+            self._all_failed_rows = []
+            for r in sorted(self._results, key=lambda x: x.func_name):
+                if not r.error:
+                    continue
+                err_short = (r.error[:80] + "\u2026") if len(r.error) > 80 else r.error
+                row = (r.func_name, r.category, err_short)
+                self._all_failed_rows.append(row)
+                ft.add_row(*row, key=r.func_name)
 
         def on_input_changed(self, event: Input.Changed) -> None:
             if event.input.id != "bench-filter":
@@ -304,20 +384,71 @@ def _build_app_class():
                 if filt and not any(filt in cell.lower() for cell in row):
                     continue
                 bt.add_row(*row, key=row[0])
+            self._reapply_sort(bt)
 
         def on_data_table_row_selected(self, event: DataTable.RowSelected) -> None:
             table = event.data_table
-            if table.id != "bench-table":
+            if table.id not in ("bench-table", "failed-table"):
                 return
             row_key = event.row_key
             func_name = str(row_key.value)
             result = next((r for r in self._results if r.func_name == func_name), None)
             if result:
+                panel_id = (
+                    "#detail-panel" if table.id == "bench-table"
+                    else "#failed-detail-panel"
+                )
                 try:
-                    dp = self.query_one("#detail-panel", DetailPanel)
+                    dp = self.query_one(panel_id, DetailPanel)
                     dp.show_result(result)
                 except Exception:
                     pass
+
+        def on_data_table_header_selected(self, event: DataTable.HeaderSelected) -> None:
+            table = event.data_table
+            tid = table.id
+            if tid not in self._col_labels:
+                return
+            col_key = event.column_key
+            prev = self._sort_state.get(tid)
+            if prev and prev[0] is col_key:
+                if not prev[1]:
+                    self._apply_sort(table, col_key, reverse=True)
+                else:
+                    self._clear_sort(table)
+            else:
+                self._apply_sort(table, col_key, reverse=False)
+
+        def _active_table(self):
+            focused = self.focused
+            if isinstance(focused, DataTable):
+                return focused
+            try:
+                tc = self.query_one(TabbedContent)
+                pane = self.query_one(f"#{tc.active}", TabPane)
+                return pane.query_one(DataTable)
+            except Exception:
+                return None
+
+        def action_cycle_sort(self) -> None:
+            table = self._active_table()
+            if table is None or table.id not in self._col_labels:
+                return
+            col_keys = [c.key for c in table.ordered_columns]
+            prev = self._sort_state.get(table.id)
+            if prev is None:
+                self._apply_sort(table, col_keys[0], reverse=False)
+            else:
+                cur_idx = next(
+                    (i for i, ck in enumerate(col_keys) if ck is prev[0]),
+                    0,
+                )
+                if not prev[1]:
+                    self._apply_sort(table, col_keys[cur_idx], reverse=True)
+                elif cur_idx + 1 < len(col_keys):
+                    self._apply_sort(table, col_keys[cur_idx + 1], reverse=False)
+                else:
+                    self._clear_sort(table)
 
         def action_switch_tab(self, tab_id: str) -> None:
             try:
@@ -325,6 +456,21 @@ def _build_app_class():
                 tc.active = tab_id
             except Exception:
                 pass
+            self._focus_active_table()
+
+        def on_tabbed_content_tab_activated(self, event) -> None:
+            self._focus_active_table()
+
+        def _focus_active_table(self) -> None:
+            def _do_focus():
+                try:
+                    tc = self.query_one(TabbedContent)
+                    pane = self.query_one(f"#{tc.active}", TabPane)
+                    dt = pane.query_one(DataTable)
+                    dt.focus()
+                except Exception:
+                    pass
+            self.set_timer(0.1, _do_focus)
 
         async def action_rerun(self) -> None:
             self.notify("Re-run not yet implemented in TUI mode. Restart the tool.")
