@@ -1,0 +1,13 @@
+[project]
+name = "vplan-diversity"
+version = "0.1.0"
+description = "VPlan Diversity Diagnostic Tool — analyze vectorizer plan diversity across TSVC benchmarks"
+requires-python = ">=3.10"
+dependencies = ["textual>=1.0.0"]
+
+[project.scripts]
+vplan-diversity = "vplan_diversity.cli:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
