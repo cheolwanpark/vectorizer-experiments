@@ -9,7 +9,7 @@ import os
 import sys
 
 from .analytics import load_cache, save_cache
-from .models import BenchResult, bench_to_dict
+from .models import AppRuntimeConfig, BenchResult, bench_to_dict
 from .pipeline import (
     PipelineRunner,
     _find_tsvc_dir,
@@ -17,6 +17,16 @@ from .pipeline import (
     resolve_llvm_tools,
 )
 from .tui import _build_app_class
+
+
+def _make_runtime_config(args, tsvc_dir, tools) -> AppRuntimeConfig:
+    return AppRuntimeConfig(
+        variant=args.type,
+        vlen=args.vlen,
+        llvm_custom=args.llvm_custom,
+        tsvc_dir=str(tsvc_dir),
+        tools=tools,
+    )
 
 
 async def run_pipeline(args) -> list[BenchResult]:
@@ -79,6 +89,7 @@ async def run_pipeline_with_tui(args):
             "total": len(func_names),
             "subtitle": f"type={args.type} vlen={args.vlen}",
         },
+        runtime_config=_make_runtime_config(args, tsvc_dir, tools),
     )
 
     async def do_pipeline():
@@ -122,6 +133,7 @@ async def run_pipeline_with_tui(args):
             runner_args={
                 "subtitle": f"type={args.type} vlen={args.vlen} | {len(results)} benchmarks",
             },
+            runtime_config=_make_runtime_config(args, tsvc_dir, tools),
         )
         await dashboard_app.run_async()
 
@@ -161,12 +173,15 @@ def main():
         return
 
     if results:
+        tsvc_dir = _find_tsvc_dir()
+        tools = resolve_llvm_tools(args.llvm_custom)
         AppClass, _ = _build_app_class()
         app = AppClass(
             results=results,
             runner_args={
                 "subtitle": f"type={args.type} vlen={args.vlen} | {len(results)} benchmarks",
             },
+            runtime_config=_make_runtime_config(args, tsvc_dir, tools),
         )
         app.run()
     else:

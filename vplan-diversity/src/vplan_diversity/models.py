@@ -37,6 +37,39 @@ class BenchResult:
     raw_output: str
 
 
+@dataclass
+class AppRuntimeConfig:
+    variant: str
+    vlen: int
+    llvm_custom: str | None
+    tsvc_dir: str
+    tools: dict[str, str]
+
+
+@dataclass
+class AnalysisEntry:
+    loop_index: int
+    plan_index: int
+    all_vfs: list[str]
+    forced_vf: str
+    cost_summary: str
+    command: str
+    log_path: str
+    status: str
+    dump_text: str
+    message: str | None
+    selected_vf: str | None
+    selected_plan: int | None
+
+
+@dataclass
+class FunctionAnalysisReport:
+    func_name: str
+    category: str
+    entries: list[AnalysisEntry]
+    markdown_report: str
+
+
 def bench_to_dict(b: BenchResult) -> dict:
     return asdict(b)
 

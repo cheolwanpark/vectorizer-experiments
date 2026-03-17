@@ -7,6 +7,7 @@ import hashlib
 import importlib.util
 import os
 import re
+import shlex
 import shutil
 import subprocess
 import sys
@@ -14,7 +15,15 @@ import tempfile
 from pathlib import Path
 from typing import Any
 
-from .models import BenchResult, LoopInfo, VFCost, VPlan
+from .models import (
+    AnalysisEntry,
+    AppRuntimeConfig,
+    BenchResult,
+    FunctionAnalysisReport,
+    LoopInfo,
+    VFCost,
+    VPlan,
+)
 
 # ─── TSVC Source Acquisition ────────────────────────────────────────────────
 
@@ -189,6 +198,9 @@ _LOOP_HEADER_RE = re.compile(r'^LV: Loop\[(\d+)\] path=(\w+) plans=(\d+)$', re.M
 _PLAN_HEADER_RE = re.compile(r'^LV:\s+VPlan\[(\d+)\] VFs=\{([^}]+)\}$', re.M)
 _COST_LINE_RE = re.compile(r'^LV:\s+VF=(.+?) cost=(\d+)$', re.M)
 _SELECTION_RE = re.compile(r'^LV:\s+selected VF=(.+?) plan=(\d+)$', re.M)
+_SELECTED_DUMP_HEADER_RE = re.compile(
+    r'^LV: Loop\[(\d+)\] selected VPlan dump follows$'
+)
 
 
 def parse_vplan_output(stderr_text: str) -> list[LoopInfo]:
@@ -239,6 +251,246 @@ def parse_vplan_output(stderr_text: str) -> list[LoopInfo]:
         ))
 
     return loops
+
+
+def pick_highest_vf(vfs: list[str]) -> str:
+    """Select the highest VF by numeric magnitude, keeping ties deterministic."""
+    if not vfs:
+        raise ValueError("cannot select highest VF from an empty list")
+
+    ranked = []
+    for index, vf in enumerate(vfs):
+        match = re.search(r'(\d+)(?!.*\d)', vf)
+        magnitude = int(match.group(1)) if match else -1
+        ranked.append((magnitude, index, vf))
+    return max(ranked)[2]
+
+
+def encode_use_vf(vf: str) -> str:
+    """Convert a parsed VF label into the -vplan-use-vf CLI syntax."""
+    text = vf.strip().lower()
+    match = re.search(r'(\d+)(?!.*\d)', text)
+    if match is None:
+        raise ValueError(f"unable to encode VF value: {vf}")
+    scale = match.group(1)
+    if "vscale" in text:
+        return f"scalable:{scale}"
+    return f"fixed:{scale}"
+
+
+def build_forced_vf_arg(result: BenchResult, target_loop_index: int, forced_vf: str) -> str:
+    """Build the positional -vplan-use-vf value for one selected loop."""
+    encoded_vf = encode_use_vf(forced_vf)
+    if not result.loops:
+        return encoded_vf
+
+    max_loop_index = max(loop.index for loop in result.loops)
+    if max_loop_index == 0:
+        return encoded_vf
+
+    entries = ["-"] * (max_loop_index + 1)
+    entries[target_loop_index] = encoded_vf
+    return ",".join(entries)
+
+
+def extract_selected_vplan_dumps(verbose_text: str) -> dict[int, str]:
+    """Extract the selected VPlan dump body keyed by loop index."""
+    dumps: dict[int, str] = {}
+    current_loop: int | None = None
+    current_lines: list[str] = []
+
+    for line in verbose_text.splitlines():
+        header = _SELECTED_DUMP_HEADER_RE.match(line)
+        if header:
+            if current_loop is not None:
+                dumps[current_loop] = "\n".join(current_lines).strip()
+            current_loop = int(header.group(1))
+            current_lines = []
+            continue
+
+        if current_loop is not None and line.startswith("LV:"):
+            dumps[current_loop] = "\n".join(current_lines).strip()
+            current_loop = None
+            current_lines = []
+
+        if current_loop is not None:
+            current_lines.append(line)
+
+    if current_loop is not None:
+        dumps[current_loop] = "\n".join(current_lines).strip()
+
+    return dumps
+
+
+def format_cost_summary(plan: VPlan) -> str:
+    if not plan.costs:
+        return "-"
+    return ", ".join(
+        f"{cost.vf}={cost.cost if cost.cost is not None else 'n/a'}"
+        for cost in plan.costs
+    )
+
+
+def build_analysis_markdown_report(report: FunctionAnalysisReport,
+                                   runtime: AppRuntimeConfig) -> str:
+    """Render a shareable Markdown report for one function analysis."""
+    lines = [
+        f"# VPlan Analysis: `{report.func_name}`",
+        "",
+        f"- Category: `{report.category}`",
+        f"- TYPE: `{runtime.variant}`",
+        f"- VLEN: `{runtime.vlen}`",
+        "",
+        "| Loop | Plan | Forced VF | All VFs | Costs | Status |",
+        "| --- | --- | --- | --- | --- | --- |",
+    ]
+
+    for entry in report.entries:
+        status = entry.status.upper()
+        if entry.message:
+            status = f"{status}: {entry.message}"
+        lines.append(
+            f"| {entry.loop_index} | {entry.plan_index} | `{entry.forced_vf}` | "
+            f"`{', '.join(entry.all_vfs)}` | `{entry.cost_summary}` | {status} |"
+        )
+
+    for entry in report.entries:
+        lines.extend([
+            "",
+            f"## Loop[{entry.loop_index}] Plan {entry.plan_index}",
+            "",
+            f"- Forced VF: `{entry.forced_vf}`",
+            f"- All VFs: `{', '.join(entry.all_vfs)}`",
+            f"- Costs: `{entry.cost_summary}`",
+            f"- Command: `{entry.command}`",
+            f"- Status: `{entry.status}`",
+        ])
+        if entry.message:
+            lines.append(f"- Note: {entry.message}")
+        lines.append("")
+        if entry.dump_text:
+            lines.extend([
+                "```text",
+                entry.dump_text,
+                "```",
+            ])
+        else:
+            lines.append("_No VPlan dump captured._")
+
+    return "\n".join(lines)
+
+
+def analyze_function_vplans(result: BenchResult, runtime: AppRuntimeConfig,
+                            on_progress=None) -> FunctionAnalysisReport:
+    """Run forced-VF make opt commands and capture one selected dump per plan."""
+    if result.error:
+        raise RuntimeError(f"{result.func_name} failed in the baseline run: {result.error}")
+    if not result.loops:
+        raise RuntimeError(f"{result.func_name} has no parsed loops to analyze")
+
+    total_entries = sum(len(loop.plans) for loop in result.loops)
+    if total_entries == 0:
+        raise RuntimeError(f"{result.func_name} has no parsed VPlans to analyze")
+
+    tsvc_dir = Path(runtime.tsvc_dir)
+    log_path = tsvc_dir / ".build" / runtime.variant / result.func_name / "opt.verbose.log"
+    entries: list[AnalysisEntry] = []
+    completed = 0
+
+    for loop in sorted(result.loops, key=lambda item: item.index):
+        for plan in loop.plans:
+            forced_vf = pick_highest_vf(plan.vfs)
+            vf_arg = build_forced_vf_arg(result, loop.index, forced_vf)
+            cmd = [
+                "make", "--no-print-directory", "opt", result.func_name,
+                f"TYPE={runtime.variant}",
+                f"VLEN={runtime.vlen}",
+                f"USE_VF={vf_arg}",
+            ]
+            for tool_var, tool_name in (
+                ("CLANG", "clang"),
+                ("OPT", "opt"),
+                ("LLVM_EXTRACT", "llvm-extract"),
+            ):
+                tool_path = runtime.tools.get(tool_name)
+                if tool_path:
+                    cmd.append(f"{tool_var}={tool_path}")
+            if runtime.llvm_custom:
+                cmd.append(f"LLVM_CUSTOM={runtime.llvm_custom}")
+
+            proc = subprocess.run(
+                cmd,
+                cwd=tsvc_dir,
+                text=True,
+                capture_output=True,
+            )
+
+            status = "ok"
+            message: str | None = None
+            dump_text = ""
+            selected_vf: str | None = None
+            selected_plan: int | None = None
+
+            if proc.returncode != 0:
+                output = (proc.stderr or proc.stdout or "").strip().splitlines()
+                detail = output[-1] if output else "make opt failed"
+                status = "error"
+                message = detail
+            elif not log_path.exists():
+                status = "error"
+                message = f"missing verbose log: {log_path}"
+            else:
+                verbose_text = log_path.read_text(errors="replace")
+                parsed_loops = parse_vplan_output(verbose_text)
+                parsed_loop = next(
+                    (item for item in parsed_loops if item.index == loop.index),
+                    None,
+                )
+                dump_text = extract_selected_vplan_dumps(verbose_text).get(loop.index, "")
+
+                if parsed_loop is None:
+                    status = "error"
+                    message = f"Loop[{loop.index}] summary not found in verbose log"
+                else:
+                    selected_vf = parsed_loop.selected_vf
+                    selected_plan = parsed_loop.selected_plan
+                    if not dump_text:
+                        status = "error"
+                        message = f"Loop[{loop.index}] selected dump missing in verbose log"
+                    elif selected_vf != forced_vf or selected_plan != plan.index:
+                        status = "warning"
+                        message = (
+                            f"expected VF={forced_vf} plan={plan.index}, "
+                            f"got VF={selected_vf} plan={selected_plan}"
+                        )
+
+            entry = AnalysisEntry(
+                loop_index=loop.index,
+                plan_index=plan.index,
+                all_vfs=plan.vfs,
+                forced_vf=forced_vf,
+                cost_summary=format_cost_summary(plan),
+                command=shlex.join(cmd),
+                log_path=str(log_path),
+                status=status,
+                dump_text=dump_text,
+                message=message,
+                selected_vf=selected_vf,
+                selected_plan=selected_plan,
+            )
+            entries.append(entry)
+            completed += 1
+            if on_progress:
+                on_progress(completed, total_entries, entry)
+
+    report = FunctionAnalysisReport(
+        func_name=result.func_name,
+        category=result.category,
+        entries=entries,
+        markdown_report="",
+    )
+    report.markdown_report = build_analysis_markdown_report(report, runtime)
+    return report
 
 
 # ─── Pipeline Runner ────────────────────────────────────────────────────────
