@@ -5,6 +5,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 RVV_ROOT="${RVV_ROOT:-$(realpath "${SCRIPT_DIR}/..")}"
 PREVEC_PASSES="${PREVEC_PASSES:-mem2reg,instcombine,simplifycfg,loop-simplify,lcssa,indvars,loop-rotate,instcombine,simplifycfg}"
 FORCED_OPT_PASSES="${FORCED_OPT_PASSES:-default<O3>}"
+TSVC_WRAPPER_MARKER="TSVC_EMULATE_WRAPPER"
 
 usage() {
     echo "Usage: build-kernel <target> <source.c> [options]"
@@ -207,6 +208,13 @@ TARGET_FILE="${SCRIPT_DIR}/targets/${TARGET}.sh"
 source "$TARGET_FILE"
 
 KERNEL="$(basename "$SOURCE" .c)"
+TSVC_MODE=0
+TSVC_LOOP_SOURCE=""
+if [[ -f "$SOURCE" ]] && grep -q "${TSVC_WRAPPER_MARKER}" "$SOURCE"; then
+    TSVC_MODE=1
+    TSVC_LOOP_SOURCE="${SCRIPT_DIR}/../benchmarks/TSVC_2/src/loops/${KERNEL}.c"
+    [[ ! -f "$TSVC_LOOP_SOURCE" ]] && die "TSVC loop source not found: $TSVC_LOOP_SOURCE"
+fi
 OUT_DIR="${SCRIPT_DIR}/out"
 mkdir -p "$OUT_DIR"
 if [[ -z "$OUTPUT" ]]; then
@@ -229,6 +237,12 @@ COMMON_FLAGS=(
     -DLEN_1D="${LEN_1D}"
     -I"${SCRIPT_DIR}/common"
 )
+if [[ "$TSVC_MODE" -eq 1 ]]; then
+    COMMON_FLAGS+=(
+        -I"${SCRIPT_DIR}/../benchmarks/TSVC_2/src"
+        -DTSVC_MEASURE_CYCLES
+    )
+fi
 
 append_split_flags "${TARGET_CC_FLAGS:-}" COMMON_FLAGS
 if [[ "${TARGET_VLEN:-128}" -gt 0 ]]; then
@@ -279,11 +293,35 @@ else
     )
 fi
 
+if [[ "$TSVC_MODE" -eq 1 ]]; then
+    if [[ "${TARGET_NIX:-0}" == "1" ]]; then
+        SUPPORT_SRCS=(
+            "${TARGET_T1_ROOT}/t1/tests/t1_main.S"
+            "${SCRIPT_DIR}/common/harness_t1.c"
+        )
+    else
+        SUPPORT_SRCS=(
+            "${SCRIPT_DIR}/${TARGET_CRT}"
+            "${HARNESS}"
+        )
+    fi
+    SUPPORT_SRCS+=(
+        "${SCRIPT_DIR}/common/tsvc_runtime.c"
+        "${SCRIPT_DIR}/../benchmarks/TSVC_2/src/common.c"
+        "${SCRIPT_DIR}/../benchmarks/TSVC_2/src/data.c"
+        "${SCRIPT_DIR}/../benchmarks/TSVC_2/src/dummy.c"
+    )
+fi
+
 OBJECT_COMPILE_FLAGS=("${COMPILE_FLAGS[@]}" -O3)
 
 if [[ "$ASM" == "1" && -z "$USE_VF" ]]; then
     ASM_OUT="${OUTPUT%.elf}.s"
-    "${CC}" "${OBJECT_COMPILE_FLAGS[@]}" -S -o "$ASM_OUT" "$SOURCE"
+    ASM_SOURCE="$SOURCE"
+    if [[ "$TSVC_MODE" -eq 1 ]]; then
+        ASM_SOURCE="$TSVC_LOOP_SOURCE"
+    fi
+    "${CC}" "${OBJECT_COMPILE_FLAGS[@]}" -S -o "$ASM_OUT" "$ASM_SOURCE"
     echo "Assembly: $ASM_OUT"
     grep -E "vsetvli" "$ASM_OUT" | head -3 || true
     exit 0
@@ -291,6 +329,9 @@ fi
 
 if [[ -z "$USE_VF" ]]; then
     SRCS=("${SUPPORT_SRCS[@]}" "${SOURCE}")
+    if [[ "$TSVC_MODE" -eq 1 ]]; then
+        SRCS+=("${TSVC_LOOP_SOURCE}")
+    fi
     echo "Building: $KERNEL (target=$TARGET, lmul=$LMUL)"
     LINK_CMD=("${CC}" -O3 "${LINK_FLAGS[@]}")
     if [[ ${#LINK_ARGS[@]} -gt 0 ]]; then
@@ -317,7 +358,11 @@ mkdir -p "$BUILD_DIR"
 
 echo "Building: $KERNEL (target=$TARGET, lmul=$LMUL, use_vf=$USE_VF)"
 echo "Generating raw IR: $RAW_LL"
-"${CC}" "${COMPILE_FLAGS[@]}" -O0 -Xclang -disable-O0-optnone -S -emit-llvm "$SOURCE" -o "$RAW_LL"
+IR_SOURCE="$SOURCE"
+if [[ "$TSVC_MODE" -eq 1 ]]; then
+    IR_SOURCE="$TSVC_LOOP_SOURCE"
+fi
+"${CC}" "${COMPILE_FLAGS[@]}" -O0 -Xclang -disable-O0-optnone -S -emit-llvm "$IR_SOURCE" -o "$RAW_LL"
 
 echo "Canonicalizing pre-vector IR: $PREVEC_LL"
 "${OPT_BIN}" -passes="${PREVEC_PASSES}" -S "$RAW_LL" -o "$PREVEC_LL"
@@ -351,6 +396,12 @@ for src in "${SUPPORT_SRCS[@]}"; do
     compile_to_object "$src" "$obj"
     OBJECTS+=("$obj")
 done
+
+if [[ "$TSVC_MODE" -eq 1 ]]; then
+    WRAPPER_OBJ="${BUILD_DIR}/${KERNEL}.wrapper.o"
+    compile_to_object "$SOURCE" "$WRAPPER_OBJ"
+    OBJECTS+=("$WRAPPER_OBJ")
+fi
 
 KERNEL_OBJ="${BUILD_DIR}/${KERNEL}.o"
 "${CC}" "${OBJECT_COMPILE_FLAGS[@]}" -c "$OPT_LL" -o "$KERNEL_OBJ"

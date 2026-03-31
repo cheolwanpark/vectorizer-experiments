@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import re
 import shlex
 import subprocess
 import sys
@@ -9,6 +10,7 @@ from pathlib import Path
 
 DEFAULT_IMAGE = "vplan-cost-measure:latest"
 DEFAULT_PLATFORM = "linux/amd64"
+DEFAULT_OUTPUT_ROOT = "artifacts/vplan-explain"
 CONTAINER_PROJECT_ROOT = Path("/workspace/host-project")
 CONTAINER_OUTPUT_ROOT = Path("/workspace/output")
 CONTAINER_LLVM_CUSTOM_ROOT = Path("/workspace/llvm-custom")
@@ -19,6 +21,9 @@ PREVEC_ARGS = (
     "lcssa,indvars,loop-rotate,instcombine,simplifycfg"
 )
 VPLAN_EXPLAIN_ARGS = "-passes=loop-vectorize -vplan-explain -disable-output"
+VPLAN_LINE_RE = re.compile(r"^LV:\s+VF=(.+?)\s+cost=([^\s]+)\s*$")
+VPLAN_PLAN_RE = re.compile(r"^LV:\s+VPlan\[(\d+)\]\s+VFs=\{(.+)\}\s*$")
+VPLAN_SELECTED_RE = re.compile(r"^LV:\s+selected VF=(.+?)\s+plan=(\d+)\s*$")
 
 
 def fail(message: str, exit_code: int = 2) -> "NoReturn":
@@ -51,7 +56,7 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--output-root",
-        default="artifacts/vplan-explain",
+        default=DEFAULT_OUTPUT_ROOT,
         help="Host output root for generated IR and logs",
     )
     return parser.parse_args()
@@ -117,7 +122,7 @@ def format_arch_opt_args(arch: str, vlen: int) -> str:
     )
 
 
-def run_container_and_capture(command: list[str], log_path: Path) -> int:
+def run_container_and_capture(command: list[str], log_path: Path) -> tuple[int, str]:
     result = subprocess.run(command, capture_output=True, text=True, check=False)
     combined_output = (result.stdout or "") + (result.stderr or "")
     log_path.write_text(combined_output, encoding="utf-8")
@@ -125,22 +130,103 @@ def run_container_and_capture(command: list[str], log_path: Path) -> int:
         sys.stdout.write(combined_output)
         if not combined_output.endswith("\n"):
             sys.stdout.write("\n")
-    return result.returncode
+    return result.returncode, combined_output
 
 
-def main() -> None:
-    args = parse_args()
+def normalize_vplan_vf(raw_vf: str) -> str | None:
+    text = raw_vf.strip()
+    if not text:
+        return None
+    scalable_match = re.fullmatch(r"vscale x ([0-9]+)", text)
+    if scalable_match:
+        return f"scalable:{int(scalable_match.group(1))}"
+    fixed_match = re.fullmatch(r"[0-9]+", text)
+    if fixed_match:
+        return f"fixed:{int(text)}"
+    return None
+
+
+def parse_vplan_vfs(text: str) -> list[dict[str, object]]:
+    current_plan: int | None = None
+    selected_raw: str | None = None
+    selected_plan: int | None = None
+    parsed: list[dict[str, object]] = []
+    seen: set[str] = set()
+
+    for line in text.splitlines():
+        plan_match = VPLAN_PLAN_RE.match(line)
+        if plan_match:
+            current_plan = int(plan_match.group(1))
+            continue
+
+        selected_match = VPLAN_SELECTED_RE.match(line)
+        if selected_match:
+            selected_raw = selected_match.group(1).strip()
+            selected_plan = int(selected_match.group(2))
+            continue
+
+        vf_match = VPLAN_LINE_RE.match(line)
+        if not vf_match:
+            continue
+
+        raw_vf = vf_match.group(1).strip()
+        normalized = normalize_vplan_vf(raw_vf)
+        if normalized is None or normalized in seen:
+            continue
+
+        seen.add(normalized)
+        parsed.append(
+            {
+                "raw_vf": raw_vf,
+                "use_vf": normalized,
+                "cost": vf_match.group(2).strip(),
+                "plan_index": current_plan,
+                "selected": False,
+            }
+        )
+
+    for candidate in parsed:
+        candidate["selected"] = (
+            candidate["raw_vf"] == selected_raw and candidate["plan_index"] == selected_plan
+        )
+
+    return parsed
+
+
+def run_vplan_explain(
+    *,
+    bench: str,
+    image: str = DEFAULT_IMAGE,
+    platform: str = DEFAULT_PLATFORM,
+    arch: str = "RVV",
+    vlen: int = 128,
+    llvm_custom: str = "",
+    vf_use: str = "",
+    output_root: str = DEFAULT_OUTPUT_ROOT,
+    ensure_image: bool = True,
+) -> dict[str, object]:
+    args = argparse.Namespace(
+        bench=bench,
+        image=image,
+        platform=platform,
+        arch=arch,
+        vlen=vlen,
+        llvm_custom=llvm_custom,
+        vf_use=vf_use,
+        output_root=output_root,
+    )
     validate_args(args)
-    ensure_image_exists(args.image)
+    if ensure_image:
+        ensure_image_exists(image)
 
     root = repo_root()
-    source_path = resolve_loop_source(root, args.bench)
-    llvm_custom_dir = resolve_llvm_custom(root, args.llvm_custom)
-    out_dir = resolve_output_dir(root, args.output_root, args.bench)
+    source_path = resolve_loop_source(root, bench)
+    llvm_custom_dir = resolve_llvm_custom(root, llvm_custom)
+    out_dir = resolve_output_dir(root, output_root, bench)
 
     full_ll = out_dir / "full.ll"
-    raw_ll = out_dir / f"{args.bench}.ll"
-    prevec_ll = out_dir / f"{args.bench}.prevec.ll"
+    raw_ll = out_dir / f"{bench}.ll"
+    prevec_ll = out_dir / f"{bench}.prevec.ll"
     vplan_log = out_dir / "vplan-explain.log"
     container_log = out_dir / "container.log"
     command_file = out_dir / "command.txt"
@@ -152,8 +238,8 @@ def main() -> None:
     container_vplan_log = CONTAINER_OUTPUT_ROOT / vplan_log.name
     container_helper = CONTAINER_PROJECT_ROOT / "scripts" / "sanitize_ir.py"
 
-    arch_opt_args = format_arch_opt_args(args.arch, args.vlen)
-    forced_vf_arg = f"-vplan-use-vf={shlex.quote(args.vf_use)}" if args.vf_use else ""
+    arch_opt_args = format_arch_opt_args(arch, vlen)
+    forced_vf_arg = f"-vplan-use-vf={shlex.quote(vf_use)}" if vf_use else ""
     if llvm_custom_dir is not None:
         clang_cmd = shlex.quote(str(CONTAINER_LLVM_CUSTOM_ROOT / "clang"))
         opt_cmd = shlex.quote(str(CONTAINER_LLVM_CUSTOM_ROOT / "opt"))
@@ -171,7 +257,7 @@ def main() -> None:
             f'LLVM_EXTRACT_BIN="{llvm_extract_cmd}"',
             f'"$CLANG_BIN" -O0 -Xclang -disable-O0-optnone -S -emit-llvm '
             f'{shlex.quote(str(container_source))} -o {shlex.quote(str(container_full_ll))}',
-            f'"$LLVM_EXTRACT_BIN" -S --func={shlex.quote(args.bench)} '
+            f'"$LLVM_EXTRACT_BIN" -S --func={shlex.quote(bench)} '
             f'{shlex.quote(str(container_full_ll))} -o {shlex.quote(str(container_raw_ll))}',
             (
                 f'python3 {shlex.quote(str(container_helper))} '
@@ -180,7 +266,7 @@ def main() -> None:
                 f'--triple {shlex.quote(RVV_IR_TARGET_TRIPLE)} '
                 f'--datalayout {shlex.quote(RVV_IR_TARGET_DATALAYOUT)}'
             )
-            if args.arch == "RVV"
+            if arch == "RVV"
             else ":",
             f'"$OPT_BIN" {arch_opt_args} {PREVEC_ARGS} -S '
             f'{shlex.quote(str(container_raw_ll))} -o {shlex.quote(str(container_prevec_ll))} >/dev/null 2>/dev/null',
@@ -195,7 +281,7 @@ def main() -> None:
         "run",
         "--rm",
         "--platform",
-        args.platform,
+        platform,
         "-v",
         f"{root}:{CONTAINER_PROJECT_ROOT}:ro",
         "-v",
@@ -210,18 +296,46 @@ def main() -> None:
         )
     docker_cmd.extend(
         [
-        args.image,
-        "bash",
-        "-lc",
-        inner_cmd,
+            image,
+            "bash",
+            "-lc",
+            inner_cmd,
         ]
     )
 
     docker_command = shlex.join(docker_cmd)
     command_file.write_text(f"{docker_command}\n", encoding="utf-8")
-    exit_code = run_container_and_capture(docker_cmd, container_log)
-    if exit_code != 0:
-        fail(f"vplan-explain failed; see {container_log}", exit_code=1)
+    exit_code, combined_output = run_container_and_capture(docker_cmd, container_log)
+    vplan_log_text = vplan_log.read_text(encoding="utf-8") if vplan_log.exists() else ""
+    return {
+        "bench": bench,
+        "exit_code": exit_code,
+        "output_dir": str(out_dir),
+        "source": str(source_path),
+        "container_log": str(container_log),
+        "container_log_text": combined_output,
+        "vplan_log": str(vplan_log),
+        "vplan_log_text": vplan_log_text,
+        "prevec_ir": str(prevec_ll),
+        "docker_command": docker_command,
+        "vf_candidates": parse_vplan_vfs(vplan_log_text or combined_output),
+    }
+
+
+def main() -> None:
+    args = parse_args()
+    result = run_vplan_explain(
+        bench=args.bench,
+        image=args.image,
+        platform=args.platform,
+        arch=args.arch,
+        vlen=args.vlen,
+        llvm_custom=args.llvm_custom,
+        vf_use=args.vf_use,
+        output_root=args.output_root,
+    )
+    if int(result["exit_code"]) != 0:
+        fail(f"vplan-explain failed; see {result['container_log']}", exit_code=1)
 
 
 if __name__ == "__main__":

@@ -11,7 +11,11 @@ from datetime import datetime
 from pathlib import Path
 
 
+DEFAULT_IMAGE = "vplan-cost-measure:latest"
 DEFAULT_PLATFORM = "linux/amd64"
+DEFAULT_LOG_ROOT = "artifacts/emulate"
+GENERATED_TSVC_ROOT = "artifacts/generated-tsvc-kernels"
+TSVC_WRAPPER_MARKER = "TSVC_EMULATE_WRAPPER"
 CONTAINER_PROJECT_ROOT = Path("/workspace/host-project")
 CONTAINER_OUTPUT_ROOT = Path("/workspace/output")
 CONTAINER_EMULATOR_ROOT = Path("/workspace/emulator")
@@ -26,7 +30,7 @@ def parse_args() -> argparse.Namespace:
         description="Run one TSVC kernel through XiangShan in Docker and write a host-side report."
     )
     parser.add_argument("--bench", required=True, help="Benchmark name, for example s000")
-    parser.add_argument("--image", default="vplan-cost-measure:latest", help="Docker image tag")
+    parser.add_argument("--image", default=DEFAULT_IMAGE, help="Docker image tag")
     parser.add_argument("--len", type=int, default=4096, help="LEN_1D value")
     parser.add_argument("--lmul", type=int, default=1, help="LMUL value")
     parser.add_argument(
@@ -37,7 +41,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--timeout", type=int, default=120, help="Simulation timeout in seconds")
     parser.add_argument(
         "--log-root",
-        default="artifacts/emulate",
+        default=DEFAULT_LOG_ROOT,
         help="Host output root for reports and raw artifacts",
     )
     return parser.parse_args()
@@ -57,13 +61,9 @@ def repo_root() -> Path:
     return Path(__file__).resolve().parents[1]
 
 
-def validate_benchmark(root: Path, bench: str) -> Path:
-    if not re.fullmatch(r"s\d{3,4}", bench):
+def validate_bench_name(bench: str) -> None:
+    if not re.fullmatch(r"s\d{3,5}", bench):
         fail(f"invalid benchmark name: {bench}")
-    source = root / "emulator" / "run" / "src" / f"{bench}.c"
-    if not source.exists():
-        fail(f"benchmark source not found: {source}")
-    return source
 
 
 def ensure_image_exists(image: str) -> None:
@@ -76,12 +76,12 @@ def ensure_image_exists(image: str) -> None:
     if result.returncode != 0:
         fail(
             f"Docker image not found: {image}\n"
-            "Build or tag the image first, for example: docker build -t vplan-cost-measure:latest ."
+            f"Build or tag the image first, for example: docker build -t {DEFAULT_IMAGE} ."
         )
 
 
 def timestamp_dir(root: Path, bench: str) -> Path:
-    stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+    stamp = datetime.now().strftime("%Y%m%d-%H%M%S-%f")
     out_dir = root / bench / stamp
     out_dir.mkdir(parents=True, exist_ok=False)
     return out_dir
@@ -200,20 +200,103 @@ def print_summary(summary: dict[str, object]) -> None:
     print("\n".join(lines))
 
 
-def main() -> None:
-    args = parse_args()
-    validate_positive_int("len", args.len)
-    validate_positive_int("lmul", args.lmul)
-    validate_vplan_use_vf(args.use_vf)
-    root = repo_root()
-    source = validate_benchmark(root, args.bench)
-    ensure_image_exists(args.image)
-    effective_timeout = resolve_timeout(args.timeout)
+def resolve_log_root(root: Path, log_root: str) -> Path:
+    path = Path(log_root)
+    if not path.is_absolute():
+        path = (root / path).resolve()
+    return path
 
-    log_root = Path(args.log_root)
-    if not log_root.is_absolute():
-        log_root = (root / log_root).resolve()
-    out_dir = timestamp_dir(log_root, args.bench)
+
+def resolve_generated_tsvc_root(root: Path) -> Path:
+    path = root / GENERATED_TSVC_ROOT
+    path.mkdir(parents=True, exist_ok=True)
+    return path
+
+
+def generate_tsvc_wrapper(root: Path, bench: str) -> Path:
+    generated_root = resolve_generated_tsvc_root(root)
+    wrapper = generated_root / f"{bench}.c"
+    if wrapper.exists():
+        return wrapper
+
+    tsvc_common = Path(
+        Path("..")
+        / ".."
+        / "emulator"
+        / "benchmarks"
+        / "TSVC_2"
+        / "src"
+        / "common.h"
+    )
+    tsvc_single_support = Path(
+        Path("..")
+        / ".."
+        / "emulator"
+        / "benchmarks"
+        / "TSVC_2"
+        / "src"
+        / "single_support.h"
+    )
+    relative_common = tsvc_common.as_posix()
+    relative_single_support = tsvc_single_support.as_posix()
+    text = "\n".join(
+        [
+            f"/* {TSVC_WRAPPER_MARKER} */",
+            f'#include "{relative_common}"',
+            f'#include "{relative_single_support}"',
+            "",
+            "void tsvc_emulate_reset_heap(void);",
+            "",
+            "void kernel(void) {",
+            "    struct args_t func_args = {0};",
+            "    tsvc_emulate_reset_heap();",
+            "    init(&tsvc_ip, &tsvc_s1, &tsvc_s2);",
+            "    func_args.arg_info = tsvc_prepare_args();",
+            "    (void)tsvc_entry(&func_args);",
+            "}",
+            "",
+        ]
+    )
+    wrapper.write_text(text, encoding="utf-8")
+    return wrapper
+
+
+def resolve_benchmark_source(root: Path, bench: str) -> Path:
+    validate_bench_name(bench)
+    run_source = root / "emulator" / "run" / "src" / f"{bench}.c"
+    if run_source.exists():
+        return run_source
+
+    tsvc_source = root / "emulator" / "benchmarks" / "TSVC_2" / "src" / "loops" / f"{bench}.c"
+    if tsvc_source.exists():
+        return generate_tsvc_wrapper(root, bench)
+
+    fail(f"benchmark source not found for {bench}")
+
+
+def run_emulate(
+    *,
+    bench: str,
+    image: str = DEFAULT_IMAGE,
+    len_1d: int = 4096,
+    lmul: int = 1,
+    use_vf: str = "",
+    timeout_s: int = 120,
+    log_root: str = DEFAULT_LOG_ROOT,
+    ensure_image: bool = True,
+) -> dict[str, object]:
+    validate_positive_int("len", len_1d)
+    validate_positive_int("lmul", lmul)
+    validate_vplan_use_vf(use_vf)
+
+    root = repo_root()
+    source = resolve_benchmark_source(root, bench)
+    if ensure_image:
+        ensure_image_exists(image)
+    effective_timeout = resolve_timeout(timeout_s)
+
+    resolved_log_root = resolve_log_root(root, log_root)
+    out_dir = timestamp_dir(resolved_log_root, bench)
     logs_dir = out_dir / "logs"
     logs_dir.mkdir(parents=True, exist_ok=True)
 
@@ -246,15 +329,15 @@ def main() -> None:
         f"{root / 'emulator' / 'run' / 'link'}:{CONTAINER_EMULATOR_ROOT / 'run' / 'link'}:ro",
         "-v",
         f"{root / 'emulator' / 'run' / 'targets'}:{CONTAINER_EMULATOR_ROOT / 'run' / 'targets'}:ro",
-        args.image,
+        image,
         "bash",
         "-lc",
         (
             f"cd {shlex.quote(str(CONTAINER_EMULATOR_ROOT))} && "
             f"python3 {shlex.quote(str(RUN_SIM_PATH))} {SIM_TARGET} "
             f"{shlex.quote(str(CONTAINER_PROJECT_ROOT / source.relative_to(root)))} "
-            f"--len={args.len} --lmul={args.lmul} "
-            f"{f'--use-vf={shlex.quote(args.use_vf)} ' if args.use_vf else ''}"
+            f"--len={len_1d} --lmul={lmul} "
+            f"{f'--use-vf={shlex.quote(use_vf)} ' if use_vf else ''}"
             f"--timeout={effective_timeout} "
             f"--log-dir={shlex.quote(str(CONTAINER_OUTPUT_ROOT / 'logs'))}"
         ),
@@ -283,15 +366,16 @@ def main() -> None:
         if "trace_file" in parsed
         else None
     )
+    run_log_text = run_log.read_text(encoding="utf-8") if run_log and run_log.exists() else ""
 
     summary: dict[str, object] = {
-        "benchmark": args.bench,
-        "image": args.image,
+        "benchmark": bench,
+        "image": image,
         "simulator_target": SIM_TARGET,
-        "len_1d": args.len,
-        "lmul": args.lmul,
-        "use_vf": args.use_vf,
-        "timeout_s": args.timeout,
+        "len_1d": len_1d,
+        "lmul": lmul,
+        "use_vf": use_vf,
+        "timeout_s": timeout_s,
         "effective_timeout_s": effective_timeout,
         "docker_exit_code": result.returncode,
         "status": parsed.get("status", "OK" if result.returncode == 0 else f"EXIT:{result.returncode}"),
@@ -313,9 +397,32 @@ def main() -> None:
     summary_file.write_text(json.dumps(summary, indent=2), encoding="utf-8")
     report_file.write_text(report_text, encoding="utf-8")
 
-    print_summary(summary)
+    status_text = str(summary.get("status", ""))
+    failed = result.returncode != 0 or status_text.startswith(("FAIL", "EXIT", "ASSERT", "TIMEOUT"))
 
-    if result.returncode != 0 or str(summary.get("status", "")).startswith(("FAIL", "EXIT", "ASSERT", "TIMEOUT")):
+    return {
+        "summary": summary,
+        "summary_file": str(summary_file),
+        "report_text": report_text,
+        "container_log_text": combined_output,
+        "run_log_text": run_log_text,
+        "failed": failed,
+    }
+
+
+def main() -> None:
+    args = parse_args()
+    result = run_emulate(
+        bench=args.bench,
+        image=args.image,
+        len_1d=args.len,
+        lmul=args.lmul,
+        use_vf=args.use_vf,
+        timeout_s=args.timeout,
+        log_root=args.log_root,
+    )
+    print_summary(result["summary"])
+    if result["failed"]:
         raise SystemExit(1)
 
 
