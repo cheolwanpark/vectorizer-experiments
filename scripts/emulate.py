@@ -29,7 +29,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--image", default="vplan-cost-measure:latest", help="Docker image tag")
     parser.add_argument("--len", type=int, default=4096, help="LEN_1D value")
     parser.add_argument("--lmul", type=int, default=1, help="LMUL value")
-    parser.add_argument("--use-vf", type=int, default=None, help="Force loop vectorization with a fixed VF")
+    parser.add_argument(
+        "--use-vf",
+        default="",
+        help="Force loop vectorization with LLVM -vplan-use-vf syntax, for example fixed:4 or scalable:2",
+    )
     parser.add_argument("--timeout", type=int, default=120, help="Simulation timeout in seconds")
     parser.add_argument(
         "--log-root",
@@ -89,6 +93,23 @@ def parse_int(text: str) -> int:
 
 def parse_float(text: str) -> float:
     return float(text.strip())
+
+
+def validate_vplan_use_vf(text: str) -> None:
+    if not text:
+        return
+    for entry in text.split(","):
+        if entry == "-":
+            continue
+        match = re.fullmatch(r"(fixed|scalable):([0-9]+)", entry)
+        if not match:
+            fail(
+                "use-vf must match LLVM -vplan-use-vf syntax, "
+                "for example fixed:4,-,scalable:2"
+            )
+        width = int(match.group(2))
+        if width <= 0 or width & (width - 1):
+            fail("use-vf widths must be positive powers of two")
 
 
 def resolve_timeout(timeout_s: int) -> int:
@@ -183,7 +204,7 @@ def main() -> None:
     args = parse_args()
     validate_positive_int("len", args.len)
     validate_positive_int("lmul", args.lmul)
-    validate_positive_int("use_vf", args.use_vf)
+    validate_vplan_use_vf(args.use_vf)
     root = repo_root()
     source = validate_benchmark(root, args.bench)
     ensure_image_exists(args.image)
@@ -233,7 +254,7 @@ def main() -> None:
             f"python3 {shlex.quote(str(RUN_SIM_PATH))} {SIM_TARGET} "
             f"{shlex.quote(str(CONTAINER_PROJECT_ROOT / source.relative_to(root)))} "
             f"--len={args.len} --lmul={args.lmul} "
-            f"{f'--use-vf={args.use_vf} ' if args.use_vf is not None else ''}"
+            f"{f'--use-vf={shlex.quote(args.use_vf)} ' if args.use_vf else ''}"
             f"--timeout={effective_timeout} "
             f"--log-dir={shlex.quote(str(CONTAINER_OUTPUT_ROOT / 'logs'))}"
         ),

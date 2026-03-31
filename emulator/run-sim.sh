@@ -1112,7 +1112,12 @@ Verbose Mode (default: ON):
     parser.add_argument("--timeout", type=int, default=600, help="Timeout in seconds")
     parser.add_argument("--lmul", type=int, default=1, help="LMUL value for kernel build (1,2,4,8)")
     parser.add_argument("--len", type=int, default=1000, help="LEN_1D array size for kernel build")
-    parser.add_argument("--use-vf", type=int, default=None, help="Force loop vectorization with a fixed VF")
+    parser.add_argument(
+        "--use-vf",
+        type=str,
+        default="",
+        help="Force loop vectorization with LLVM -vplan-use-vf syntax, for example fixed:4 or scalable:2",
+    )
     parser.add_argument("--list", action="store_true", help="List available simulators")
     parser.add_argument("--dry-run", action="store_true", help="Print command without executing")
     parser.add_argument("--log-dir", type=str, default="sim-logs", help="Directory for simulation logs (default: sim-logs)")
@@ -1127,9 +1132,6 @@ Verbose Mode (default: ON):
 
     args, unknown = parser.parse_known_args(argv)
     args.extra_args = (args.extra_args or []) + unknown
-    if args.use_vf is not None and args.use_vf <= 0:
-        parser.error("--use-vf must be a positive integer")
-
     root_dir = Path(__file__).resolve().parent
     config_path = Path(args.config_file)
     if not config_path.is_absolute():

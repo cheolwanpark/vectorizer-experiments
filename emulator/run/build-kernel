@@ -14,14 +14,14 @@ usage() {
     echo "Options:"
     echo "  --lmul=N       LMUL value (1,2,4,8) [default: 1]"
     echo "  --len=N        LEN_1D array size [default: 1000]"
-    echo "  --use-vf=N     Force loop vectorization with fixed VF N"
+    echo "  --use-vf=SPEC  Force loop vectorization with LLVM -vplan-use-vf syntax"
     echo "  --output=FILE  Output ELF path"
     echo "  --asm          Generate assembly output"
     echo "  --llvm=FLAGS   Additional LLVM flags"
     echo "  --cflags=FLAGS Additional C flags"
     echo ""
     echo "To run simulations, use run-sim.sh:"
-    echo "  ./run-sim.sh <target> <source.c or elf> [--lmul=N] [--len=N] [--use-vf=N]"
+    echo "  ./run-sim.sh <target> <source.c or elf> [--lmul=N] [--len=N] [--use-vf=fixed:4]"
     exit 1
 }
 
@@ -101,7 +101,7 @@ compile_to_object() {
 
 verify_forced_vector_ir() {
     local ir_path="$1"
-    local vf="$2"
+    local vf_spec="$2"
     local log_path="$3"
 
     if [[ -f "$log_path" ]]; then
@@ -110,23 +110,62 @@ verify_forced_vector_ir() {
         fi
     fi
 
-    if [[ "$vf" -eq 1 ]]; then
+    local first_entry="${vf_spec%%,*}"
+    if [[ "$first_entry" == "-" || -z "$first_entry" ]]; then
         return 0
     fi
 
+    local vf_kind="${first_entry%%:*}"
+    local vf_width="${first_entry#*:}"
     local vector_body_found=0
     local vf_found=0
 
     if grep -Eq '(^|[[:space:]])vector\.body([:.]|[[:space:]])' "$ir_path"; then
         vector_body_found=1
     fi
-    if grep -Eq "<${vf} x " "$ir_path"; then
-        vf_found=1
+    if [[ "$vf_kind" == "fixed" && "$vf_width" == "1" ]]; then
+        return 0
+    fi
+    if [[ "$vf_kind" == "fixed" ]]; then
+        if grep -Eq "<${vf_width} x " "$ir_path"; then
+            vf_found=1
+        fi
+    elif [[ "$vf_kind" == "scalable" ]]; then
+        if grep -Eq "<vscale x ${vf_width} x " "$ir_path"; then
+            vf_found=1
+        fi
     fi
 
-    if [[ "$vector_body_found" -ne 1 || "$vf_found" -ne 1 ]]; then
-        die "Forced VF verification failed for VF=${vf}. Saved IR: ${ir_path}"
+    if [[ "$vf_found" -ne 1 ]]; then
+        die "Forced VF verification failed for ${first_entry}. Saved IR: ${ir_path}"
     fi
+    if [[ "$vector_body_found" -ne 1 ]]; then
+        die "Forced VF verification failed for ${first_entry}. Saved IR: ${ir_path}"
+    fi
+}
+
+validate_vplan_use_vf() {
+    local value="$1"
+    local entry
+    local kind
+    local width
+
+    [[ -z "$value" ]] && return 0
+
+    IFS=',' read -r -a entries <<< "$value"
+    for entry in "${entries[@]}"; do
+        if [[ "$entry" == "-" ]]; then
+            continue
+        fi
+        if [[ ! "$entry" =~ ^(fixed|scalable):([0-9]+)$ ]]; then
+            die "USE_VF must match LLVM -vplan-use-vf syntax (e.g. fixed:4,-,scalable:2)"
+        fi
+        kind="${BASH_REMATCH[1]}"
+        width="${BASH_REMATCH[2]}"
+        if (( width <= 0 || (width & (width - 1)) != 0 )); then
+            die "USE_VF widths must be positive powers of two"
+        fi
+    done
 }
 
 [[ $# -lt 2 ]] && usage
@@ -160,7 +199,7 @@ done
 validate_positive_int "LMUL" "$LMUL"
 validate_positive_int "LEN_1D" "$LEN_1D"
 if [[ -n "$USE_VF" ]]; then
-    validate_positive_int "USE_VF" "$USE_VF"
+    validate_vplan_use_vf "$USE_VF"
 fi
 
 TARGET_FILE="${SCRIPT_DIR}/targets/${TARGET}.sh"
@@ -289,7 +328,7 @@ if ! "${OPT_BIN}" \
     -pass-remarks-missed=loop-vectorize \
     -pass-remarks-analysis=loop-vectorize \
     -passes="${FORCED_OPT_PASSES}" \
-    -vplan-use-vf="fixed:${USE_VF}" \
+    -vplan-use-vf="${USE_VF}" \
     -S "$RAW_LL" \
     -o "$OPT_LL" >"$OPT_LOG" 2>&1; then
     cat "$OPT_LOG" >&2
