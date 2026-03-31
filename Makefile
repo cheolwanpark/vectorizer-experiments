@@ -7,7 +7,6 @@ LMUL ?= 1
 USE_VF ?=
 TIMEOUT ?= 120
 LOG_ROOT ?= artifacts/emulate
-TYPE ?= dbl
 ARCH ?= RVV
 VLEN ?= 128
 VF_USE ?=
@@ -21,7 +20,7 @@ BENCH := $(firstword $(filter s%,$(MAKECMDGOALS)))
 help:
 	@echo "Targets:"
 	@echo "  make emulate sXXX [IMAGE=...] [LEN=4096] [LMUL=1] [USE_VF=4] [TIMEOUT=120] [LOG_ROOT=artifacts/emulate]"
-	@echo "  make vplan-explain sXXX [IMAGE=...] [PLATFORM=linux/amd64] [TYPE=dbl|flt] [ARCH=RVV|MAC] [VLEN=128|256|512...] [LLVM_CUSTOM=/path/to/llvm-or-bin] [VF_USE='fixed:2'] [VPLAN_LOG_ROOT=artifacts/vplan-explain]"
+	@echo "  make vplan-explain sXXX [IMAGE=...] [PLATFORM=linux/amd64] [ARCH=RVV|MAC] [VLEN=128|256|512...] [LLVM_CUSTOM=/path/to/llvm-or-bin] [VF_USE='fixed:2'] [VPLAN_LOG_ROOT=artifacts/vplan-explain]"
 
 emulate:
 	@if [ -z "$(BENCH)" ]; then \
@@ -32,14 +31,13 @@ emulate:
 
 vplan-explain:
 	@if [ -z "$(BENCH)" ]; then \
-		echo "usage: make vplan-explain sXXX [IMAGE=...] [PLATFORM=linux/amd64] [TYPE=dbl|flt] [ARCH=RVV|MAC] [VLEN=128|256|512...] [LLVM_CUSTOM=/path/to/llvm-or-bin] [VF_USE='fixed:2'] [VPLAN_LOG_ROOT=artifacts/vplan-explain]" >&2; \
+		echo "usage: make vplan-explain sXXX [IMAGE=...] [PLATFORM=linux/amd64] [ARCH=RVV|MAC] [VLEN=128|256|512...] [LLVM_CUSTOM=/path/to/llvm-or-bin] [VF_USE='fixed:2'] [VPLAN_LOG_ROOT=artifacts/vplan-explain]" >&2; \
 		exit 2; \
 	fi
 	@$(PYTHON) scripts/vplan_explain.py \
 		--bench "$(BENCH)" \
 		--image "$(IMAGE)" \
 		--platform "$(PLATFORM)" \
-		--type "$(TYPE)" \
 		--arch "$(ARCH)" \
 		--vlen "$(VLEN)" \
 		$(if $(strip $(LLVM_CUSTOM)),--llvm-custom "$(LLVM_CUSTOM)",) \

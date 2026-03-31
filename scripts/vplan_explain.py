@@ -7,14 +7,10 @@ import subprocess
 import sys
 from pathlib import Path
 
-from tsvc_helper import resolve_metadata
-
-
 DEFAULT_IMAGE = "vplan-cost-measure:latest"
 DEFAULT_PLATFORM = "linux/amd64"
 CONTAINER_PROJECT_ROOT = Path("/workspace/host-project")
 CONTAINER_OUTPUT_ROOT = Path("/workspace/output")
-CONTAINER_TSVC_DIR = CONTAINER_PROJECT_ROOT / "benchmarks" / "MultiSource" / "Benchmarks" / "TSVC"
 CONTAINER_LLVM_CUSTOM_ROOT = Path("/workspace/llvm-custom")
 RVV_IR_TARGET_TRIPLE = "riscv64-unknown-unknown-elf"
 RVV_IR_TARGET_DATALAYOUT = "e-m:e-p:64:64-i64:64-i128:128-n32:64-S128"
@@ -33,14 +29,14 @@ def fail(message: str, exit_code: int = 2) -> "NoReturn":
 def repo_root() -> Path:
     return Path(__file__).resolve().parents[1]
 
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Run TSVC vplan-explain inside Docker with a standalone root-level wrapper."
+        description="Run TSVC_2 vplan-explain inside Docker with a standalone root-level wrapper."
     )
     parser.add_argument("--bench", required=True, help="Benchmark name, for example s000")
     parser.add_argument("--image", default=DEFAULT_IMAGE, help="Docker image tag")
     parser.add_argument("--platform", default=DEFAULT_PLATFORM, help="Docker platform")
-    parser.add_argument("--type", default="dbl", choices=["dbl", "flt"], help="TSVC data type")
     parser.add_argument("--arch", default="RVV", choices=["RVV", "MAC"], help="Target architecture")
     parser.add_argument("--vlen", type=int, default=128, help="RVV vector length in bits")
     parser.add_argument(
@@ -96,13 +92,20 @@ def resolve_llvm_custom(root: Path, llvm_custom: str) -> Path | None:
     return path
 
 
-def resolve_output_dir(root: Path, output_root: str, variant: str, func: str) -> Path:
+def resolve_output_dir(root: Path, output_root: str, func: str) -> Path:
     base = Path(output_root)
     if not base.is_absolute():
         base = (root / base).resolve()
-    out_dir = base / variant / func
+    out_dir = base / func
     out_dir.mkdir(parents=True, exist_ok=True)
     return out_dir
+
+
+def resolve_loop_source(root: Path, bench: str) -> Path:
+    source = root / "emulator" / "benchmarks" / "TSVC_2" / "src" / "loops" / f"{bench}.c"
+    if not source.exists():
+        fail(f"TSVC_2 loop source not found: {source}")
+    return source
 
 
 def format_arch_opt_args(arch: str, vlen: int) -> str:
@@ -131,10 +134,9 @@ def main() -> None:
     ensure_image_exists(args.image)
 
     root = repo_root()
-    tsvc_dir = root / "benchmarks" / "MultiSource" / "Benchmarks" / "TSVC"
-    metadata = resolve_metadata(tsvc_dir, args.bench, args.type)
+    source_path = resolve_loop_source(root, args.bench)
     llvm_custom_dir = resolve_llvm_custom(root, args.llvm_custom)
-    out_dir = resolve_output_dir(root, args.output_root, args.type, args.bench)
+    out_dir = resolve_output_dir(root, args.output_root, args.bench)
 
     full_ll = out_dir / "full.ll"
     raw_ll = out_dir / f"{args.bench}.ll"
@@ -143,7 +145,6 @@ def main() -> None:
     container_log = out_dir / "container.log"
     command_file = out_dir / "command.txt"
 
-    source_path = Path(metadata["source_path"])
     container_source = CONTAINER_PROJECT_ROOT / source_path.relative_to(root)
     container_full_ll = CONTAINER_OUTPUT_ROOT / full_ll.name
     container_raw_ll = CONTAINER_OUTPUT_ROOT / raw_ll.name
