@@ -282,16 +282,16 @@ def main() -> None:
     conn = sqlite3.connect(db_path)
     create_table(conn)
 
-    print(f"SQLite:     {db_path}")
-    print(f"Benchmarks: {len(benches)}")
-    print(f"Samples:    {args.samples}")
-    print(f"Parallel:   {args.concurrency}")
+    print(
+        f"emulate-all: benches={len(benches)} samples={args.samples} "
+        f"parallel={args.concurrency} db={db_path.name}"
+    )
 
     scheduled: list[tuple[str, str, int, dict[str, Any]]] = []
     any_failure = False
+    vplan_failures = 0
 
     for index, bench in enumerate(benches, start=1):
-        print(f"[vplan {index}/{len(benches)}] {bench}")
         vplan_result = vplan_explain.run_vplan_explain(
             bench=bench,
             image=args.image,
@@ -301,9 +301,11 @@ def main() -> None:
             llvm_custom=args.llvm_custom,
             output_root=args.vplan_log_root,
             ensure_image=False,
+            echo_output=False,
         )
         if int(vplan_result["exit_code"]) != 0:
             any_failure = True
+            vplan_failures += 1
             insert_row(
                 conn,
                 make_vplan_failure_row(
@@ -315,11 +317,13 @@ def main() -> None:
                     vplan_result=vplan_result,
                 ),
             )
+            print(f"[vplan {index}/{len(benches)}] {bench} fail")
             continue
 
         vf_candidates = [candidate["use_vf"] for candidate in vplan_result["vf_candidates"]]
         if not vf_candidates:
             any_failure = True
+            vplan_failures += 1
             insert_row(
                 conn,
                 make_vplan_failure_row(
@@ -331,14 +335,19 @@ def main() -> None:
                     vplan_result=vplan_result,
                 ),
             )
+            print(f"[vplan {index}/{len(benches)}] {bench} no-vf")
             continue
 
+        print(f"[vplan {index}/{len(benches)}] {bench} vf={len(vf_candidates)}")
         for use_vf in vf_candidates:
             for sample_index in range(1, args.samples + 1):
                 scheduled.append((bench, use_vf, sample_index, vplan_result))
 
-    print(f"Queued emulate jobs: {len(scheduled)}")
+    print(f"emulate-jobs: {len(scheduled)}")
 
+    completed = 0
+    total_jobs = len(scheduled)
+    emulate_failures = 0
     with ThreadPoolExecutor(max_workers=args.concurrency) as executor:
         future_map = {
             executor.submit(
@@ -353,10 +362,12 @@ def main() -> None:
 
         for future in as_completed(future_map):
             bench, use_vf, sample_index, vplan_result = future_map[future]
+            completed += 1
             try:
                 emulate_result = future.result()
             except Exception as exc:
                 any_failure = True
+                emulate_failures += 1
                 row = make_emulate_row(
                     run_id=run_id,
                     bench=bench,
@@ -369,13 +380,14 @@ def main() -> None:
                     failure_message=str(exc),
                 )
                 insert_row(conn, row)
-                print(f"[FAIL] {bench} {use_vf} sample={sample_index}: {exc}")
+                print(f"[emu {completed}/{total_jobs}] {bench} {use_vf} #{sample_index} fail")
                 continue
 
             failure = ""
             failure_message = ""
             if emulate_result["failed"]:
                 any_failure = True
+                emulate_failures += 1
                 failure = "emulate_failed"
                 failure_message = str(emulate_result["summary"].get("status", "emulate failed"))
 
@@ -391,9 +403,14 @@ def main() -> None:
                 failure_message=failure_message,
             )
             insert_row(conn, row)
-            print(f"[done] {bench} {use_vf} sample={sample_index} status={row.get('status')}")
+            status_text = "fail" if failure else str(row.get("status", "done")).lower()
+            print(f"[emu {completed}/{total_jobs}] {bench} {use_vf} #{sample_index} {status_text}")
 
     conn.close()
+    print(
+        f"done: vplan_failures={vplan_failures} emulate_failures={emulate_failures} "
+        f"db={db_path}"
+    )
 
     if any_failure:
         raise SystemExit(1)

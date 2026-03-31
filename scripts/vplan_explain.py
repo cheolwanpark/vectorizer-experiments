@@ -122,11 +122,16 @@ def format_arch_opt_args(arch: str, vlen: int) -> str:
     )
 
 
-def run_container_and_capture(command: list[str], log_path: Path) -> tuple[int, str]:
+def run_container_and_capture(
+    command: list[str],
+    log_path: Path,
+    *,
+    echo_output: bool = False,
+) -> tuple[int, str]:
     result = subprocess.run(command, capture_output=True, text=True, check=False)
     combined_output = (result.stdout or "") + (result.stderr or "")
     log_path.write_text(combined_output, encoding="utf-8")
-    if combined_output:
+    if echo_output and combined_output:
         sys.stdout.write(combined_output)
         if not combined_output.endswith("\n"):
             sys.stdout.write("\n")
@@ -204,6 +209,7 @@ def run_vplan_explain(
     vf_use: str = "",
     output_root: str = DEFAULT_OUTPUT_ROOT,
     ensure_image: bool = True,
+    echo_output: bool = False,
 ) -> dict[str, object]:
     args = argparse.Namespace(
         bench=bench,
@@ -305,7 +311,11 @@ def run_vplan_explain(
 
     docker_command = shlex.join(docker_cmd)
     command_file.write_text(f"{docker_command}\n", encoding="utf-8")
-    exit_code, combined_output = run_container_and_capture(docker_cmd, container_log)
+    exit_code, combined_output = run_container_and_capture(
+        docker_cmd,
+        container_log,
+        echo_output=echo_output,
+    )
     vplan_log_text = vplan_log.read_text(encoding="utf-8") if vplan_log.exists() else ""
     return {
         "bench": bench,
@@ -333,9 +343,11 @@ def main() -> None:
         llvm_custom=args.llvm_custom,
         vf_use=args.vf_use,
         output_root=args.output_root,
+        echo_output=False,
     )
     if int(result["exit_code"]) != 0:
         fail(f"vplan-explain failed; see {result['container_log']}", exit_code=1)
+    print(f"{result['bench']}: {len(result['vf_candidates'])} VF(s)")
 
 
 if __name__ == "__main__":
