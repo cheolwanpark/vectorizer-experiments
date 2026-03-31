@@ -239,10 +239,6 @@ def main() -> None:
         ),
     ]
 
-    tsvc_dir = root / "benchmarks" / "MultiSource" / "Benchmarks" / "TSVC"
-    if tsvc_dir.exists():
-        docker_cmd[7:7] = ["-v", f"{tsvc_dir}:{Path('/workspace/benchmark/TSVC')}:ro"]
-
     docker_command = shlex.join(docker_cmd)
     command_file.write_text(f"{docker_command}\n", encoding="utf-8")
 

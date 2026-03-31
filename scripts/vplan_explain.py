@@ -150,7 +150,7 @@ def main() -> None:
     container_raw_ll = CONTAINER_OUTPUT_ROOT / raw_ll.name
     container_prevec_ll = CONTAINER_OUTPUT_ROOT / prevec_ll.name
     container_vplan_log = CONTAINER_OUTPUT_ROOT / vplan_log.name
-    container_helper = CONTAINER_PROJECT_ROOT / "scripts" / "tsvc_helper.py"
+    container_helper = CONTAINER_PROJECT_ROOT / "scripts" / "sanitize_ir.py"
 
     arch_opt_args = format_arch_opt_args(args.arch, args.vlen)
     forced_vf_arg = f"-vplan-use-vf={shlex.quote(args.vf_use)}" if args.vf_use else ""
@@ -174,7 +174,7 @@ def main() -> None:
             f'"$LLVM_EXTRACT_BIN" -S --func={shlex.quote(args.bench)} '
             f'{shlex.quote(str(container_full_ll))} -o {shlex.quote(str(container_raw_ll))}',
             (
-                f'python3 {shlex.quote(str(container_helper))} sanitize-ir '
+                f'python3 {shlex.quote(str(container_helper))} '
                 f'--input {shlex.quote(str(container_raw_ll))} '
                 f'--output {shlex.quote(str(container_raw_ll))} '
                 f'--triple {shlex.quote(RVV_IR_TARGET_TRIPLE)} '
