@@ -17,6 +17,8 @@ CONTAINER_OUTPUT_ROOT = Path("/workspace/output")
 CONTAINER_EMULATOR_ROOT = Path("/workspace/emulator")
 RUN_SIM_PATH = Path("/workspace/emulator/run-sim.sh")
 SIM_TARGET = "xiangshan.KunminghuV2Config"
+LEGACY_TIMEOUT_S = 120
+XIANSHAN_DEFAULT_TIMEOUT_S = 1800
 
 
 def parse_args() -> argparse.Namespace:
@@ -89,6 +91,12 @@ def parse_float(text: str) -> float:
     return float(text.strip())
 
 
+def resolve_timeout(timeout_s: int) -> int:
+    if timeout_s == LEGACY_TIMEOUT_S:
+        return XIANSHAN_DEFAULT_TIMEOUT_S
+    return timeout_s
+
+
 def parse_run_sim_output(text: str) -> dict[str, object]:
     patterns: dict[str, tuple[str, callable]] = {
         "status": (r"^Status:\s+(.+)$", str),
@@ -155,11 +163,13 @@ def build_markdown_report(summary: dict[str, object]) -> str:
 
 def print_summary(summary: dict[str, object]) -> None:
     forced_vf = summary.get("use_vf") or "default"
+    timeout_s = summary.get("effective_timeout_s", summary.get("timeout_s", "n/a"))
     lines = [
         f"Benchmark:  {summary['benchmark']}",
         f"Target:     {summary['simulator_target']}",
         f"Status:     {summary.get('status', 'unknown')}",
         f"Forced VF:  {forced_vf}",
+        f"Timeout:    {timeout_s}s",
         f"Kernel:     {summary.get('kernel_cycles', 'n/a')} cycles",
         f"Total sim:  {summary.get('total_cycles', 'n/a')} cycles",
         f"Wall time:  {summary.get('wall_time_s', 'n/a')}s",
@@ -177,6 +187,7 @@ def main() -> None:
     root = repo_root()
     source = validate_benchmark(root, args.bench)
     ensure_image_exists(args.image)
+    effective_timeout = resolve_timeout(args.timeout)
 
     log_root = Path(args.log_root)
     if not log_root.is_absolute():
@@ -223,7 +234,7 @@ def main() -> None:
             f"{shlex.quote(str(CONTAINER_PROJECT_ROOT / source.relative_to(root)))} "
             f"--len={args.len} --lmul={args.lmul} "
             f"{f'--use-vf={args.use_vf} ' if args.use_vf is not None else ''}"
-            f"--timeout={args.timeout} "
+            f"--timeout={effective_timeout} "
             f"--log-dir={shlex.quote(str(CONTAINER_OUTPUT_ROOT / 'logs'))}"
         ),
     ]
@@ -260,6 +271,7 @@ def main() -> None:
         "lmul": args.lmul,
         "use_vf": args.use_vf,
         "timeout_s": args.timeout,
+        "effective_timeout_s": effective_timeout,
         "docker_exit_code": result.returncode,
         "status": parsed.get("status", "OK" if result.returncode == 0 else f"EXIT:{result.returncode}"),
         "exit_code": parsed.get("exit_code", result.returncode),
