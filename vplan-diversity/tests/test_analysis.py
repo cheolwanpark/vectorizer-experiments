@@ -11,6 +11,7 @@ from vplan_diversity.pipeline import (
     analyze_function_vplans,
     build_forced_vf_arg,
     encode_use_vf,
+    extract_benchmark_source,
     extract_selected_vplan_dumps,
     pick_highest_vf,
 )
@@ -55,6 +56,27 @@ LV: Loop[0] bypassing interleave selection for forced VF
 """
 
 
+TSVC_INC_TEXT = """\
+#if TESTS & CONTROL_FLOW
+
+int s000()
+{
+    int total = 0;
+    for (int i = 0; i < 8; i++) {
+        total += i;
+    }
+    return total;
+}
+
+int s111()
+{
+    return 1;
+}
+
+#endif
+"""
+
+
 def make_result() -> BenchResult:
     return BenchResult(
         func_name="s000",
@@ -91,6 +113,18 @@ def make_runtime(tsvc_dir: str) -> AppRuntimeConfig:
 
 
 class AnalysisHelpersTest(unittest.TestCase):
+    def test_extract_benchmark_source_returns_one_function(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tsc_inc = Path(tmpdir) / "tsc.inc"
+            tsc_inc.write_text(TSVC_INC_TEXT)
+
+            source, source_path = extract_benchmark_source("s000", Path(tmpdir))
+
+        self.assertEqual(source_path, str(tsc_inc))
+        self.assertIn("int s000()", source)
+        self.assertIn("total += i;", source)
+        self.assertNotIn("int s111()", source)
+
     def test_pick_highest_vf_uses_numeric_magnitude(self):
         self.assertEqual(pick_highest_vf(["1", "8", "4"]), "8")
 
@@ -126,9 +160,15 @@ class AnalyzeFunctionVPlansTest(unittest.TestCase):
         log_path.write_text(text)
         return log_path
 
+    def _write_tsc_inc(self, root: str, text: str = TSVC_INC_TEXT) -> Path:
+        tsc_inc = Path(root) / "tsc.inc"
+        tsc_inc.write_text(text)
+        return tsc_inc
+
     def test_analyze_function_vplans_success_and_markdown(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             self._write_log(tmpdir, SUCCESS_LOG)
+            self._write_tsc_inc(tmpdir)
             runtime = make_runtime(tmpdir)
             result = make_result()
 
@@ -145,12 +185,16 @@ class AnalyzeFunctionVPlansTest(unittest.TestCase):
             self.assertIn("USE_VF=fixed:4", entry.command)
             self.assertIn("OPT=opt", entry.command)
             self.assertIn("# VPlan Analysis: `s000`", report.markdown_report)
+            self.assertIn("## Benchmark C Source", report.markdown_report)
+            self.assertIn("```c", report.markdown_report)
+            self.assertIn("int s000()", report.markdown_report)
             self.assertIn("| 0 | 0 | `4` |", report.markdown_report)
             self.assertIn("```text", report.markdown_report)
 
     def test_analyze_function_vplans_marks_missing_dump_as_error(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             self._write_log(tmpdir, MISSING_DUMP_LOG)
+            self._write_tsc_inc(tmpdir)
             runtime = make_runtime(tmpdir)
             result = make_result()
 
@@ -167,6 +211,7 @@ class AnalyzeFunctionVPlansTest(unittest.TestCase):
     def test_analyze_function_vplans_marks_selection_mismatch_as_warning(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             self._write_log(tmpdir, MISMATCH_LOG)
+            self._write_tsc_inc(tmpdir)
             runtime = make_runtime(tmpdir)
             result = make_result()
 
@@ -180,6 +225,23 @@ class AnalyzeFunctionVPlansTest(unittest.TestCase):
             self.assertEqual(entry.status, "warning")
             self.assertIn("expected VF=4 plan=0", entry.message)
             self.assertIn("got VF=8 plan=1", entry.message)
+
+    def test_analyze_function_vplans_keeps_report_when_source_missing(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            self._write_log(tmpdir, SUCCESS_LOG)
+            runtime = make_runtime(tmpdir)
+            result = make_result()
+
+            with patch("vplan_diversity.pipeline.subprocess.run") as run_mock:
+                run_mock.return_value = subprocess.CompletedProcess(
+                    args=["make"], returncode=0, stdout="", stderr=""
+                )
+                report = analyze_function_vplans(result, runtime)
+
+            self.assertEqual(report.source_code, "")
+            self.assertIn("## Benchmark C Source", report.markdown_report)
+            self.assertIn("_Benchmark source unavailable._", report.markdown_report)
+            self.assertIn("| 0 | 0 | `4` |", report.markdown_report)
 
 
 if __name__ == "__main__":

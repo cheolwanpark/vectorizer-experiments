@@ -162,6 +162,34 @@ def resolve_source_path(func: str, calls: dict, tsvc_dir: Path, variant: str) ->
     return tsvc_dir / f"{dir_name}-{variant}" / "tsc.c"
 
 
+def extract_benchmark_source(func_name: str, tsvc_dir: Path) -> tuple[str, str | None]:
+    """Extract one benchmark function definition from TSVC/tsc.inc."""
+    source_path = tsvc_dir / "tsc.inc"
+    if not source_path.exists():
+        return "", None
+
+    text = source_path.read_text(errors="replace")
+    match = re.search(rf"(?m)^int\s+{re.escape(func_name)}\s*\([^)]*\)\s*$", text)
+    if match is None:
+        return "", str(source_path)
+
+    brace_start = text.find("{", match.end())
+    if brace_start == -1:
+        return "", str(source_path)
+
+    depth = 0
+    for index in range(brace_start, len(text)):
+        char = text[index]
+        if char == "{":
+            depth += 1
+        elif char == "}":
+            depth -= 1
+            if depth == 0:
+                return text[match.start():index + 1].strip(), str(source_path)
+
+    return "", str(source_path)
+
+
 # ─── LLVM Tool Resolution ──────────────────────────────────────────────────
 
 
@@ -341,9 +369,33 @@ def build_analysis_markdown_report(report: FunctionAnalysisReport,
         f"- TYPE: `{runtime.variant}`",
         f"- VLEN: `{runtime.vlen}`",
         "",
+    ]
+
+    if report.source_path:
+        lines.append(f"- Bench Source: `{report.source_path}`")
+    lines.append("")
+
+    lines.extend([
+        "## Benchmark C Source",
+        "",
+    ])
+    if report.source_code:
+        lines.extend([
+            "```c",
+            report.source_code,
+            "```",
+            "",
+        ])
+    else:
+        lines.extend([
+            "_Benchmark source unavailable._",
+            "",
+        ])
+
+    lines.extend([
         "| Loop | Plan | Forced VF | All VFs | Costs | Status |",
         "| --- | --- | --- | --- | --- | --- |",
-    ]
+    ])
 
     for entry in report.entries:
         status = entry.status.upper()
@@ -487,7 +539,13 @@ def analyze_function_vplans(result: BenchResult, runtime: AppRuntimeConfig,
         func_name=result.func_name,
         category=result.category,
         entries=entries,
+        source_code="",
+        source_path=None,
         markdown_report="",
+    )
+    report.source_code, report.source_path = extract_benchmark_source(
+        result.func_name,
+        tsvc_dir,
     )
     report.markdown_report = build_analysis_markdown_report(report, runtime)
     return report

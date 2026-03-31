@@ -107,6 +107,10 @@ class AppRuntimeConfig:
     no_cache: bool
     cache_dir: str
     tools: dict[str, str]
+    executor: str = "local"
+    qemu_state_dir: str | None = None
+    guest_workspace: str | None = None
+    tool_versions: dict[str, str] = field(default_factory=dict)
     gem5_cpu_type: str = "MinorCPU"
 
 

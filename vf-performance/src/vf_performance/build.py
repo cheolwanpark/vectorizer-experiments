@@ -4,10 +4,10 @@ from __future__ import annotations
 
 import hashlib
 import shlex
-import subprocess
 from pathlib import Path
 
 from .models import AppRuntimeConfig
+from .qemu import LocalExecutionBackend
 from .storage import tool_version
 
 TARGET = "riscv64-unknown-linux-gnu"
@@ -34,13 +34,14 @@ class BuildError(RuntimeError):
 class BuildManager:
     """Build TSVC_2 support objects and per-loop binaries."""
 
-    def __init__(self, runtime: AppRuntimeConfig, cache_root: Path):
+    def __init__(self, runtime: AppRuntimeConfig, cache_root: Path, backend=None):
         self.runtime = runtime
         self.cache_root = cache_root
         self.rvv_root = Path(runtime.rvv_root)
         self.tsvc_src_dir = self.rvv_root / "benchmarks" / "TSVC_2" / "src"
         self.sysroot = self._resolve_sysroot()
         self.clang = runtime.tools["clang"]
+        self.backend = backend or LocalExecutionBackend()
         self._support_dir = cache_root / "artifacts" / self._support_key()
         self._support_objects: list[Path] | None = None
 
@@ -66,8 +67,8 @@ class BuildManager:
         )
         return f"support-{hashlib.sha256(payload.encode()).hexdigest()[:16]}"
 
-    def common_flags(self) -> list[str]:
-        return [
+    def common_flags(self, *, linker: bool = False) -> list[str]:
+        flags = [
             self.clang,
             "-std=c99",
             "-target",
@@ -75,11 +76,13 @@ class BuildManager:
             f"--sysroot={self.sysroot}",
             f"-march={MARCH}",
             f"-mabi={MABI}",
-            "-fuse-ld=lld",
             f"-DLEN_1D={self.runtime.len_1d}",
             "-DTSVC_MEASURE_CYCLES",
             f"-I{self.tsvc_src_dir}",
         ]
+        if linker:
+            flags.append("-fuse-ld=lld")
+        return flags
 
     def _support_compile_flags(self) -> list[str]:
         return self.common_flags() + [
@@ -112,7 +115,7 @@ class BuildManager:
         for source in support_sources:
             output = self._support_dir / f"{source.stem}.o"
             if not output.exists():
-                cmd = self._support_compile_flags() + [str(source), "-o", str(output)]
+                cmd = self._support_compile_flags() + [self._cmd_path(source), "-o", self._cmd_path(output)]
                 self._run_checked(cmd, cwd=self.tsvc_src_dir)
             built.append(output)
         self._support_objects = built
@@ -134,18 +137,19 @@ class BuildManager:
         loop_cmd = self._loop_compile_flags()
         if forced_vf_arg:
             loop_cmd.extend(["-mllvm", f"-vplan-use-vf={forced_vf_arg}"])
-        loop_cmd.extend([str(source_path), "-o", str(loop_object)])
+        loop_cmd.extend([self._cmd_path(source_path), "-o", self._cmd_path(loop_object)])
         self._run_checked(loop_cmd, cwd=self.tsvc_src_dir)
 
-        link_cmd = self.common_flags() + [
+        link_cmd = self.common_flags(linker=True) + [
             "-static",
-            *(str(item) for item in support_objects),
-            str(loop_object),
+            *(self._cmd_path(item) for item in support_objects),
+            self._cmd_path(loop_object),
             "-lm",
             "-o",
-            str(elf_path),
+            self._cmd_path(elf_path),
         ]
         self._run_checked(link_cmd, cwd=self.tsvc_src_dir)
+        self.backend.materialize_file(elf_path)
         return elf_path, shlex.join(link_cmd)
 
     def compile_to_ir(self, benchmark: str, source_path: Path, work_dir: Path) -> Path:
@@ -158,22 +162,20 @@ class BuildManager:
             "-disable-O0-optnone",
             "-S",
             "-emit-llvm",
-            str(source_path),
+            self._cmd_path(source_path),
             "-o",
-            str(ir_path),
+            self._cmd_path(ir_path),
         ]
         self._run_checked(cmd, cwd=self.tsvc_src_dir)
+        self.backend.materialize_file(ir_path)
         return ir_path
 
     def _run_checked(self, cmd: list[str], cwd: Path) -> None:
-        result = subprocess.run(
-            cmd,
-            cwd=cwd,
-            capture_output=True,
-            text=True,
-            check=False,
-        )
+        result = self.backend.run(cmd, cwd=cwd)
         if result.returncode == 0:
             return
-        output = (result.stdout or "") + (result.stderr or "")
+        output = result.stdout + result.stderr
         raise BuildError("command failed", shlex.join(cmd), output)
+
+    def _cmd_path(self, path: Path) -> str:
+        return self.backend.command_path(path)

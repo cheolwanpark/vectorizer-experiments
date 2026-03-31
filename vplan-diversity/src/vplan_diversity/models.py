@@ -67,6 +67,8 @@ class FunctionAnalysisReport:
     func_name: str
     category: str
     entries: list[AnalysisEntry]
+    source_code: str
+    source_path: str | None
     markdown_report: str
 
 

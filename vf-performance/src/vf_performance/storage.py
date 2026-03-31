@@ -20,6 +20,8 @@ from .models import (
     to_dict,
 )
 
+CACHE_SCHEMA_VERSION = "v3"
+
 
 def ensure_cache_dirs(cache_root: Path) -> None:
     for name in ("analysis", "runs", "artifacts", "logs", "gem5-out"):
@@ -53,14 +55,20 @@ def tool_version(tool_path: str, version_arg: str = "--version") -> str:
 
 
 def analysis_cache_key(runtime: AppRuntimeConfig, benchmark: str, source_path: str) -> str:
+    opt_version = runtime.tool_versions.get("opt") or tool_version(runtime.tools.get("opt", "opt"))
     payload = "|".join(
         [
+            CACHE_SCHEMA_VERSION,
+            runtime.executor,
             benchmark,
             source_path,
             str(runtime.len_1d),
+            runtime.guest_workspace or "",
             runtime.tools.get("clang", "clang"),
             runtime.tools.get("opt", "opt"),
-            tool_version(runtime.tools.get("opt", "opt")),
+            runtime.tools.get("sysroot", ""),
+            runtime.tools.get("gem5", ""),
+            opt_version,
         ]
     )
     return hashlib.sha256(payload.encode()).hexdigest()[:20]
@@ -74,18 +82,24 @@ def run_cache_key(
     requested_vf: str | None,
     mode: str,
 ) -> str:
+    clang_version = runtime.tool_versions.get("clang") or tool_version(runtime.tools.get("clang", "clang"))
     payload = "|".join(
         [
+            CACHE_SCHEMA_VERSION,
+            runtime.executor,
             benchmark,
             source_path,
             str(loop_index),
             str(requested_vf),
             mode,
             str(runtime.len_1d),
+            runtime.guest_workspace or "",
             runtime.gem5_cpu_type,
             runtime.tools.get("clang", "clang"),
+            runtime.tools.get("opt", "opt"),
+            runtime.tools.get("sysroot", ""),
             runtime.tools.get("gem5", "gem5"),
-            tool_version(runtime.tools.get("clang", "clang")),
+            clang_version,
         ]
     )
     return hashlib.sha256(payload.encode()).hexdigest()[:24]

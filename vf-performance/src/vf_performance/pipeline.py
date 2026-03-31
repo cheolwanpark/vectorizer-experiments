@@ -8,13 +8,13 @@ import re
 import shlex
 import shutil
 import subprocess
-import tempfile
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
 
 from .build import BuildError, BuildManager
-from .gem5 import parse_tsvc_kernel_cycles, run_gem5
+from .gem5 import parse_gem5_total_cycles, parse_tsvc_kernel_cycles
 from .models import (
     AppRuntimeConfig,
     BenchmarkAnalysis,
@@ -26,6 +26,7 @@ from .models import (
     VPlan,
     VerificationResult,
 )
+from .qemu import create_execution_backend, default_executor, default_qemu_state_dir, load_qemu_metadata
 from .storage import (
     analysis_cache_key,
     cache_root_from_runtime,
@@ -58,6 +59,28 @@ class BenchmarkSpec:
 ProgressCallback = Callable[[str, dict], None]
 
 
+class RuntimeValidationError(RuntimeError):
+    """Raised when required runtime prerequisites are missing."""
+
+    def __init__(self, errors: list[str], hints: list[str] | None = None):
+        self.errors = errors
+        self.hints = hints or []
+        lines = ["Runtime validation failed:"]
+        lines.extend(f"- {item}" for item in errors)
+        if self.hints:
+            lines.append("")
+            lines.append("Hints:")
+            lines.extend(f"- {item}" for item in self.hints)
+        super().__init__("\n".join(lines))
+
+
+def _first_path(candidates: list[Path | None]) -> Path | None:
+    for candidate in candidates:
+        if candidate is not None:
+            return candidate
+    return None
+
+
 def resolve_rvv_root(root: str | None = None) -> Path:
     if root:
         return Path(root).resolve()
@@ -67,18 +90,32 @@ def resolve_rvv_root(root: str | None = None) -> Path:
     return (Path(__file__).resolve().parents[2] / "rvv-poc-main").resolve()
 
 
-def resolve_llvm_tools(llvm_custom: str | None, rvv_root: Path) -> dict[str, str]:
-    candidates: list[Path] = []
-    if not llvm_custom:
-        llvm_custom = os.environ.get("LLVM_CUSTOM")
-    if llvm_custom:
-        base = Path(llvm_custom).resolve()
-        candidates.extend([base, base / "bin"])
-    candidates.append(rvv_root / "llvm-build" / "bin")
+def resolve_llvm_tools(
+    llvm_custom: str | None,
+    rvv_root: Path,
+    *,
+    sysroot: str | None = None,
+    gem5: str | None = None,
+) -> dict[str, str]:
+    preferred_roots: list[Path] = []
+    for raw in [
+        llvm_custom,
+        os.environ.get("LLVM_CUSTOM"),
+        os.environ.get("LLVM_BIN_DIR"),
+        os.environ.get("LLVM_BUILD_DIR"),
+    ]:
+        if not raw:
+            continue
+        base = Path(raw).resolve()
+        preferred_roots.extend([base, base / "bin"])
+    legacy_roots = [
+        rvv_root / "llvm-build" / "bin",
+        rvv_root / "llvm-build",
+    ]
 
     tools: dict[str, str] = {}
     for tool_name in ("clang", "opt"):
-        for base in candidates:
+        for base in preferred_roots + legacy_roots:
             tool_path = base / tool_name
             if tool_path.exists():
                 tools[tool_name] = str(tool_path)
@@ -87,15 +124,50 @@ def resolve_llvm_tools(llvm_custom: str | None, rvv_root: Path) -> dict[str, str
             found = shutil.which(tool_name)
             if found:
                 tools[tool_name] = found
+            elif preferred_roots:
+                tools[tool_name] = str(preferred_roots[0] / tool_name)
             else:
-                tools[tool_name] = tool_name
+                tools[tool_name] = str(legacy_roots[0] / tool_name)
 
-    gem5_path = rvv_root / "gem5" / "build" / "RISCV" / "gem5.opt"
-    tools["gem5"] = str(gem5_path)
+    gem5_candidates = [
+        Path(gem5).resolve() if gem5 else None,
+        Path(os.environ["GEM5_DIR"]).resolve() / "build" / "RISCV" / "gem5.opt"
+        if os.environ.get("GEM5_DIR")
+        else None,
+        rvv_root / "gem5" / "build" / "RISCV" / "gem5.opt",
+    ]
+    gem5_path = _first_path(gem5_candidates)
+    tools["gem5"] = str(gem5_path or (rvv_root / "gem5" / "build" / "RISCV" / "gem5.opt"))
+
+    sysroot_candidates = [
+        Path(sysroot).resolve() if sysroot else None,
+        Path(os.environ["SYSROOT"]).resolve() if os.environ.get("SYSROOT") else None,
+        (
+            Path(os.environ["RISCV_TOOLS_PREFIX"]).resolve()
+            / "riscv64-unknown-linux-gnu"
+            / "sysroot"
+        )
+        if os.environ.get("RISCV_TOOLS_PREFIX")
+        else None,
+        (
+            Path(os.environ["RVV_TOOLCHAIN_PREFIX"]).resolve()
+            / "riscv64-unknown-linux-gnu"
+            / "sysroot"
+        )
+        if os.environ.get("RVV_TOOLCHAIN_PREFIX")
+        else None,
+        rvv_root / "chipyard" / ".conda-env" / "riscv-tools" / "riscv64-unknown-linux-gnu" / "sysroot",
+        rvv_root / "riscv-tools-install" / "riscv64-unknown-linux-gnu" / "sysroot",
+    ]
+    sysroot_path = _first_path(sysroot_candidates)
     tools["sysroot"] = str(
-        rvv_root / "riscv-tools-install" / "riscv64-unknown-linux-gnu" / "sysroot"
+        sysroot_path or (rvv_root / "chipyard" / ".conda-env" / "riscv-tools" / "riscv64-unknown-linux-gnu" / "sysroot")
     )
     return tools
+
+
+def default_runtime_executor(executor: str | None = None) -> str:
+    return executor or default_executor()
 
 
 def parse_category(source_path: Path) -> str:
@@ -108,9 +180,10 @@ def discover_benchmarks(rvv_root: Path, filters: list[str] | None = None) -> lis
     filters = [item for item in (filters or []) if item]
     loop_dir = rvv_root / "benchmarks" / "TSVC_2" / "src" / "loops"
     specs: list[BenchmarkSpec] = []
+    requested = set(filters)
     for source_path in sorted(loop_dir.glob("*.c")):
         benchmark = source_path.stem
-        if filters and not any(token in benchmark for token in filters):
+        if requested and benchmark not in requested:
             continue
         specs.append(
             BenchmarkSpec(
@@ -239,21 +312,142 @@ def benchmark_requests(analysis: BenchmarkAnalysis) -> list[VFRunRequest]:
     return requests
 
 
+def _sysroot_has_header(sysroot: Path, header_name: str) -> bool:
+    candidates = [
+        sysroot / "usr" / "include" / header_name,
+        sysroot / "include" / header_name,
+        sysroot / "riscv64-unknown-linux-gnu" / "include" / header_name,
+    ]
+    if any(path.exists() for path in candidates):
+        return True
+    try:
+        next(sysroot.rglob(header_name))
+        return True
+    except StopIteration:
+        return False
+
+
+def validate_runtime(runtime: AppRuntimeConfig) -> None:
+    rvv_root = Path(runtime.rvv_root)
+    loop_dir = rvv_root / "benchmarks" / "TSVC_2" / "src" / "loops"
+    errors: list[str] = []
+
+    if not rvv_root.exists():
+        errors.append(f"RVV root not found: {rvv_root}")
+    if not loop_dir.exists():
+        errors.append(f"TSVC loop directory not found: {loop_dir}")
+
+    if runtime.executor == "qemu":
+        state_dir = Path(runtime.qemu_state_dir or default_qemu_state_dir(runtime.cache_dir))
+        try:
+            metadata = load_qemu_metadata(state_dir)
+        except FileNotFoundError:
+            errors.append(f"QEMU metadata not found: {state_dir / 'metadata.json'}")
+        else:
+            if not rvv_root.resolve().is_relative_to(Path(__file__).resolve().parents[2]):
+                errors.append(f"qemu executor requires rvv_root inside the current project checkout: {rvv_root}")
+            for field_name in ("clang", "opt", "sysroot", "gem5"):
+                if not metadata.tools.get(field_name):
+                    errors.append(f"guest tool path missing in metadata: {field_name}")
+            if not metadata.guest_workspace:
+                errors.append("guest workspace missing in metadata")
+            else:
+                runtime.guest_workspace = metadata.guest_workspace
+            backend = None
+            if not errors:
+                try:
+                    backend = create_execution_backend(runtime, cache_root_from_runtime(runtime))
+                    backend.prepare(sync_repo=False)
+                except Exception as exc:
+                    errors.append(f"QEMU guest is not reachable: {exc}")
+                if backend is not None:
+                    checks = {
+                        "clang": metadata.tools.get("clang", ""),
+                        "opt": metadata.tools.get("opt", ""),
+                        "gem5": metadata.tools.get("gem5", ""),
+                    }
+                    for tool_name, tool_path in checks.items():
+                        result = backend.run(["test", "-x", tool_path], cwd=None)
+                        if result.returncode != 0:
+                            errors.append(f"guest tool not found: {tool_name} -> {tool_path}")
+                    sysroot_path = metadata.tools.get("sysroot", "")
+                    result = backend.run(["test", "-d", sysroot_path], cwd=None)
+                    if result.returncode != 0:
+                        errors.append(f"guest sysroot not found: {sysroot_path}")
+                    result = backend.run(
+                        ["test", "-f", f"{Path(metadata.tools.get('gem5', '')).parent.parent.parent / 'configs' / 'example' / 'se.py'}"],
+                        cwd=None,
+                    )
+                    if result.returncode != 0:
+                        errors.append("guest gem5 SE config not found")
+    else:
+        sysroot = Path(runtime.tools.get("sysroot", ""))
+        gem5 = Path(runtime.tools.get("gem5", ""))
+        for tool_name in ("clang", "opt"):
+            tool_path = runtime.tools.get(tool_name, "")
+            if not tool_path:
+                errors.append(f"{tool_name} path is empty")
+                continue
+            resolved = shutil.which(tool_path) if not os.path.isabs(tool_path) else tool_path
+            if not resolved or not Path(resolved).exists():
+                errors.append(f"{tool_name} not found: {tool_path}")
+
+        if not sysroot.exists():
+            errors.append(f"sysroot not found: {sysroot}")
+        elif not _sysroot_has_header(sysroot, "math.h"):
+            errors.append(f"sysroot is missing standard C headers (math.h not found): {sysroot}")
+
+        if not gem5.exists():
+            errors.append(f"gem5 binary not found: {gem5}")
+        else:
+            se_script = gem5.parent.parent.parent / "configs" / "example" / "se.py"
+            if not se_script.exists():
+                errors.append(f"gem5 SE config not found: {se_script}")
+
+    if loop_dir.exists() and runtime.bench_filters:
+        available = {path.stem for path in loop_dir.glob("*.c")}
+        unknown = sorted({item for item in runtime.bench_filters if item not in available})
+        if unknown:
+            errors.append(f"unknown benchmarks requested: {', '.join(unknown)}")
+
+    if errors:
+        if runtime.executor == "qemu":
+            hints = [
+                f"From {Path(__file__).resolve().parents[2]}, run ./setup.sh",
+                f"Then rerun vf-performance with --executor=qemu",
+            ]
+        else:
+            hints = [
+                f"From {rvv_root}, run ./build.sh",
+                f"Then source {rvv_root / 'env.sh'}",
+                f"Then from {rvv_root}, run ./build-sim.sh gem5",
+            ]
+        raise RuntimeValidationError(errors, hints=hints)
+
+
 class PipelineRunner:
     """Run analysis and gem5 execution for all selected TSVC loops."""
 
-    def __init__(self, runtime: AppRuntimeConfig, on_progress: ProgressCallback | None = None):
+    def __init__(
+        self,
+        runtime: AppRuntimeConfig,
+        on_progress: ProgressCallback | None = None,
+        backend=None,
+    ):
         self.runtime = runtime
         self.on_progress = on_progress
         self.cache_root = cache_root_from_runtime(runtime)
-        self.build_manager = BuildManager(runtime, self.cache_root)
-        self.work_dir = Path(tempfile.mkdtemp(prefix="vf-performance-"))
+        self.backend = backend or create_execution_backend(runtime, self.cache_root)
+        self.build_manager = BuildManager(runtime, self.cache_root, backend=self.backend)
+        self.work_dir = self.cache_root / "work"
+        self.work_dir.mkdir(parents=True, exist_ok=True)
         self._prevec_cache: dict[str, Path] = {}
 
     def cleanup(self) -> None:
-        shutil.rmtree(self.work_dir, ignore_errors=True)
+        self.backend.cleanup()
 
     def run(self) -> SessionData:
+        self.backend.prepare(sync_repo=self.runtime.executor == "qemu")
         benchmarks = discover_benchmarks(Path(self.runtime.rvv_root), self.runtime.bench_filters)
         analyses = self._run_analyses(benchmarks)
         total_runs = sum(len(benchmark_requests(item)) for item in analyses if not item.error)
@@ -318,14 +512,9 @@ class PipelineRunner:
                 "-passes=loop-vectorize",
                 "-vplan-explain",
                 "-disable-output",
-                str(prevec_path),
+                self.backend.command_path(prevec_path),
             ]
-            result = subprocess.run(
-                cmd,
-                capture_output=True,
-                text=True,
-                check=False,
-            )
+            result = self.backend.run(cmd, cwd=Path(self.runtime.rvv_root))
             output = result.stderr or result.stdout
             if result.returncode != 0:
                 raise RuntimeError(output.strip() or "opt failed")
@@ -368,19 +557,15 @@ class PipelineRunner:
                 "-mattr=+v",
                 f"-passes={PREVEC_PASSES}",
                 "-S",
-                str(ir_path),
+                self.backend.command_path(ir_path),
                 "-o",
-                str(prevec_path),
+                self.backend.command_path(prevec_path),
             ]
-            result = subprocess.run(
-                cmd,
-                capture_output=True,
-                text=True,
-                check=False,
-            )
+            result = self.backend.run(cmd, cwd=Path(self.runtime.rvv_root))
             if result.returncode != 0:
-                output = (result.stdout or "") + (result.stderr or "")
+                output = result.stdout + result.stderr
                 raise RuntimeError(output.strip() or "opt prevec failed")
+            self.backend.materialize_file(prevec_path)
         self._prevec_cache[spec.benchmark] = prevec_path
         return prevec_path
 
@@ -477,14 +662,9 @@ class PipelineRunner:
             "-vplan-explain",
             "-disable-output",
             f"-vplan-use-vf={vf_arg}",
-            str(prevec_path),
+            self.backend.command_path(prevec_path),
         ]
-        result = subprocess.run(
-            cmd,
-            capture_output=True,
-            text=True,
-            check=False,
-        )
+        result = self.backend.run(cmd, cwd=Path(self.runtime.rvv_root))
         output = result.stderr or result.stdout
         if result.returncode != 0:
             return VerificationResult(
@@ -563,12 +743,7 @@ class PipelineRunner:
                 cache_key,
                 forced_vf_arg=forced_vf_arg,
             )
-            status, output, wall_time, total_cycles = run_gem5(
-                Path(self.runtime.tools["gem5"]),
-                artifact_path,
-                gem5_out_dir,
-                cpu_type=self.runtime.gem5_cpu_type,
-            )
+            status, output, wall_time, total_cycles = self._run_gem5(artifact_path, gem5_out_dir)
             log_path.write_text(output)
             kernel_cycles = parse_tsvc_kernel_cycles(output)
             return RunResult(
@@ -639,6 +814,35 @@ class PipelineRunner:
                 stdout_excerpt=str(exc)[:4000],
             )
 
+    def _run_gem5(self, artifact_path: Path, out_dir: Path) -> tuple[str, str, float, int | None]:
+        gem5_path = self.runtime.tools["gem5"]
+        se_script = str(Path(gem5_path).parent.parent.parent / "configs" / "example" / "se.py")
+        cmd = [
+            gem5_path,
+            f"--outdir={self.backend.command_path(out_dir)}",
+            se_script,
+            f"--cpu-type={self.runtime.gem5_cpu_type}",
+            f"--cmd={self.backend.command_path(artifact_path)}",
+        ]
+
+        start = time.time()
+        result = self.backend.run(cmd, cwd=Path(self.runtime.rvv_root), timeout=600)
+        wall_time = time.time() - start
+
+        if self.runtime.executor == "qemu":
+            self.backend.materialize_dir(out_dir)
+        stats_path = out_dir / "stats.txt"
+        stats_text = stats_path.read_text(errors="replace") if stats_path.exists() else None
+        output = result.stdout + result.stderr
+        total_cycles = parse_gem5_total_cycles(output, stats_text)
+
+        status = "OK"
+        if result.returncode == 124 or "TIMEOUT" in output:
+            status = "TIMEOUT"
+        elif result.returncode != 0:
+            status = f"EXIT:{result.returncode}"
+        return status, output, wall_time, total_cycles
+
     def _with_baseline(self, run_result: RunResult, baseline: RunResult | None) -> RunResult:
         if baseline is None or run_result.mode == "default":
             return run_result
@@ -655,6 +859,7 @@ class PipelineRunner:
 
 
 def default_runtime_config(args, rvv_root: Path, tools: dict[str, str]) -> AppRuntimeConfig:
+    cache_dir = str((Path.cwd() / ".cache" / "vf-performance").resolve())
     return AppRuntimeConfig(
         rvv_root=str(rvv_root),
         llvm_custom=args.llvm_custom,
@@ -663,7 +868,9 @@ def default_runtime_config(args, rvv_root: Path, tools: dict[str, str]) -> AppRu
         sim_jobs=args.sim_jobs,
         bench_filters=args.bench or [],
         no_cache=args.no_cache,
-        cache_dir=str((Path.cwd() / ".cache" / "vf-performance").resolve()),
+        cache_dir=cache_dir,
         tools=tools,
+        executor=default_runtime_executor(getattr(args, "executor", None)),
+        qemu_state_dir=getattr(args, "qemu_state_dir", None) or str(default_qemu_state_dir(cache_dir)),
         gem5_cpu_type="MinorCPU",
     )
