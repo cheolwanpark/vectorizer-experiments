@@ -1,0 +1,4 @@
+[submodule "llvm-project"]
+	path = llvm-project
+	url = https://github.com/cheolwanpark/llvm-project-vplan-experiment.git
+	branch = vplans-measure
