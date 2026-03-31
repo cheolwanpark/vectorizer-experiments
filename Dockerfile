@@ -15,10 +15,15 @@ ENV LLVM_BUILD_DIR=/workspace/llvm-build
 
 SHELL ["/bin/bash", "-lc"]
 
+# Retry apt downloads because the Ubuntu mirror intermittently resets long fetches.
 RUN --mount=type=cache,id=apt-cache,target=/var/cache/apt,sharing=locked \
     --mount=type=cache,id=apt-lists,target=/var/lib/apt/lists,sharing=locked \
-    apt-get update \
+    apt-get -o Acquire::Retries=5 -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 -o Dpkg::Use-Pty=0 update \
     && apt-get install -y --no-install-recommends \
+        -o Acquire::Retries=5 \
+        -o Acquire::http::Timeout=30 \
+        -o Acquire::https::Timeout=30 \
+        -o Dpkg::Use-Pty=0 \
         bash \
         ca-certificates \
         curl \
@@ -56,24 +61,22 @@ ENV CC=clang \
     CCACHE_MAXSIZE=20G \
     CCACHE_NOHASHDIR=true
 
+# Keep the Docker image focused on the headless LLVM + gem5 toolchain.
+# RTL bring-up dependencies stay on the host instead of inflating the default image.
 RUN --mount=type=cache,id=apt-cache,target=/var/cache/apt,sharing=locked \
     --mount=type=cache,id=apt-lists,target=/var/lib/apt/lists,sharing=locked \
-    apt-get update \
+    apt-get -o Acquire::Retries=5 -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 -o Dpkg::Use-Pty=0 update \
     && apt-get install -y --no-install-recommends \
-        autoconf \
-        automake \
-        bc \
-        bison \
+        -o Acquire::Retries=5 \
+        -o Acquire::http::Timeout=30 \
+        -o Acquire::https::Timeout=30 \
+        -o Dpkg::Use-Pty=0 \
         build-essential \
         ccache \
         clang \
         cmake \
-        device-tree-compiler \
-        flex \
-        gtkwave \
         libboost-all-dev \
         libcapstone-dev \
-        libfdt-dev \
         libgmp-dev \
         libgoogle-perftools-dev \
         libhdf5-dev \
@@ -84,21 +87,16 @@ RUN --mount=type=cache,id=apt-cache,target=/var/cache/apt,sharing=locked \
         libreadline-dev \
         libsdl2-dev \
         libsqlite3-dev \
-        libtool \
         libzstd-dev \
         lld \
-        m4 \
         mold \
         ninja-build \
-        numactl \
-        openjdk-21-jdk \
         pkg-config \
         protobuf-compiler \
         python3-dev \
         python3-pip \
         python3-venv \
         scons \
-        verilator \
         zlib1g-dev \
     && ln -sf /usr/bin/ccache /usr/local/bin/clang \
     && ln -sf /usr/bin/ccache /usr/local/bin/clang++
@@ -186,20 +184,6 @@ RUN --mount=type=cache,id=gem5-ccache,target=/root/.cache/ccache,sharing=locked 
     fi \
     && ./build_gem5.sh -j "${JOBS}" \
     && ccache --show-stats
-
-FROM build-base AS full
-
-ENV SKIP_ROOT_SUBMODULE_UPDATE=1
-ENV PATH=/workspace/emulator/llvm-build/bin:${PATH}
-
-WORKDIR /workspace/emulator
-
-COPY --from=emulator-src /workspace/emulator /workspace/emulator
-COPY --from=llvm-builder /workspace/llvm-build /workspace/emulator/llvm-build
-
-RUN ./build.sh \
-    && source ./env.sh \
-    && ./build-sim.sh
 
 FROM gem5-ready AS final
 
