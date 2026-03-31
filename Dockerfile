@@ -85,6 +85,8 @@ RUN --mount=type=cache,id=apt-cache,target=/var/cache/apt,sharing=locked \
         bison \
         bc \
         lld \
+        libsqlite3-dev \
+        libzstd-dev \
         mold \
         ninja-build \
         numactl \
@@ -92,6 +94,7 @@ RUN --mount=type=cache,id=apt-cache,target=/var/cache/apt,sharing=locked \
         python3-dev \
         python3-pip \
         python3-venv \
+        time \
         verilator \
         zlib1g-dev \
     && ln -sf /usr/bin/ccache /usr/local/bin/clang \
@@ -194,18 +197,20 @@ RUN --mount=type=cache,id=xiangshan-ccache,target=/root/.cache/ccache,sharing=lo
     fi \
     && curl -fsSL "https://repo1.maven.org/maven2/com/lihaoyi/mill-dist/${MILL_VERSION}/mill-dist-${MILL_VERSION}.jar" -o /usr/local/bin/mill \
     && chmod +x /usr/local/bin/mill \
-    && ln -sfn ../build /workspace/emulator/XiangShan/difftest/build \
     && git -C /workspace/emulator/XiangShan submodule update --init --recursive -- difftest \
+    && ln -sfn ../build /workspace/emulator/XiangShan/difftest/build \
     && (git -C /workspace/emulator/XiangShan/difftest apply --check /workspace/emulator/patches/xiangshan-difftest.patch 2>/dev/null \
         && git -C /workspace/emulator/XiangShan/difftest apply /workspace/emulator/patches/xiangshan-difftest.patch \
         || true) \
     && export NEMU_HOME=/workspace/emulator/third-party/NEMU \
     && export AM_HOME=/workspace/emulator/third-party/nexus-am \
-    && cd /workspace/emulator/third-party/NEMU \
-    && make riscv64-xs-kunminghu-v3-ref_defconfig \
-    && make -j "${JOBS}" \
+    && if [ ! -f /workspace/emulator/third-party/NEMU/build/riscv64-nemu-interpreter-so ]; then \
+        cd /workspace/emulator/third-party/NEMU \
+        && make CCACHE= CC=gcc CXX=g++ riscv64-xs-kunminghu-v3-ref_defconfig \
+        && make CCACHE= CC=gcc CXX=g++ -j "${JOBS}"; \
+    fi \
     && cd /workspace/emulator \
-    && EMU_THREADS="${JOBS}" ./build-sim.sh xiangshan.KunminghuV2Config -j "${JOBS}" \
+    && ./build-sim.sh xiangshan.KunminghuV2Config -j "${JOBS}" \
     && ccache --show-stats
 
 FROM xiangshan-ready AS final
