@@ -7,6 +7,7 @@ ARG LLVM_CMAKE_BUILD_TYPE=Debug
 ARG LLVM_REPO_URL=https://github.com/cheolwanpark/llvm-project-vplan-experiment.git
 ARG LLVM_REPO_REF=vplans-measure
 ARG MILL_VERSION=0.12.3
+ARG TEMURIN_JRE_URL=https://api.adoptium.net/v3/binary/latest/21/ga/linux/x64/jre/hotspot/normal/eclipse
 
 FROM --platform=${TARGETPLATFORM} ubuntu:24.04 AS base
 
@@ -57,11 +58,15 @@ RUN chmod +x \
 
 FROM base AS build-base
 
+ARG TEMURIN_JRE_URL
+
 ENV CC=clang \
     CXX=clang++ \
     CCACHE_DIR=/root/.cache/ccache \
     CCACHE_MAXSIZE=20G \
-    CCACHE_NOHASHDIR=true
+    CCACHE_NOHASHDIR=true \
+    JAVA_HOME=/opt/java/openjdk \
+    PATH=/opt/java/openjdk/bin:${PATH}
 
 # Keep the Docker image focused on the headless LLVM + XiangShan toolchain.
 RUN --mount=type=cache,id=apt-cache,target=/var/cache/apt,sharing=locked \
@@ -83,7 +88,6 @@ RUN --mount=type=cache,id=apt-cache,target=/var/cache/apt,sharing=locked \
         mold \
         ninja-build \
         numactl \
-        openjdk-21-jdk \
         pkg-config \
         python3-dev \
         python3-pip \
@@ -91,7 +95,11 @@ RUN --mount=type=cache,id=apt-cache,target=/var/cache/apt,sharing=locked \
         verilator \
         zlib1g-dev \
     && ln -sf /usr/bin/ccache /usr/local/bin/clang \
-    && ln -sf /usr/bin/ccache /usr/local/bin/clang++
+    && ln -sf /usr/bin/ccache /usr/local/bin/clang++ \
+    && mkdir -p "${JAVA_HOME}" \
+    && curl -fsSL "${TEMURIN_JRE_URL}" -o /tmp/temurin-jre.tar.gz \
+    && tar -xzf /tmp/temurin-jre.tar.gz -C "${JAVA_HOME}" --strip-components=1 \
+    && rm /tmp/temurin-jre.tar.gz
 
 FROM build-base AS llvm-builder
 
