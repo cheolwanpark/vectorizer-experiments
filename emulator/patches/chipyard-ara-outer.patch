@@ -1,0 +1,12 @@
+diff --git a/ara_files.f b/ara_files.f
+index b35fb45..7e9da75 100644
+--- a/ara_files.f
++++ b/ara_files.f
+@@ -4,7 +4,6 @@ hardware/deps/tech_cells_generic/src/rtl/tc_clk.sv
+ hardware/deps/tech_cells_generic/src/deprecated/cluster_pwr_cells.sv
+ hardware/deps/tech_cells_generic/src/deprecated/generic_memory.sv
+ hardware/deps/tech_cells_generic/src/deprecated/generic_rom.sv
+-hardware/deps/tech_cells_generic/src/deprecated/pad_functional.sv
+ hardware/deps/tech_cells_generic/src/deprecated/pulp_buffer.sv
+ hardware/deps/tech_cells_generic/src/deprecated/pulp_pwr_cells.sv
+ hardware/deps/tech_cells_generic/src/tc_pwr.sv

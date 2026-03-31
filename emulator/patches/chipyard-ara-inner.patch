@@ -1,0 +1,100 @@
+diff --git a/Bender.lock b/Bender.lock
+index 4318389f..fc30ee63 100644
+--- a/Bender.lock
++++ b/Bender.lock
+@@ -1,36 +1,36 @@
+ packages:
+   apb:
+-    revision: 77ddf073f194d44b9119949d2421be59789e69ae
+-    version: 0.2.4
++    revision: null
++    version: null
+     source:
+-      Git: https://github.com/pulp-platform/apb.git
++      Path: hardware/deps/apb
+     dependencies:
+     - common_cells
+   axi:
+-    revision: 587355b77b8ce94dcd600efbd5d5bd118ff913a7
+-    version: 0.39.4
++    revision: null
++    version: null
+     source:
+-      Git: https://github.com/pulp-platform/axi.git
++      Path: hardware/deps/axi
+     dependencies:
+     - common_cells
+     - common_verification
+     - tech_cells_generic
+   common_cells:
+-    revision: c27bce39ebb2e6bae52f60960814a2afca7bd4cb
+-    version: 1.37.0
++    revision: null
++    version: null
+     source:
+-      Git: https://github.com/pulp-platform/common_cells.git
++      Path: hardware/deps/common_cells
+     dependencies:
+     - common_verification
+     - tech_cells_generic
+   common_verification:
+-    revision: 9c07fa860593b2caabd9b5681740c25fac04b878
+-    version: 0.2.3
++    revision: null
++    version: null
+     source:
+-      Git: https://github.com/pulp-platform/common_verification.git
++      Path: hardware/deps/common_verification
+     dependencies: []
+   cva6:
+-    revision: f9ebe5006fefe97fc1d2a8b1515fa2fd321fec6d
++    revision: feb5f72b5cafb840388ea85b155dfb4013c1926f
+     version: null
+     source:
+       Git: https://github.com/pulp-platform/cva6.git
+@@ -40,24 +40,24 @@ packages:
+     - fpnew
+     - tech_cells_generic
+   fpnew:
+-    revision: f231041c610f270ffc03cbdac38739ddb6426572
++    revision: null
+     version: null
+     source:
+-      Git: https://github.com/pulp-platform/cvfpu.git
++      Path: hardware/deps/fpnew
+     dependencies:
+     - common_cells
+     - fpu_div_sqrt_mvp
+   fpu_div_sqrt_mvp:
+-    revision: 86e1f558b3c95e91577c41b2fc452c86b04e85ac
+-    version: 1.0.4
++    revision: null
++    version: null
+     source:
+-      Git: https://github.com/pulp-platform/fpu_div_sqrt_mvp.git
++      Path: hardware/deps/fpu_div_sqrt_mvp
+     dependencies:
+     - common_cells
+   tech_cells_generic:
+-    revision: 7968dd6e6180df2c644636bc6d2908a49f2190cf
+-    version: 0.2.13
++    revision: null
++    version: null
+     source:
+-      Git: https://github.com/pulp-platform/tech_cells_generic.git
++      Path: hardware/deps/tech_cells_generic
+     dependencies:
+     - common_verification
+diff --git a/Bender.yml b/Bender.yml
+index 89ef503d..4ba07c4f 100644
+--- a/Bender.yml
++++ b/Bender.yml
+@@ -10,7 +10,7 @@ package:
+ dependencies:
+   axi:                { git: "https://github.com/pulp-platform/axi.git",                version: 0.39.1                               }
+   common_cells:       { git: "https://github.com/pulp-platform/common_cells.git",       version: 1.22.1                               }
+-  cva6:               { git: "https://github.com/pulp-platform/cva6.git",               rev: f9ebe5006fefe97fc1d2a8b1515fa2fd321fec6d } # mp/pulp-v1-araOS
++  cva6:               { git: "https://github.com/pulp-platform/cva6.git",               rev: feb5f72b5cafb840388ea85b155dfb4013c1926f } # mp/pulp-v1-araOS
+   tech_cells_generic: { git: "https://github.com/pulp-platform/tech_cells_generic.git", version: 0.2.13                               }
+   apb:                { git: "https://github.com/pulp-platform/apb.git",                version: 0.2.4                                }
+ 

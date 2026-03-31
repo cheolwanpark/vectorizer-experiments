@@ -1,0 +1,8 @@
+TARGET_ARCH="rv64gcv"
+TARGET_ABI="lp64d"
+TARGET_CC="clang"
+TARGET_CC_FLAGS="--target=riscv64-unknown-elf"
+TARGET_CRT="crt/crt_rv64.S"
+TARGET_LD="link/link_rv64.ld"
+TARGET_SIM="${SPIKE:-${RVV_ROOT}/chipyard/.conda-env/riscv-tools/bin/spike}"
+TARGET_SIM_ARGS="--isa=rv64gcv_zba_zbb -m0x80000000:0x10000000"

@@ -1,0 +1,6 @@
+TARGET_ARCH="rv64gcv"
+TARGET_ABI="lp64d"
+TARGET_CC="clang"
+TARGET_CC_FLAGS="--target=riscv64-unknown-linux-gnu -DTSVC_NO_STDLIB -fno-pie -no-pie"
+TARGET_CRT="crt/crt_gem5.S"
+TARGET_LD=""

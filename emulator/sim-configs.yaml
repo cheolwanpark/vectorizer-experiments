@@ -1,0 +1,71 @@
+{
+  "version": 1,
+  "defaults": {
+    "default_targets": ["gem5", "saturn.REFV512D128RocketConfig", "xiangshan.KunminghuV2Config", "t1"],
+    "chipyard_dir": "chipyard",
+    "gem5_dir": "gem5",
+    "xiangshan_dir": "XiangShan",
+    "t1_dir": "t1-micro58ae",
+    "gem5_venv": ".venv-gem5",
+    "emu_threads": 8,
+    "verilator_threads": 0
+  },
+  "groups": {
+    "gem5": {
+      "kind": "gem5",
+      "description": "Build gem5 (RISCV, opt)"
+    },
+    "saturn": {
+      "kind": "chipyard-verilator",
+      "description": "Build Saturn (Chipyard/Verilator)",
+      "default_config": "saturn",
+      "configs": {
+        "saturn": "REFV512D128RocketConfig",
+        "REFV512D128RocketConfig": "REFV512D128RocketConfig",
+        "REFV512D128SaturnConfig": "REFV512D128SaturnConfig"
+      }
+    },
+    "ara": {
+      "kind": "chipyard-verilator",
+      "description": "Build Ara (Chipyard/Verilator)",
+      "default_config": "ara512",
+      "configs": {
+        "ara512": "V512Ara2LaneRocketConfig",
+        "ara2": "V4096Ara2LaneRocketConfig",
+        "ara4": "V4096Ara4LaneRocketConfig",
+        "V512Ara2LaneRocketConfig": "V512Ara2LaneRocketConfig",
+        "V4096Ara2LaneRocketConfig": "V4096Ara2LaneRocketConfig",
+        "V4096Ara4LaneRocketConfig": "V4096Ara4LaneRocketConfig"
+      }
+    },
+    "xiangshan": {
+      "kind": "xiangshan",
+      "description": "Build XiangShan emu",
+      "default_config": "KunminghuV2Config",
+      "configs": {
+        "MinimalConfig": true,
+        "DefaultConfig": true,
+        "KunminghuV2Config": true
+      }
+    },
+    "t1": {
+      "kind": "t1",
+      "description": "Build T1 via Nix flake",
+      "default_target": ".#t1.blastoise.t1rocketemu.verilator-emu",
+      "targets": {
+        "default": ".#t1.benchmark_dlen256_vlen1024_fp.t1rocketemu.verilator-emu",
+        "blastoise": ".#t1.blastoise.t1rocketemu.verilator-emu",
+        "rookidee": ".#t1.rookidee.t1rocketemu.verilator-emu"
+      }
+    },
+    "vicuna": {
+      "kind": "vicuna",
+      "description": "Vicuna vector coprocessor (Verilator)",
+      "default_config": "512",
+      "configs": {
+        "512": "512",
+        "1024": "1024"
+      }
+    }
+  }
+}

@@ -1,0 +1,26 @@
+LLVM_ROOT ?= $(abspath ../../llvm-build)
+LLVM_BIN  ?= $(LLVM_ROOT)/bin
+RVV_TOOLCHAIN_PREFIX ?= $(abspath ../../..)/riscv-tools-install
+SYSROOT   ?= $(RVV_TOOLCHAIN_PREFIX)/riscv64-unknown-linux-gnu/sysroot
+TARGET    ?= riscv64-unknown-linux-gnu
+MARCH     ?= rv64gcv
+
+CC  = $(LLVM_BIN)/clang -std=c99 -target $(TARGET) -march=$(MARCH) -mabi=lp64d --sysroot=$(SYSROOT) -fuse-ld=lld
+CXX = $(LLVM_BIN)/clang++ -target $(TARGET) -march=$(MARCH) -mabi=lp64d --sysroot=$(SYSROOT) -fuse-ld=lld
+FC  = $(LLVM_BIN)/flang-new
+
+flags = -O3 -fstrict-aliasing -ffp-contract=fast
+vecflags =
+novecflags = -fno-vectorize -fno-slp-vectorize
+omp_flags = -fopenmp
+
+ifdef VEC_REPORT
+vecflags+=-Rpass=loop-vectorize -Rpass-missed=loop-vectorize -Rpass-analysis=loop-vectorize -fno-inline
+endif
+
+ieee_math_flags=
+fast_math_flags=-ffast-math
+
+ifdef PRECISE_MATH
+$(warning No 'precise' math flags for RVV clang!)
+endif

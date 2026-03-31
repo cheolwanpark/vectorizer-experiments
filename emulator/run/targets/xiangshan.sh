@@ -1,0 +1,10 @@
+TARGET_ARCH="rv64gcv"
+TARGET_ABI="lp64d"
+TARGET_CC="clang"
+TARGET_CC_FLAGS="--target=riscv64-unknown-elf"
+TARGET_CRT="crt/crt_rv64.S"
+TARGET_LD="link/link_rv64.ld"
+TARGET_SIM="${RVV_ROOT}/XiangShan/build/emu"
+TARGET_SIM_ARGS="-i"
+TARGET_VLEN=128
+TARGET_NEEDS_BIN=1

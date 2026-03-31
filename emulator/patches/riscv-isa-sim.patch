@@ -1,0 +1,13 @@
+diff --git a/riscv/platform.h b/riscv/platform.h
+index c8a5bf4b..4e766fa3 100644
+--- a/riscv/platform.h
++++ b/riscv/platform.h
+@@ -4,7 +4,7 @@
+ 
+ #define DEFAULT_KERNEL_BOOTARGS "console=ttyS0 earlycon"
+ #define DEFAULT_RSTVEC     0x00001000
+-#define DEFAULT_ISA        "rv64imafdc_zicntr_zihpm"
++#define DEFAULT_ISA        "rv64gcv_zicsr_zifencei_zicntr_zihpm"
+ #define DEFAULT_PRIV       "MSU"
+ #define CLINT_BASE         0x02000000
+ #define CLINT_SIZE         0x000c0000

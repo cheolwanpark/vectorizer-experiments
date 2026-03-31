@@ -1,0 +1,281 @@
+diff --git a/disable-chaining/nix/t1/conversion/sv-to-verilator-emulator.nix b/disable-chaining/nix/t1/conversion/sv-to-verilator-emulator.nix
+index c168f4f..97549d1 100644
+--- a/disable-chaining/nix/t1/conversion/sv-to-verilator-emulator.nix
++++ b/disable-chaining/nix/t1/conversion/sv-to-verilator-emulator.nix
+@@ -20,7 +20,7 @@ assert lib.assertMsg (builtins.typeOf vsrc == "list") "vsrc should be a list of
+ 
+ let
+   verilatorFilelist = "${rtl}/filelist.f";
+-  verilatorThreads = 4;
++  verilatorThreads = 48;
+   verilatorArgs =
+     [
+       "--cc"
+diff --git a/disable-chaining/t1/src/T1.scala b/disable-chaining/t1/src/T1.scala
+index 82ebe2c..88fc63c 100644
+--- a/disable-chaining/t1/src/T1.scala
++++ b/disable-chaining/t1/src/T1.scala
+@@ -684,8 +684,10 @@ class T1(val parameter: T1Parameter)
+   val completeIndexInstruction: Bool =
+     ohCheck(lsu.lastReport, slots.last.record.instructionIndex, parameter.chainingSize) && !slots.last.state.idle
+ 
++  val freeOR: Bool = VecInit(slots.map(_.state.idle)).asUInt.orR
++
+   /** slot is ready to accept new instructions. */
+-  val slotReady: Bool = VecInit(slots.map(_.state.idle)).asUInt.andR
++  val slotReady: Bool = Mux(specialInstruction, slots.map(_.state.idle).last, freeOR)
+ 
+   val olderCheck: Bool = slots.map { re =>
+     // The same lsb will make it difficult to distinguish between the new and the old
+diff --git a/t1/build.mill b/t1/build.mill
+index 1c67212..12b95b1 100644
+--- a/t1/build.mill
++++ b/t1/build.mill
+@@ -38,7 +38,7 @@ trait Stdlib extends common.StdlibModule with ScalafmtModule {
+ 
+   def mainargsIvy = v.mainargs
+ 
+-  def dwbbIvy: Dep = v.dwbb
++  def dwbbIvy: Option[Dep] = None  // Disabled DWBB, using Chisel native Queue
+ 
+   def chiselModule    = None
+   def chiselPluginJar = None
+diff --git a/t1/common.mill b/t1/common.mill
+index 289a8ed..0d6df71 100644
+--- a/t1/common.mill
++++ b/t1/common.mill
+@@ -148,7 +148,7 @@ trait OMReaderModule extends ScalaModule {
+ }
+ 
+ trait StdlibModule extends ScalaModule with HasChisel {
+-  def dwbbIvy: Dep
++  def dwbbIvy: Option[Dep]
+ 
+-  override def ivyDeps = T(super.ivyDeps() ++ Seq(dwbbIvy))
++  override def ivyDeps = T(super.ivyDeps() ++ dwbbIvy.toSeq)
+ }
+diff --git a/t1/nix/overlay.nix b/t1/nix/overlay.nix
+index 4a3b3fe..dd72e2c 100644
+--- a/t1/nix/overlay.nix
++++ b/t1/nix/overlay.nix
+@@ -17,7 +17,8 @@ rec {
+     let
+       val = builtins.getEnv key;
+     in
+-    if val == "" then builtins.throw "${key} not set or '--impure' not applied" else val;
++    # Allow empty values for optional VCS/DWBB dependencies
++    val;
+ 
+   espresso = final.callPackage ./pkgs/espresso.nix { };
+   dramsim3 = final.callPackage ./pkgs/dramsim3.nix { };
+diff --git a/t1/nix/pkgs/snps-fhs-env.nix b/t1/nix/pkgs/snps-fhs-env.nix
+index 40ded1c..ef33ae3 100644
+--- a/t1/nix/pkgs/snps-fhs-env.nix
++++ b/t1/nix/pkgs/snps-fhs-env.nix
+@@ -28,26 +28,30 @@ lockedPkgs.buildFHSEnv {
+   name = "snps-fhs-env";
+ 
+   profile = ''
+-    [ ! -e "${vcStaticHome}"  ] && echo "env VC_STATIC_HOME='${vcStaticHome}' points to unknown location" && exit 1
+-    [ ! -d "${vcStaticHome}"  ] && echo "VC_STATIC_HOME='${vcStaticHome}' not accessible" && exit 1
++    # Allow building without VCS for Verilator-only builds
++    if [ -n "${vcStaticHome}" ] && [ "${vcStaticHome}" != "" ]; then
++      [ ! -e "${vcStaticHome}"  ] && echo "env VC_STATIC_HOME='${vcStaticHome}' points to unknown location" && exit 1
++      [ ! -d "${vcStaticHome}"  ] && echo "VC_STATIC_HOME='${vcStaticHome}' not accessible" && exit 1
++      export VC_STATIC_HOME=${vcStaticHome}
++    fi
+ 
+-    export VC_STATIC_HOME=${vcStaticHome}
++    if [ -n "${vcStaticHome}" ] && [ "${vcStaticHome}" != "" ]; then
++      export TCL_TZ=UTC
++      export VCS_HOME=$VC_STATIC_HOME/vcs-mx
++      export VCS_TARGET_ARCH=amd64
++      export VCS_ARCH_OVERRIDE=linux
++      export VERDI_HOME=$VC_STATIC_HOME/verdi
++      export NOVAS_HOME=$VC_STATIC_HOME/verdi
++      export SPYGLASS_HOME=$VC_STATIC_HOME/SG_COMPAT/SPYGLASS_HOME
++      export SNPS_VERDI_CBUG_LCA=1
++      export SNPSLMD_LICENSE_FILE=${snpslmdLicenseFile}
++      export DWBB_DIR=${dwbb}
+ 
+-    export TCL_TZ=UTC
+-    export VCS_HOME=$VC_STATIC_HOME/vcs-mx
+-    export VCS_TARGET_ARCH=amd64
+-    export VCS_ARCH_OVERRIDE=linux
+-    export VERDI_HOME=$VC_STATIC_HOME/verdi
+-    export NOVAS_HOME=$VC_STATIC_HOME/verdi
+-    export SPYGLASS_HOME=$VC_STATIC_HOME/SG_COMPAT/SPYGLASS_HOME
+-    export SNPS_VERDI_CBUG_LCA=1
+-    export SNPSLMD_LICENSE_FILE=${snpslmdLicenseFile}
+-    export DWBB_DIR=${dwbb}
+-
+-    export PATH=$VC_STATIC_HOME/bin:$PATH
+-    export PATH=$VC_STATIC_HOME/verdi/bin:$PATH
+-    export PATH=$VC_STATIC_HOME/vcs-mx/bin:$PATH
+-    export PATH=$VC_STATIC_HOME/SG_COMPAT/SPYGLASS_HOME/bin:$PATH
++      export PATH=$VC_STATIC_HOME/bin:$PATH
++      export PATH=$VC_STATIC_HOME/verdi/bin:$PATH
++      export PATH=$VC_STATIC_HOME/vcs-mx/bin:$PATH
++      export PATH=$VC_STATIC_HOME/SG_COMPAT/SPYGLASS_HOME/bin:$PATH
++    fi
+ 
+     export _oldVcsEnvPath="$PATH"
+     preHook() {
+diff --git a/t1/nix/t1/conversion/sv-to-verilator-emulator.nix b/t1/nix/t1/conversion/sv-to-verilator-emulator.nix
+index c168f4f..3601cf6 100644
+--- a/t1/nix/t1/conversion/sv-to-verilator-emulator.nix
++++ b/t1/nix/t1/conversion/sv-to-verilator-emulator.nix
+@@ -20,7 +20,7 @@ assert lib.assertMsg (builtins.typeOf vsrc == "list") "vsrc should be a list of
+ 
+ let
+   verilatorFilelist = "${rtl}/filelist.f";
+-  verilatorThreads = 4;
++  verilatorThreads = 48;
+   verilatorArgs =
+     [
+       "--cc"
+@@ -31,8 +31,9 @@ let
+       "--threads"
+       (toString verilatorThreads)
+       "-O1"
+-      "-y"
+-      "$DWBB_DIR/sim_ver"
++      # DWBB dependency removed - using Chisel native Queue
++      # "-y"
++      # "$DWBB_DIR/sim_ver"
+       "-Wno-lint"
+       "+define+PRINTF_FD=t1_common_pkg::log_fd"
+     ]
+@@ -69,7 +70,8 @@ let
+     buildPhase = ''
+       runHook preBuild
+ 
+-      DWBB_DIR=$(${snps-fhs-env}/bin/snps-fhs-env -c "echo \$DWBB_DIR")
++      # DWBB_DIR removed - no longer needed
++      # DWBB_DIR=$(${snps-fhs-env}/bin/snps-fhs-env -c "echo \$DWBB_DIR")
+ 
+       verilatorPhase="verilator ${lib.escapeShellArgs verilatorArgs}"
+       echo "[nix] running verilator: $verilatorPhase"
+diff --git a/t1/stdlib/src/Queue.scala b/t1/stdlib/src/Queue.scala
+index cb586ab..4a715a4 100644
+--- a/t1/stdlib/src/Queue.scala
++++ b/t1/stdlib/src/Queue.scala
+@@ -1,11 +1,8 @@
+ package org.chipsalliance.dwbb.stdlib.queue
+ 
+ import chisel3._
+-import chisel3.experimental.hierarchy.Instantiate
+-import org.chipsalliance.dwbb.wrapper.DW_fifo_s1_sf.{DW_fifo_s1_sf => DwbbFifo}
+-import org.chipsalliance.dwbb.interface.DW_fifo_s1_sf.{Interface => DwbbFifoInterface, Parameter => DwbbFifoParameter}
+-import chisel3.ltl.AssertProperty
+ import chisel3.util.{Decoupled, DecoupledIO, DeqIO, EnqIO, ReadyValidIO}
++import chisel3.util.{Queue => ChiselQueue}
+ 
+ class QueueIO[T <: Data](private val gen: T, entries: Int) extends Bundle {
+   val enq = Flipped(EnqIO(gen))
+@@ -51,81 +48,30 @@ object Queue {
+ 
+     val io = Wire(new QueueIO(gen, entries))
+ 
+-    if (entries == 1) {
+-      val data  = if (resetMem) RegInit(0.U.asTypeOf(gen)) else Reg(gen)
+-      val empty = RegInit(true.B)
+-      val full  = !empty
+-
+-      val push = io.enq.fire && (if (flow) !(empty && io.deq.ready) else true.B)
+-      io.enq.ready := empty || (if (pipe) io.deq.ready else false.B)
+-      data         := Mux(push, io.enq.bits, data)
+-
+-      val pop = io.deq.ready && full
+-      io.deq.valid := full || (if (flow) io.enq.valid else false.B)
+-      io.deq.bits  := (if (flow) Mux(empty, io.enq.bits, data) else data)
+-
+-      empty := Mux(push =/= pop, pop, empty)
+-
+-      io.empty := empty
+-      io.full  := full
+-    } else {
+-      require(
+-        Range.inclusive(1, entries - 1).contains(almostEmptyLevel),
+-        "almost empty level must be between 1 and entries-1"
+-      )
+-      require(
+-        Range.inclusive(1, entries - 1).contains(almostFullLevel),
+-        "almost full level must be between 1 and entries-1"
+-      )
+-
+-      val clock = Module.clock
+-      val reset = Module.reset
+-
+-      // TODO: use sync reset for now and wait for t1 to migrate to FixedIOModule
+-      // require(reset.typeName == "Bool" || reset.typeName == "AsyncReset")
+-      val useAsyncReset = reset.typeName == "AsyncReset"
+-
+-      val fifo = Instantiate(
+-        new DwbbFifo(
+-          new DwbbFifoParameter(
+-            width = gen.getWidth,
+-            depth = entries,
+-            aeLevel = almostEmptyLevel,
+-            afLevel = almostFullLevel,
+-            errMode = "unlatched",
+-            rstMode = (useAsyncReset, resetMem) match {
+-              case (false, false) => "sync_wo_mem"
+-              case (false, true)  => "sync_with_mem"
+-              case (true, false)  => "async_wo_mem"
+-              case (true, true)   => "async_with_mem"
+-            }
+-          )
+-        )
+-      )
+-
+-      val dataIn  = io.enq.bits.asUInt
+-      val dataOut = fifo.io.data_out.asTypeOf(io.deq.bits)
+-
+-      fifo.io.clk   := clock
+-      fifo.io.rst_n := ~(reset.asBool)
+-
+-      fifo.io.diag_n := ~(false.B)
+-
+-      io.enq.ready       := !fifo.io.full || (if (pipe) io.deq.ready else false.B)
+-      fifo.io.push_req_n := ~(io.enq.fire && (if (flow) !(fifo.io.empty && io.deq.ready) else true.B))
+-      fifo.io.data_in    := dataIn
+-
+-      io.deq.valid      := !fifo.io.empty || (if (flow) io.enq.valid else false.B)
+-      fifo.io.pop_req_n := ~(io.deq.ready && !fifo.io.empty)
+-      io.deq.bits       := (if (flow) Mux(fifo.io.empty, io.enq.bits, dataOut) else dataOut)
+-
+-      io.empty           := fifo.io.empty
+-      io.full            := fifo.io.full
+-      io.almostEmpty.get := fifo.io.almost_empty
+-      io.almostFull.get  := fifo.io.almost_full
+-
+-      // There should be no error since we guarantee to push/pop items only when the fifo is neither empty nor full.
+-      AssertProperty(!fifo.io.error)
++    // Use Chisel's standard Queue implementation
++    val q = Module(new ChiselQueue(gen, entries, pipe = pipe, flow = flow))
++
++    // Connect enqueue side
++    q.io.enq.valid := io.enq.valid
++    q.io.enq.bits := io.enq.bits
++    io.enq.ready := q.io.enq.ready
++
++    // Connect dequeue side
++    io.deq.valid := q.io.deq.valid
++    io.deq.bits := q.io.deq.bits
++    q.io.deq.ready := io.deq.ready
++
++    // Empty/full signals
++    io.empty := !q.io.deq.valid
++    io.full := !q.io.enq.ready
++
++    // Almost empty/full signals (approximations based on count if available)
++    if (entries >= 2) {
++      // Note: ChiselQueue doesn't directly expose count, so we approximate
++      // almost empty as same as empty, almost full as same as full
++      // This is a simplification that may not match DWBB behavior exactly
++      io.almostEmpty.get := q.io.count <= almostEmptyLevel.U
++      io.almostFull.get := q.io.count >= (entries - almostFullLevel).U
+     }
+ 
+     io

@@ -1,0 +1,11 @@
+TARGET_ARCH="rv32gc_zve32f_zvl2048b"
+TARGET_ABI="ilp32f"
+TARGET_CC="nix-clang"
+TARGET_CC_FLAGS=""
+TARGET_CRT="crt/crt_t1.S"
+TARGET_LD="link/link_t1.ld"
+TARGET_SIM="${RVV_ROOT}/t1-micro58ae/result/bin/t1rocketemu-verilated-simulator"
+TARGET_SIM_ARGS=""
+TARGET_VLEN=2048
+TARGET_NIX=1
+TARGET_T1_ROOT="${RVV_ROOT}/t1-micro58ae"

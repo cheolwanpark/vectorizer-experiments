@@ -1,0 +1,16 @@
+__pycache__/
+*.pyc
+
+sim-logs/
+run/out/
+benchmarks/microbenchmark/out/
+
+mmio-event.jsonl
+sim-results.csv
+sim_result.json
+
+results/*.csv
+results/vectorization/*.csv
+results/vectorization/saturn/
+results/vectorization/t1/
+results/vectorization/xiangshan/

@@ -1,0 +1,20 @@
+diff --git a/sims/verilator/Makefile b/sims/verilator/Makefile
+index 51a14af4..22b62680 100644
+--- a/sims/verilator/Makefile
++++ b/sims/verilator/Makefile
+@@ -117,6 +117,7 @@ VERILOG_IP_VERILATOR_FLAGS := \
+ 	-Wno-UNOPTFLAT \
+ 	-Wno-BLKANDNBLK \
+ 	-Wno-style \
++	-Wno-ENUMVALUE \
+ 	-Wall
+ 
+ # normal flags used for chipyard builds (that are incompatible with vlog ip aka cva6/NVDLA)
+@@ -133,6 +134,7 @@ PLATFORM_OPTS = $(shell \
+ # Use --timescale to approximate timescale behavior of pre-4.034
+ TIMESCALE_OPTS := $(shell verilator --version | perl -lne 'if (/(\d.\d+)/ && $$1 >= 4.034) { print "--timescale 1ns/1ps"; }')
+ 
++
+ # see: https://github.com/ucb-bar/riscv-mini/issues/31
+ MAX_WIDTH_OPTS = $(shell verilator --version | perl -lne 'if (/(\d.\d+)/ && $$1 > 4.016) { print "--max-num-width 1048576"; }')
+ 

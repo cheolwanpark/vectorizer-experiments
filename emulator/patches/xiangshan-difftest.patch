@@ -1,0 +1,66 @@
+diff --git a/src/test/csrc/verilator/verilator.h b/src/test/csrc/verilator/verilator.h
+index b8d47933..8abcbdea 100644
+--- a/src/test/csrc/verilator/verilator.h
++++ b/src/test/csrc/verilator/verilator.h
+@@ -28,7 +28,7 @@ private:
+   VSimTop *dut;
+ 
+ #if VM_TRACE == 1
+-  TraceBindFunc trace_bind = [this](VerilatedTraceBaseC *tfp, int levels) { this->dut->trace(tfp, levels); };
++  TraceBindFunc trace_bind = [this](auto *tfp, int levels) { this->dut->trace(tfp, levels); };
+   EmuWaveform *waveform = nullptr;
+ #endif // VM_TRACE == 1
+ 
+diff --git a/src/test/csrc/verilator/waveform.h b/src/test/csrc/verilator/waveform.h
+index 9cfd2adc..679f5353 100644
+--- a/src/test/csrc/verilator/waveform.h
++++ b/src/test/csrc/verilator/waveform.h
+@@ -17,13 +17,18 @@
+ #define __WAVEFORM_H
+ 
+ #include "verilated.h"
++#include <functional>
+ #ifdef ENABLE_FST
+ #include <verilated_fst_c.h>
+ #else
+ #include <verilated_vcd_c.h>
+ #endif // ENABLE_FST
+ 
+-using TraceBindFunc = std::function<void(VerilatedTraceBaseC *, int)>;
++#ifdef ENABLE_FST
++using TraceBindFunc = std::function<void(VerilatedFstC *, int)>;
++#else
++using TraceBindFunc = std::function<void(VerilatedVcdC *, int)>;
++#endif
+ 
+ class EmuWaveform {
+ private:
+diff --git a/verilator.mk b/verilator.mk
+index f68693bc..da4168c3 100644
+--- a/verilator.mk
++++ b/verilator.mk
+@@ -88,8 +88,8 @@ VERILATOR_FLAGS_ALL =               \
+   -Wno-STMTDLY -Wno-WIDTH           \
+   --max-num-width 150000            \
+   --assert --x-assign unique        \
+-  --output-split 30000              \
+-  --output-split-cfuncs 30000       \
++  --output-split 10000              \
++  --output-split-cfuncs 100         \
+   -I$(RTL_DIR)                      \
+   -I$(GEN_VSRC_DIR)                 \
+   -CFLAGS "$(VERILATOR_CXXFLAGS)"   \
+@@ -125,10 +125,12 @@ endif
+ EMU_COMPILE_FILTER =
+ # 2> $(BUILD_DIR)/g++.err.log | tee $(BUILD_DIR)/g++.out.log | grep 'g++' | awk '{print "Compiling/Generating", $$NF}'
+ 
++NPROC ?= $(shell nproc 2>/dev/null || echo 1)
++
+ verilator-build-emu:
+ ifeq ($(REMOTE),localhost)
+ 	@sync -d $(BUILD_DIR) -d $(VERILATOR_BUILD_DIR)
+-	$(TIME_CMD) $(MAKE) -s VM_PARALLEL_BUILDS=1 OPT_SLOW="-O0" \
++	$(TIME_CMD) $(MAKE) -s VM_PARALLEL_BUILDS=1 -j$(NPROC) OPT_SLOW="-O0" \
+ 						OPT_FAST=$(OPT_FAST) \
+ 						PGO_CFLAGS="$(PGO_CFLAGS)" \
+ 						PGO_LDFLAGS="$(PGO_LDFLAGS)" \
