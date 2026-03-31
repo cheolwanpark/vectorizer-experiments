@@ -4,6 +4,8 @@ ARG TARGETPLATFORM=linux/amd64
 ARG GEM5_JOBS=0
 ARG LLVM_JOBS=0
 ARG LLVM_CMAKE_BUILD_TYPE=Debug
+ARG LLVM_REPO_URL=https://github.com/cheolwanpark/llvm-project-vplan-experiment.git
+ARG LLVM_REPO_REF=vplans-measure
 
 FROM --platform=${TARGETPLATFORM} ubuntu:24.04 AS base
 
@@ -105,6 +107,8 @@ FROM build-base AS llvm-builder
 
 ARG LLVM_JOBS=0
 ARG LLVM_CMAKE_BUILD_TYPE=Debug
+ARG LLVM_REPO_URL
+ARG LLVM_REPO_REF
 
 ENV CCACHE_BASEDIR=/workspace/llvm-project \
     CCACHE_COMPILERCHECK=content
@@ -112,6 +116,13 @@ ENV CCACHE_BASEDIR=/workspace/llvm-project \
 WORKDIR /workspace
 
 COPY llvm-project/ /workspace/llvm-project/
+
+RUN if [ -f /workspace/llvm-project/llvm/CMakeLists.txt ]; then \
+        exit 0; \
+    fi \
+    && rm -rf /workspace/llvm-project \
+    && git clone --depth 1 --branch "${LLVM_REPO_REF}" "${LLVM_REPO_URL}" /workspace/llvm-project \
+    && test -f /workspace/llvm-project/llvm/CMakeLists.txt
 
 RUN --mount=type=cache,id=llvm-ccache,target=/root/.cache/ccache,sharing=locked \
     if [ "${LLVM_JOBS}" = "0" ]; then \
