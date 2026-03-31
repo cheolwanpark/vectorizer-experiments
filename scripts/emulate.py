@@ -14,12 +14,14 @@ from pathlib import Path
 DEFAULT_PLATFORM = "linux/amd64"
 CONTAINER_PROJECT_ROOT = Path("/workspace/host-project")
 CONTAINER_OUTPUT_ROOT = Path("/workspace/output")
+CONTAINER_EMULATOR_ROOT = Path("/workspace/emulator")
 RUN_SIM_PATH = Path("/workspace/emulator/run-sim.sh")
+SIM_TARGET = "xiangshan.KunminghuV2Config"
 
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Run one TSVC kernel through gem5 in Docker and write a host-side report."
+        description="Run one TSVC kernel through XiangShan in Docker and write a host-side report."
     )
     parser.add_argument("--bench", required=True, help="Benchmark name, for example s000")
     parser.add_argument("--image", default="vplan-cost-measure:latest", help="Docker image tag")
@@ -87,21 +89,6 @@ def parse_float(text: str) -> float:
     return float(text.strip())
 
 
-def parse_gem5_total_cycles(output_text: str, stats_text: str | None = None) -> int | None:
-    search_space = "\n".join(part for part in (stats_text, output_text) if part)
-    patterns = [
-        r"system\.cpu\.numCycles\s+(\d+)",
-        r"simTicks\s+(\d+)",
-        r"final_tick=(\d+)",
-        r"Exiting @ tick (\d+)",
-    ]
-    for pattern in patterns:
-        match = re.search(pattern, search_space)
-        if match:
-            return int(match.group(1))
-    return None
-
-
 def parse_run_sim_output(text: str) -> dict[str, object]:
     patterns: dict[str, tuple[str, callable]] = {
         "status": (r"^Status:\s+(.+)$", str),
@@ -111,7 +98,7 @@ def parse_run_sim_output(text: str) -> dict[str, object]:
         "total_cycles": (r"^Total sim:\s+([\d,]+)\s+cycles$", parse_int),
         "sim_speed_khz": (r"^Sim speed:\s+([0-9.]+)\s+kHz$", parse_float),
         "run_log": (r"^Log file:\s+(.+)$", str),
-        "sim_out_dir": (r"^Sim out:\s+(.+)$", str),
+        "trace_file": (r"^Trace:\s+(.+)$", str),
     }
     summary: dict[str, object] = {}
     for key, (pattern, caster) in patterns.items():
@@ -132,11 +119,13 @@ def map_container_output_path(path_text: str, host_output_dir: Path) -> Path:
 
 def build_markdown_report(summary: dict[str, object]) -> str:
     forced_vf = summary.get("use_vf") or "default"
+    trace_file = summary.get("trace_file", "n/a")
     lines = [
         f"# Emulate Report: `{summary['benchmark']}`",
         "",
         "| Field | Value |",
         "| --- | --- |",
+        f"| Simulator target | `{summary['simulator_target']}` |",
         f"| Status | `{summary.get('status', 'unknown')}` |",
         f"| Exit code | `{summary.get('exit_code', 'n/a')}` |",
         f"| LEN | `{summary['len_1d']}` |",
@@ -152,7 +141,7 @@ def build_markdown_report(summary: dict[str, object]) -> str:
         f"- Artifacts: `{summary['artifact_dir']}`",
         f"- Container log: `{summary['container_log']}`",
         f"- Run log: `{summary.get('run_log', 'n/a')}`",
-        f"- gem5 out: `{summary.get('gem5_out_dir', 'n/a')}`",
+        f"- Trace: `{trace_file}`",
         "",
         "## Command",
         "",
@@ -168,6 +157,7 @@ def print_summary(summary: dict[str, object]) -> None:
     forced_vf = summary.get("use_vf") or "default"
     lines = [
         f"Benchmark:  {summary['benchmark']}",
+        f"Target:     {summary['simulator_target']}",
         f"Status:     {summary.get('status', 'unknown')}",
         f"Forced VF:  {forced_vf}",
         f"Kernel:     {summary.get('kernel_cycles', 'n/a')} cycles",
@@ -193,9 +183,7 @@ def main() -> None:
         log_root = (root / log_root).resolve()
     out_dir = timestamp_dir(log_root, args.bench)
     logs_dir = out_dir / "logs"
-    gem5_dir = out_dir / "gem5"
     logs_dir.mkdir(parents=True, exist_ok=True)
-    gem5_dir.mkdir(parents=True, exist_ok=True)
 
     container_log = out_dir / "container.log"
     command_file = out_dir / "command.txt"
@@ -213,29 +201,30 @@ def main() -> None:
         "-v",
         f"{out_dir}:{CONTAINER_OUTPUT_ROOT}",
         "-v",
-        f"{root / 'emulator' / 'run-sim.sh'}:{Path('/workspace/emulator/run-sim.sh')}:ro",
+        f"{root / 'emulator' / 'run-sim.sh'}:{RUN_SIM_PATH}:ro",
         "-v",
-        f"{root / 'emulator' / 'run' / 'build-kernel'}:{Path('/workspace/emulator/run/build-kernel')}:ro",
+        f"{root / 'emulator' / 'sim-configs.yaml'}:{CONTAINER_EMULATOR_ROOT / 'sim-configs.yaml'}:ro",
         "-v",
-        f"{root / 'emulator' / 'run' / 'common' / 'types.h'}:{Path('/workspace/emulator/run/common/types.h')}:ro",
+        f"{root / 'emulator' / 'run' / 'build-kernel'}:{CONTAINER_EMULATOR_ROOT / 'run' / 'build-kernel'}:ro",
         "-v",
-        f"{root / 'emulator' / 'run' / 'common' / 'harness_gem5.c'}:{Path('/workspace/emulator/run/common/harness_gem5.c')}:ro",
+        f"{root / 'emulator' / 'run' / 'common'}:{CONTAINER_EMULATOR_ROOT / 'run' / 'common'}:ro",
         "-v",
-        f"{root / 'emulator' / 'run' / 'crt' / 'crt_gem5.S'}:{Path('/workspace/emulator/run/crt/crt_gem5.S')}:ro",
+        f"{root / 'emulator' / 'run' / 'crt'}:{CONTAINER_EMULATOR_ROOT / 'run' / 'crt'}:ro",
         "-v",
-        f"{root / 'emulator' / 'run' / 'targets' / 'gem5.sh'}:{Path('/workspace/emulator/run/targets/gem5.sh')}:ro",
+        f"{root / 'emulator' / 'run' / 'link'}:{CONTAINER_EMULATOR_ROOT / 'run' / 'link'}:ro",
+        "-v",
+        f"{root / 'emulator' / 'run' / 'targets'}:{CONTAINER_EMULATOR_ROOT / 'run' / 'targets'}:ro",
         args.image,
         "bash",
         "-lc",
         (
-            f"cd /workspace/emulator && "
-            f"python3 {shlex.quote(str(RUN_SIM_PATH))} gem5 "
+            f"cd {shlex.quote(str(CONTAINER_EMULATOR_ROOT))} && "
+            f"python3 {shlex.quote(str(RUN_SIM_PATH))} {SIM_TARGET} "
             f"{shlex.quote(str(CONTAINER_PROJECT_ROOT / source.relative_to(root)))} "
             f"--len={args.len} --lmul={args.lmul} "
             f"{f'--use-vf={args.use_vf} ' if args.use_vf is not None else ''}"
             f"--timeout={args.timeout} "
-            f"--log-dir={shlex.quote(str(CONTAINER_OUTPUT_ROOT / 'logs'))} "
-            f"--sim-out-dir={shlex.quote(str(CONTAINER_OUTPUT_ROOT / 'gem5'))}"
+            f"--log-dir={shlex.quote(str(CONTAINER_OUTPUT_ROOT / 'logs'))}"
         ),
     ]
 
@@ -257,17 +246,16 @@ def main() -> None:
         if "run_log" in parsed
         else None
     )
-    sim_out_dir = (
-        map_container_output_path(str(parsed["sim_out_dir"]), out_dir)
-        if "sim_out_dir" in parsed
-        else gem5_dir
+    trace_file = (
+        map_container_output_path(str(parsed["trace_file"]), out_dir)
+        if "trace_file" in parsed
+        else None
     )
-    stats_path = gem5_dir / "stats.txt"
-    stats_text = stats_path.read_text(encoding="utf-8") if stats_path.exists() else None
 
     summary: dict[str, object] = {
         "benchmark": args.bench,
         "image": args.image,
+        "simulator_target": SIM_TARGET,
         "len_1d": args.len,
         "lmul": args.lmul,
         "use_vf": args.use_vf,
@@ -277,13 +265,12 @@ def main() -> None:
         "exit_code": parsed.get("exit_code", result.returncode),
         "wall_time_s": parsed.get("wall_time_s"),
         "kernel_cycles": parsed.get("kernel_cycles"),
-        "total_cycles": parsed.get("total_cycles") or parse_gem5_total_cycles(combined_output, stats_text),
+        "total_cycles": parsed.get("total_cycles"),
         "sim_speed_khz": parsed.get("sim_speed_khz"),
         "artifact_dir": str(out_dir),
         "container_log": str(container_log),
         "run_log": str(run_log) if run_log else None,
-        "gem5_out_dir": str(sim_out_dir),
-        "gem5_stats": str(stats_path) if stats_path.exists() else None,
+        "trace_file": str(trace_file) if trace_file else None,
         "report_file": str(report_file),
         "docker_command": docker_command,
         "source": str(source),

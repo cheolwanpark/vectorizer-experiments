@@ -19,12 +19,12 @@ BENCH := $(firstword $(filter s%,$(MAKECMDGOALS)))
 
 help:
 	@echo "Targets:"
-	@echo "  make emulate sXXX [IMAGE=...] [LEN=4096] [LMUL=1] [USE_VF=4] [TIMEOUT=120] [LOG_ROOT=artifacts/emulate]"
+	@echo "  make emulate sXXX [IMAGE=...] [LEN=4096] [LMUL=1] [USE_VF=4] [TIMEOUT=120] [LOG_ROOT=artifacts/emulate]   # XiangShan"
 	@echo "  make vplan-explain sXXX [IMAGE=...] [PLATFORM=linux/amd64] [ARCH=RVV|MAC] [VLEN=128|256|512...] [LLVM_CUSTOM=/path/to/llvm-or-bin] [VF_USE='fixed:2'] [VPLAN_LOG_ROOT=artifacts/vplan-explain]"
 
 emulate:
 	@if [ -z "$(BENCH)" ]; then \
-		echo "usage: make emulate sXXX [IMAGE=...] [LEN=4096] [LMUL=1] [USE_VF=4] [TIMEOUT=120] [LOG_ROOT=artifacts/emulate]" >&2; \
+		echo "usage: make emulate sXXX [IMAGE=...] [LEN=4096] [LMUL=1] [USE_VF=4] [TIMEOUT=120] [LOG_ROOT=artifacts/emulate]   # XiangShan" >&2; \
 		exit 2; \
 	fi
 	@$(PYTHON) scripts/emulate.py --bench "$(BENCH)" --image "$(IMAGE)" --len "$(LEN)" --lmul "$(LMUL)" $(if $(strip $(USE_VF)),--use-vf "$(USE_VF)",) --timeout "$(TIMEOUT)" --log-root "$(LOG_ROOT)"

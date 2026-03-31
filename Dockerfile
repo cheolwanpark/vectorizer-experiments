@@ -1,11 +1,12 @@
 # syntax=docker/dockerfile:1.7
 
 ARG TARGETPLATFORM=linux/amd64
-ARG GEM5_JOBS=0
+ARG XIANGSHAN_JOBS=0
 ARG LLVM_JOBS=0
 ARG LLVM_CMAKE_BUILD_TYPE=Debug
 ARG LLVM_REPO_URL=https://github.com/cheolwanpark/llvm-project-vplan-experiment.git
 ARG LLVM_REPO_REF=vplans-measure
+ARG MILL_VERSION=0.12.3
 
 FROM --platform=${TARGETPLATFORM} ubuntu:24.04 AS base
 
@@ -40,7 +41,7 @@ WORKDIR /workspace/emulator
 COPY emulator/scripts/bootstrap-submodules.sh /workspace/emulator/scripts/bootstrap-submodules.sh
 
 RUN chmod +x /workspace/emulator/scripts/bootstrap-submodules.sh \
-    && /workspace/emulator/scripts/bootstrap-submodules.sh
+    && BOOTSTRAP_PROFILE=xiangshan /workspace/emulator/scripts/bootstrap-submodules.sh
 
 FROM submodules AS emulator-src
 
@@ -50,7 +51,6 @@ COPY emulator/ /workspace/emulator/
 
 RUN chmod +x \
         /workspace/emulator/build.sh \
-        /workspace/emulator/build_gem5.sh \
         /workspace/emulator/build-sim.sh \
         /workspace/emulator/run-sim.sh \
         /workspace/emulator/scripts/bootstrap-submodules.sh
@@ -63,8 +63,7 @@ ENV CC=clang \
     CCACHE_MAXSIZE=20G \
     CCACHE_NOHASHDIR=true
 
-# Keep the Docker image focused on the headless LLVM + gem5 toolchain.
-# RTL bring-up dependencies stay on the host instead of inflating the default image.
+# Keep the Docker image focused on the headless LLVM + XiangShan toolchain.
 RUN --mount=type=cache,id=apt-cache,target=/var/cache/apt,sharing=locked \
     --mount=type=cache,id=apt-lists,target=/var/lib/apt/lists,sharing=locked \
     apt-get -o Acquire::Retries=5 -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 -o Dpkg::Use-Pty=0 update \
@@ -77,28 +76,19 @@ RUN --mount=type=cache,id=apt-cache,target=/var/cache/apt,sharing=locked \
         ccache \
         clang \
         cmake \
-        libboost-all-dev \
-        libcapstone-dev \
-        libgmp-dev \
-        libgoogle-perftools-dev \
-        libhdf5-dev \
-        libmpc-dev \
-        libmpfr-dev \
-        libpng-dev \
-        libprotobuf-dev \
-        libreadline-dev \
-        libsdl2-dev \
-        libsqlite3-dev \
-        libzstd-dev \
+        flex \
+        bison \
+        bc \
         lld \
         mold \
         ninja-build \
+        numactl \
+        openjdk-21-jdk \
         pkg-config \
-        protobuf-compiler \
         python3-dev \
         python3-pip \
         python3-venv \
-        scons \
+        verilator \
         zlib1g-dev \
     && ln -sf /usr/bin/ccache /usr/local/bin/clang \
     && ln -sf /usr/bin/ccache /usr/local/bin/clang++
@@ -162,11 +152,12 @@ RUN --mount=type=cache,id=llvm-ccache,target=/root/.cache/ccache,sharing=locked 
         -j "${JOBS}" \
     && ccache --show-stats
 
-FROM build-base AS gem5-ready
+FROM build-base AS xiangshan-ready
 
-ARG GEM5_JOBS=0
+ARG XIANGSHAN_JOBS=0
+ARG MILL_VERSION
 
-ENV CCACHE_BASEDIR=/workspace/emulator/gem5 \
+ENV CCACHE_BASEDIR=/workspace/emulator/XiangShan \
     CCACHE_COMPILERCHECK=content \
     PATH=/workspace/llvm-build/bin:${PATH}
 
@@ -187,15 +178,28 @@ RUN ln -sf "${LLVM_BUILD_DIR}/bin/opt" /usr/local/bin/opt-vplan \
     && printf 'alias llvm-extract-vplan=\"%s/bin/llvm-extract\"\n' "${LLVM_BUILD_DIR}" >> /etc/bash.bashrc \
     && printf 'alias llc-vplan=\"%s/bin/llc\"\n' "${LLVM_BUILD_DIR}" >> /etc/bash.bashrc
 
-RUN --mount=type=cache,id=gem5-ccache,target=/root/.cache/ccache,sharing=locked \
-    if [ "${GEM5_JOBS}" = "0" ]; then \
+RUN --mount=type=cache,id=xiangshan-ccache,target=/root/.cache/ccache,sharing=locked \
+    if [ "${XIANGSHAN_JOBS}" = "0" ]; then \
         export JOBS="$(getconf _NPROCESSORS_ONLN 2>/dev/null || echo 1)"; \
     else \
-        export JOBS="${GEM5_JOBS}"; \
+        export JOBS="${XIANGSHAN_JOBS}"; \
     fi \
-    && ./build_gem5.sh -j "${JOBS}" \
+    && curl -fsSL "https://repo1.maven.org/maven2/com/lihaoyi/mill-dist/${MILL_VERSION}/mill-dist-${MILL_VERSION}.jar" -o /usr/local/bin/mill \
+    && chmod +x /usr/local/bin/mill \
+    && ln -sfn ../build /workspace/emulator/XiangShan/difftest/build \
+    && git -C /workspace/emulator/XiangShan submodule update --init --recursive -- difftest \
+    && (git -C /workspace/emulator/XiangShan/difftest apply --check /workspace/emulator/patches/xiangshan-difftest.patch 2>/dev/null \
+        && git -C /workspace/emulator/XiangShan/difftest apply /workspace/emulator/patches/xiangshan-difftest.patch \
+        || true) \
+    && export NEMU_HOME=/workspace/emulator/third-party/NEMU \
+    && export AM_HOME=/workspace/emulator/third-party/nexus-am \
+    && cd /workspace/emulator/third-party/NEMU \
+    && make riscv64-xs-kunminghu-v3-ref_defconfig \
+    && make -j "${JOBS}" \
+    && cd /workspace/emulator \
+    && EMU_THREADS="${JOBS}" ./build-sim.sh xiangshan.KunminghuV2Config -j "${JOBS}" \
     && ccache --show-stats
 
-FROM gem5-ready AS final
+FROM xiangshan-ready AS final
 
 CMD ["/bin/bash"]

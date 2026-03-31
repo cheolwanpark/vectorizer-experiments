@@ -36,13 +36,28 @@ ensure_repo() {
 }
 
 main() {
-    ensure_repo "chipyard" "https://github.com/ucb-bar/chipyard.git"
-    ensure_repo "gem5" "https://github.com/gem5/gem5.git"
-    ensure_repo "llvm-project" "https://github.com/llvm/llvm-project.git"
-    ensure_repo "XiangShan" "https://github.com/OpenXiangShan/XiangShan.git"
-    ensure_repo "t1-micro58ae" "https://github.com/chipsalliance/t1.git"
-    ensure_repo "third-party/NEMU" "https://github.com/OpenXiangShan/NEMU.git"
-    ensure_repo "third-party/nexus-am" "https://github.com/OpenXiangShan/nexus-am.git"
+    local profile="${BOOTSTRAP_PROFILE:-all}"
+
+    case "${profile}" in
+        all)
+            ensure_repo "chipyard" "https://github.com/ucb-bar/chipyard.git"
+            ensure_repo "gem5" "https://github.com/gem5/gem5.git"
+            ensure_repo "llvm-project" "https://github.com/llvm/llvm-project.git"
+            ensure_repo "XiangShan" "https://github.com/OpenXiangShan/XiangShan.git"
+            ensure_repo "t1-micro58ae" "https://github.com/chipsalliance/t1.git"
+            ensure_repo "third-party/NEMU" "https://github.com/OpenXiangShan/NEMU.git"
+            ensure_repo "third-party/nexus-am" "https://github.com/OpenXiangShan/nexus-am.git"
+            ;;
+        xiangshan)
+            ensure_repo "XiangShan" "https://github.com/OpenXiangShan/XiangShan.git"
+            ensure_repo "third-party/NEMU" "https://github.com/OpenXiangShan/NEMU.git"
+            ensure_repo "third-party/nexus-am" "https://github.com/OpenXiangShan/nexus-am.git"
+            ;;
+        *)
+            log ERROR "Unknown BOOTSTRAP_PROFILE: ${profile}"
+            exit 2
+            ;;
+    esac
 }
 
 main "$@"
