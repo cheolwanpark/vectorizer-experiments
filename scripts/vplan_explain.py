@@ -8,12 +8,18 @@ import subprocess
 import sys
 from pathlib import Path
 
+try:
+    import benchmark_sources
+except ModuleNotFoundError:
+    from scripts import benchmark_sources
+
 DEFAULT_IMAGE = "vplan-cost-measure:latest"
 DEFAULT_PLATFORM = "linux/amd64"
 DEFAULT_OUTPUT_ROOT = "artifacts/vplan-explain"
 CONTAINER_PROJECT_ROOT = Path("/workspace/host-project")
 CONTAINER_OUTPUT_ROOT = Path("/workspace/output")
 CONTAINER_LLVM_CUSTOM_ROOT = Path("/workspace/llvm-custom")
+CONTAINER_RUN_COMMON_ROOT = CONTAINER_PROJECT_ROOT / "emulator" / "run" / "common"
 RVV_IR_TARGET_TRIPLE = "riscv64-unknown-unknown-elf"
 RVV_IR_TARGET_DATALAYOUT = "e-m:e-p:64:64-i64:64-i128:128-n32:64-S128"
 PREVEC_ARGS = (
@@ -104,13 +110,6 @@ def resolve_output_dir(root: Path, output_root: str, func: str) -> Path:
     out_dir = base / func
     out_dir.mkdir(parents=True, exist_ok=True)
     return out_dir
-
-
-def resolve_loop_source(root: Path, bench: str) -> Path:
-    source = root / "emulator" / "benchmarks" / "TSVC_2" / "src" / "loops" / f"{bench}.c"
-    if not source.exists():
-        fail(f"TSVC_2 loop source not found: {source}")
-    return source
 
 
 def format_arch_opt_args(arch: str, vlen: int) -> str:
@@ -226,7 +225,41 @@ def run_vplan_explain(
         ensure_image_exists(image)
 
     root = repo_root()
-    source_path = resolve_loop_source(root, bench)
+    try:
+        benchmark = benchmark_sources.resolve_benchmark_source(root, bench)
+    except FileNotFoundError as exc:
+        return {
+            "bench": bench,
+            "exit_code": 1,
+            "output_dir": "",
+            "source": "",
+            "source_kind": "",
+            "function_name": "",
+            "container_log": "",
+            "container_log_text": str(exc),
+            "vplan_log": "",
+            "vplan_log_text": "",
+            "prevec_ir": "",
+            "docker_command": "",
+            "vf_candidates": [],
+        }
+    except benchmark_sources.ConversionError as exc:
+        return {
+            "bench": bench,
+            "exit_code": 1,
+            "output_dir": "",
+            "source": "",
+            "source_kind": "",
+            "function_name": "",
+            "container_log": "",
+            "container_log_text": str(exc),
+            "vplan_log": "",
+            "vplan_log_text": "",
+            "prevec_ir": "",
+            "docker_command": "",
+            "vf_candidates": [],
+        }
+    source_path = benchmark.source_path
     llvm_custom_dir = resolve_llvm_custom(root, llvm_custom)
     out_dir = resolve_output_dir(root, output_root, bench)
 
@@ -246,6 +279,7 @@ def run_vplan_explain(
 
     arch_opt_args = format_arch_opt_args(arch, vlen)
     forced_vf_arg = f"-vplan-use-vf={shlex.quote(vf_use)}" if vf_use else ""
+    compile_include_args = shlex.join(["-I", str(CONTAINER_RUN_COMMON_ROOT)])
     if llvm_custom_dir is not None:
         clang_cmd = shlex.quote(str(CONTAINER_LLVM_CUSTOM_ROOT / "clang"))
         opt_cmd = shlex.quote(str(CONTAINER_LLVM_CUSTOM_ROOT / "opt"))
@@ -262,8 +296,9 @@ def run_vplan_explain(
             f'OPT_BIN="{opt_cmd}"',
             f'LLVM_EXTRACT_BIN="{llvm_extract_cmd}"',
             f'"$CLANG_BIN" -O0 -Xclang -disable-O0-optnone -S -emit-llvm '
+            f'{compile_include_args} '
             f'{shlex.quote(str(container_source))} -o {shlex.quote(str(container_full_ll))}',
-            f'"$LLVM_EXTRACT_BIN" -S --func={shlex.quote(bench)} '
+            f'"$LLVM_EXTRACT_BIN" -S --func={shlex.quote(benchmark.function_name)} '
             f'{shlex.quote(str(container_full_ll))} -o {shlex.quote(str(container_raw_ll))}',
             (
                 f'python3 {shlex.quote(str(container_helper))} '
@@ -322,6 +357,8 @@ def run_vplan_explain(
         "exit_code": exit_code,
         "output_dir": str(out_dir),
         "source": str(source_path),
+        "source_kind": benchmark.source_kind,
+        "function_name": benchmark.function_name,
         "container_log": str(container_log),
         "container_log_text": combined_output,
         "vplan_log": str(vplan_log),
@@ -346,7 +383,10 @@ def main() -> None:
         echo_output=False,
     )
     if int(result["exit_code"]) != 0:
-        fail(f"vplan-explain failed; see {result['container_log']}", exit_code=1)
+        container_log = str(result.get("container_log") or "").strip()
+        if container_log:
+            fail(f"vplan-explain failed; see {container_log}", exit_code=1)
+        fail(str(result.get("container_log_text") or "vplan-explain failed"), exit_code=1)
     print(f"{result['bench']}: {len(result['vf_candidates'])} VF(s)")
 
 

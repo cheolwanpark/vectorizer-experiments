@@ -7,10 +7,11 @@ from datetime import datetime
 from pathlib import Path
 
 try:
+    import benchmark_sources
     import emulate
     import vplan_explain
 except ModuleNotFoundError:
-    from scripts import emulate, vplan_explain
+    from scripts import benchmark_sources, emulate, vplan_explain
 
 
 DEFAULT_DB_PATH = "artifacts/vfs.db"
@@ -39,8 +40,7 @@ def parse_args() -> argparse.Namespace:
 
 
 def discover_benches(root: Path) -> list[str]:
-    loops_root = root / "emulator" / "benchmarks" / "TSVC_2" / "src" / "loops"
-    return sorted(path.stem for path in loops_root.glob("s*.c"))
+    return benchmark_sources.discover_catalog_benches(root)
 
 
 def resolve_db_path(root: Path, db_path: str) -> Path:

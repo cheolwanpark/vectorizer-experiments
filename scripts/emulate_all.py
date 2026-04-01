@@ -9,10 +9,11 @@ from pathlib import Path
 from typing import Any
 
 try:
+    import benchmark_sources
     import emulate
     import vplan_explain
 except ModuleNotFoundError:
-    from scripts import emulate, vplan_explain
+    from scripts import benchmark_sources, emulate, vplan_explain
 
 
 DEFAULT_DB_DIR = "artifacts"
@@ -98,8 +99,7 @@ def validate_args(args: argparse.Namespace) -> None:
 
 
 def discover_benches(root: Path) -> list[str]:
-    loops_root = root / "emulator" / "benchmarks" / "TSVC_2" / "src" / "loops"
-    return sorted(path.stem for path in loops_root.glob("s*.c"))
+    return benchmark_sources.discover_catalog_benches(root)
 
 
 def resolve_db_path(root: Path, db_dir: str, run_id: str) -> Path:

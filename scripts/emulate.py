@@ -10,12 +10,15 @@ import sys
 from datetime import datetime
 from pathlib import Path
 
+try:
+    import benchmark_sources
+except ModuleNotFoundError:
+    from scripts import benchmark_sources
+
 
 DEFAULT_IMAGE = "vplan-cost-measure:latest"
 DEFAULT_PLATFORM = "linux/amd64"
 DEFAULT_LOG_ROOT = "artifacts/emulate"
-GENERATED_TSVC_ROOT = "artifacts/generated-tsvc-kernels"
-TSVC_WRAPPER_MARKER = "TSVC_EMULATE_WRAPPER"
 CONTAINER_PROJECT_ROOT = Path("/workspace/host-project")
 CONTAINER_OUTPUT_ROOT = Path("/workspace/output")
 CONTAINER_BUILD_OUTPUT_ROOT = CONTAINER_OUTPUT_ROOT / "build"
@@ -231,62 +234,14 @@ def resolve_log_root(root: Path, log_root: str) -> Path:
     return path
 
 
-def resolve_generated_tsvc_root(root: Path) -> Path:
-    path = root / GENERATED_TSVC_ROOT
-    path.mkdir(parents=True, exist_ok=True)
-    return path
-
-
 def resolve_tsvc_src_root(root: Path) -> Path:
     return root / "emulator" / "benchmarks" / "TSVC_2" / "src"
 
 
-def generate_tsvc_wrapper(root: Path, bench: str) -> Path:
-    generated_root = resolve_generated_tsvc_root(root)
-    wrapper = generated_root / f"{bench}.c"
-    if wrapper.exists():
-        return wrapper
-
-    tsvc_src = resolve_tsvc_src_root(root)
-    tsvc_common = Path(Path("..") / ".." / tsvc_src.relative_to(root) / "common.h")
-    tsvc_single_support = Path(
-        Path("..") / ".." / tsvc_src.relative_to(root) / "single_support.h"
-    )
-    relative_common = tsvc_common.as_posix()
-    relative_single_support = tsvc_single_support.as_posix()
-    text = "\n".join(
-        [
-            f"/* {TSVC_WRAPPER_MARKER} */",
-            f'#include "{relative_common}"',
-            f'#include "{relative_single_support}"',
-            "",
-            "void tsvc_emulate_reset_heap(void);",
-            "",
-            "void kernel(void) {",
-            "    struct args_t func_args = {0};",
-            "    tsvc_emulate_reset_heap();",
-            "    init(&tsvc_ip, &tsvc_s1, &tsvc_s2);",
-            "    func_args.arg_info = tsvc_prepare_args();",
-            "    (void)tsvc_entry(&func_args);",
-            "}",
-            "",
-        ]
-    )
-    wrapper.write_text(text, encoding="utf-8")
-    return wrapper
-
-
 def resolve_benchmark_source(root: Path, bench: str) -> Path:
     validate_bench_name(bench)
-    run_source = root / "emulator" / "run" / "src" / f"{bench}.c"
-    if run_source.exists():
-        return run_source
-
-    tsvc_source = root / "emulator" / "benchmarks" / "TSVC_2" / "src" / "loops" / f"{bench}.c"
-    if tsvc_source.exists():
-        return generate_tsvc_wrapper(root, bench)
-
-    fail(f"benchmark source not found for {bench}")
+    benchmark = benchmark_sources.resolve_benchmark_source(root, bench)
+    return benchmark.source_path
 
 
 def build_emulate_docker_command(
@@ -363,7 +318,10 @@ def run_emulate(
     validate_vplan_use_vf(use_vf)
 
     root = repo_root()
-    source = resolve_benchmark_source(root, bench)
+    try:
+        source = resolve_benchmark_source(root, bench)
+    except (FileNotFoundError, benchmark_sources.ConversionError) as exc:
+        raise RuntimeError(str(exc)) from exc
     if ensure_image:
         ensure_image_exists(image)
     effective_timeout = resolve_timeout(timeout_s)
@@ -460,15 +418,18 @@ def run_emulate(
 
 def main() -> None:
     args = parse_args()
-    result = run_emulate(
-        bench=args.bench,
-        image=args.image,
-        len_1d=args.len,
-        lmul=args.lmul,
-        use_vf=args.use_vf,
-        timeout_s=args.timeout,
-        log_root=args.log_root,
-    )
+    try:
+        result = run_emulate(
+            bench=args.bench,
+            image=args.image,
+            len_1d=args.len,
+            lmul=args.lmul,
+            use_vf=args.use_vf,
+            timeout_s=args.timeout,
+            log_root=args.log_root,
+        )
+    except RuntimeError as exc:
+        fail(str(exc))
     print_summary(result["summary"])
     if result["failed"]:
         raise SystemExit(1)

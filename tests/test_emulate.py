@@ -9,7 +9,7 @@ class EmulateDockerCommandTest(unittest.TestCase):
     def test_build_emulate_docker_command_mounts_host_tsvc_src(self):
         root = Path("/repo")
         out_dir = root / "artifacts" / "emulate" / "s111" / "stamp"
-        source = root / "artifacts" / "generated-tsvc-kernels" / "s111.c"
+        source = root / "emulator" / "run" / "src" / "generated" / "s111.c"
 
         docker_cmd = emulate.build_emulate_docker_command(
             root=root,
