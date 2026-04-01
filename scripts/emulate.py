@@ -19,6 +19,7 @@ TSVC_WRAPPER_MARKER = "TSVC_EMULATE_WRAPPER"
 CONTAINER_PROJECT_ROOT = Path("/workspace/host-project")
 CONTAINER_OUTPUT_ROOT = Path("/workspace/output")
 CONTAINER_EMULATOR_ROOT = Path("/workspace/emulator")
+CONTAINER_TSVC_SRC_ROOT = CONTAINER_EMULATOR_ROOT / "benchmarks" / "TSVC_2" / "src"
 RUN_SIM_PATH = Path("/workspace/emulator/run-sim.sh")
 SIM_TARGET = "xiangshan.KunminghuV2Config"
 LEGACY_TIMEOUT_S = 120
@@ -213,29 +214,20 @@ def resolve_generated_tsvc_root(root: Path) -> Path:
     return path
 
 
+def resolve_tsvc_src_root(root: Path) -> Path:
+    return root / "emulator" / "benchmarks" / "TSVC_2" / "src"
+
+
 def generate_tsvc_wrapper(root: Path, bench: str) -> Path:
     generated_root = resolve_generated_tsvc_root(root)
     wrapper = generated_root / f"{bench}.c"
     if wrapper.exists():
         return wrapper
 
-    tsvc_common = Path(
-        Path("..")
-        / ".."
-        / "emulator"
-        / "benchmarks"
-        / "TSVC_2"
-        / "src"
-        / "common.h"
-    )
+    tsvc_src = resolve_tsvc_src_root(root)
+    tsvc_common = Path(Path("..") / ".." / tsvc_src.relative_to(root) / "common.h")
     tsvc_single_support = Path(
-        Path("..")
-        / ".."
-        / "emulator"
-        / "benchmarks"
-        / "TSVC_2"
-        / "src"
-        / "single_support.h"
+        Path("..") / ".." / tsvc_src.relative_to(root) / "single_support.h"
     )
     relative_common = tsvc_common.as_posix()
     relative_single_support = tsvc_single_support.as_posix()
@@ -274,6 +266,63 @@ def resolve_benchmark_source(root: Path, bench: str) -> Path:
     fail(f"benchmark source not found for {bench}")
 
 
+def build_emulate_docker_command(
+    *,
+    root: Path,
+    out_dir: Path,
+    source: Path,
+    image: str,
+    len_1d: int,
+    lmul: int,
+    use_vf: str,
+    effective_timeout: int,
+) -> list[str]:
+    docker_cmd = [
+        "docker",
+        "run",
+        "--rm",
+        "--platform",
+        DEFAULT_PLATFORM,
+        "-v",
+        f"{root}:{CONTAINER_PROJECT_ROOT}:ro",
+        "-v",
+        f"{out_dir}:{CONTAINER_OUTPUT_ROOT}",
+        "-v",
+        f"{root / 'emulator' / 'run-sim.sh'}:{RUN_SIM_PATH}:ro",
+        "-v",
+        f"{root / 'emulator' / 'sim-configs.yaml'}:{CONTAINER_EMULATOR_ROOT / 'sim-configs.yaml'}:ro",
+        "-v",
+        f"{root / 'emulator' / 'run' / 'build-kernel'}:{CONTAINER_EMULATOR_ROOT / 'run' / 'build-kernel'}:ro",
+        "-v",
+        f"{root / 'emulator' / 'run' / 'common'}:{CONTAINER_EMULATOR_ROOT / 'run' / 'common'}:ro",
+        "-v",
+        f"{root / 'emulator' / 'run' / 'crt'}:{CONTAINER_EMULATOR_ROOT / 'run' / 'crt'}:ro",
+        "-v",
+        f"{root / 'emulator' / 'run' / 'link'}:{CONTAINER_EMULATOR_ROOT / 'run' / 'link'}:ro",
+        "-v",
+        f"{root / 'emulator' / 'run' / 'targets'}:{CONTAINER_EMULATOR_ROOT / 'run' / 'targets'}:ro",
+        "-v",
+        f"{resolve_tsvc_src_root(root)}:{CONTAINER_TSVC_SRC_ROOT}:ro",
+        image,
+    ]
+    docker_cmd.extend(
+        [
+            "bash",
+            "-lc",
+            (
+                f"cd {shlex.quote(str(CONTAINER_EMULATOR_ROOT))} && "
+                f"python3 {shlex.quote(str(RUN_SIM_PATH))} {SIM_TARGET} "
+                f"{shlex.quote(str(CONTAINER_PROJECT_ROOT / source.relative_to(root)))} "
+                f"--len={len_1d} --lmul={lmul} "
+                f"{f'--use-vf={shlex.quote(use_vf)} ' if use_vf else ''}"
+                f"--timeout={effective_timeout} "
+                f"--log-dir={shlex.quote(str(CONTAINER_OUTPUT_ROOT / 'logs'))}"
+            ),
+        ]
+    )
+    return docker_cmd
+
+
 def run_emulate(
     *,
     bench: str,
@@ -305,43 +354,16 @@ def run_emulate(
     summary_file = out_dir / "summary.json"
     report_file = out_dir / "report.md"
 
-    docker_cmd = [
-        "docker",
-        "run",
-        "--rm",
-        "--platform",
-        DEFAULT_PLATFORM,
-        "-v",
-        f"{root}:{CONTAINER_PROJECT_ROOT}:ro",
-        "-v",
-        f"{out_dir}:{CONTAINER_OUTPUT_ROOT}",
-        "-v",
-        f"{root / 'emulator' / 'run-sim.sh'}:{RUN_SIM_PATH}:ro",
-        "-v",
-        f"{root / 'emulator' / 'sim-configs.yaml'}:{CONTAINER_EMULATOR_ROOT / 'sim-configs.yaml'}:ro",
-        "-v",
-        f"{root / 'emulator' / 'run' / 'build-kernel'}:{CONTAINER_EMULATOR_ROOT / 'run' / 'build-kernel'}:ro",
-        "-v",
-        f"{root / 'emulator' / 'run' / 'common'}:{CONTAINER_EMULATOR_ROOT / 'run' / 'common'}:ro",
-        "-v",
-        f"{root / 'emulator' / 'run' / 'crt'}:{CONTAINER_EMULATOR_ROOT / 'run' / 'crt'}:ro",
-        "-v",
-        f"{root / 'emulator' / 'run' / 'link'}:{CONTAINER_EMULATOR_ROOT / 'run' / 'link'}:ro",
-        "-v",
-        f"{root / 'emulator' / 'run' / 'targets'}:{CONTAINER_EMULATOR_ROOT / 'run' / 'targets'}:ro",
-        image,
-        "bash",
-        "-lc",
-        (
-            f"cd {shlex.quote(str(CONTAINER_EMULATOR_ROOT))} && "
-            f"python3 {shlex.quote(str(RUN_SIM_PATH))} {SIM_TARGET} "
-            f"{shlex.quote(str(CONTAINER_PROJECT_ROOT / source.relative_to(root)))} "
-            f"--len={len_1d} --lmul={lmul} "
-            f"{f'--use-vf={shlex.quote(use_vf)} ' if use_vf else ''}"
-            f"--timeout={effective_timeout} "
-            f"--log-dir={shlex.quote(str(CONTAINER_OUTPUT_ROOT / 'logs'))}"
-        ),
-    ]
+    docker_cmd = build_emulate_docker_command(
+        root=root,
+        out_dir=out_dir,
+        source=source,
+        image=image,
+        len_1d=len_1d,
+        lmul=lmul,
+        use_vf=use_vf,
+        effective_timeout=effective_timeout,
+    )
 
     docker_command = shlex.join(docker_cmd)
     command_file.write_text(f"{docker_command}\n", encoding="utf-8")

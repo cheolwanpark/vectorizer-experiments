@@ -34,6 +34,9 @@ void tsvc_emulate_reset_heap(void) {
     tsvc_heap_offset = 0;
 }
 
+void init_arrays(void) {
+}
+
 void *memalign(size_t alignment, size_t size) {
     uintptr_t base;
     uintptr_t aligned;
