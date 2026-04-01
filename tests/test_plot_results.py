@@ -1,10 +1,14 @@
 import unittest
+from pathlib import Path
+from tempfile import TemporaryDirectory
+import sqlite3
 
 from scripts.plot_results import (
     BenchMetricSummary,
     EmulateAggregate,
     VFCandidate,
     build_metric_summaries,
+    load_emulate_data,
     parse_effective_cost,
     parse_vf_factor,
 )
@@ -59,6 +63,38 @@ class PlotResultsTest(unittest.TestCase):
         self.assertEqual(point_by_vf["fixed:2"].cost, 12.0)
         self.assertEqual(point_by_vf["fixed:4"].cost, 8.0)
         self.assertEqual(summary.cost_best_vf, "fixed:4")
+
+    def test_load_emulate_data_reads_schema_without_sample_index(self):
+        with TemporaryDirectory() as tmp:
+            db_path = Path(tmp) / "emulate.sqlite"
+            conn = sqlite3.connect(db_path)
+            conn.execute(
+                """
+                CREATE TABLE emulate_results (
+                    stage TEXT NOT NULL,
+                    failure TEXT NOT NULL,
+                    bench TEXT NOT NULL,
+                    use_vf TEXT NOT NULL,
+                    kernel_cycles INTEGER,
+                    total_cycles INTEGER
+                )
+                """
+            )
+            conn.execute(
+                """
+                INSERT INTO emulate_results (
+                    stage, failure, bench, use_vf, kernel_cycles, total_cycles
+                ) VALUES ('emulate', '', 's000', 'fixed:4', 10, 20)
+                """
+            )
+            conn.commit()
+            conn.close()
+
+            aggregates, failure_counts = load_emulate_data(db_path, set())
+
+        self.assertEqual(failure_counts, {})
+        self.assertEqual(aggregates[("s000", "fixed:4")].kernel_samples, [10.0])
+        self.assertEqual(aggregates[("s000", "fixed:4")].total_samples, [20.0])
 
 
 if __name__ == "__main__":

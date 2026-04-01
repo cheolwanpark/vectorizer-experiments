@@ -312,7 +312,7 @@ def load_emulate_data(
         """
         SELECT stage, failure, bench, use_vf, kernel_cycles, total_cycles
         FROM emulate_results
-        ORDER BY bench, use_vf, sample_index
+        ORDER BY bench, use_vf
         """
     ).fetchall()
     conn.close()

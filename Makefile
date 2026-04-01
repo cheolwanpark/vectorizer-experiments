@@ -13,8 +13,7 @@ VLEN ?= 128
 VF_USE ?=
 LLVM_CUSTOM ?=
 VPLAN_LOG_ROOT ?= artifacts/vplan-explain
-CONCURRENCY ?= 10
-SAMPLES ?= 10
+CONCURRENCY ?= 5
 VFS_DB ?= artifacts/vfs.db
 EMULATE_DB ?=
 PLOT_OUTPUT_HTML ?=
@@ -28,7 +27,7 @@ BENCH := $(firstword $(filter s%,$(MAKECMDGOALS)))
 help:
 	@echo "Targets:"
 	@echo "  make emulate sXXX [IMAGE=...] [LEN=4096] [LMUL=1] [USE_VF='fixed:4'] [TIMEOUT=120] [LOG_ROOT=artifacts/emulate]   # XiangShan"
-	@echo "  make emulate-all [IMAGE=...] [LEN=4096] [LMUL=1] [TIMEOUT=120] [ARCH=RVV] [VLEN=128] [LLVM_CUSTOM=/path/to/llvm-or-bin] [CONCURRENCY=10] [SAMPLES=10]"
+	@echo "  make emulate-all [IMAGE=...] [LEN=4096] [LMUL=1] [TIMEOUT=120] [ARCH=RVV] [VLEN=128] [LLVM_CUSTOM=/path/to/llvm-or-bin] [CONCURRENCY=5]"
 	@echo "  make vplan-explain sXXX [IMAGE=...] [PLATFORM=linux/amd64] [ARCH=RVV|MAC] [VLEN=128|256|512...] [LLVM_CUSTOM=/path/to/llvm-or-bin] [VF_USE='fixed:2'] [VPLAN_LOG_ROOT=artifacts/vplan-explain]"
 	@echo "  make vplan-explain-all [IMAGE=...] [PLATFORM=linux/amd64] [ARCH=RVV|MAC] [VLEN=128] [LLVM_CUSTOM=/path/to/llvm-or-bin] [VPLAN_LOG_ROOT=artifacts/vplan-explain]   # writes artifacts/vfs.db"
 	@echo "  make plot-results [VFS_DB=artifacts/vfs.db] [EMULATE_DB=artifacts/emulate-result-YYYYMMDDHHMM.sqlite] [PLOT_OUTPUT_HTML=artifacts/plots/report.html]"
@@ -51,8 +50,7 @@ emulate-all:
 		--arch "$(ARCH)" \
 		--vlen "$(VLEN)" \
 		$(if $(strip $(LLVM_CUSTOM)),--llvm-custom "$(LLVM_CUSTOM)",) \
-		--concurrency "$(CONCURRENCY)" \
-		--samples "$(SAMPLES)"
+		--concurrency "$(CONCURRENCY)"
 
 vplan-explain:
 	@if [ -z "$(BENCH)" ]; then \

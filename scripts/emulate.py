@@ -18,12 +18,19 @@ GENERATED_TSVC_ROOT = "artifacts/generated-tsvc-kernels"
 TSVC_WRAPPER_MARKER = "TSVC_EMULATE_WRAPPER"
 CONTAINER_PROJECT_ROOT = Path("/workspace/host-project")
 CONTAINER_OUTPUT_ROOT = Path("/workspace/output")
+CONTAINER_BUILD_OUTPUT_ROOT = CONTAINER_OUTPUT_ROOT / "build"
 CONTAINER_EMULATOR_ROOT = Path("/workspace/emulator")
 CONTAINER_TSVC_SRC_ROOT = CONTAINER_EMULATOR_ROOT / "benchmarks" / "TSVC_2" / "src"
 RUN_SIM_PATH = Path("/workspace/emulator/run-sim.sh")
 SIM_TARGET = "xiangshan.KunminghuV2Config"
 LEGACY_TIMEOUT_S = 120
 XIANSHAN_DEFAULT_TIMEOUT_S = 1800
+BUILD_ARTIFACT_SUFFIXES = {
+    "raw_ll_text": ".raw.ll",
+    "prevec_ll_text": ".prevec.ll",
+    "opt_ll_text": ".opt.ll",
+    "asm_text": ".s",
+}
 
 
 def parse_args() -> argparse.Namespace:
@@ -129,6 +136,7 @@ def parse_run_sim_output(text: str) -> dict[str, object]:
         "sim_speed_khz": (r"^Sim speed:\s+([0-9.]+)\s+kHz$", parse_float),
         "run_log": (r"^Log file:\s+(.+)$", str),
         "trace_file": (r"^Trace:\s+(.+)$", str),
+        "built_workload": (r"^Built:\s+(.+)$", str),
     }
     summary: dict[str, object] = {}
     for key, (pattern, caster) in patterns.items():
@@ -145,6 +153,21 @@ def map_container_output_path(path_text: str, host_output_dir: Path) -> Path:
     except ValueError:
         return path
     return host_output_dir / relative
+
+
+def load_build_artifact_texts(host_output_dir: Path, built_workload: str | None) -> dict[str, str]:
+    if not built_workload:
+        return {name: "" for name in BUILD_ARTIFACT_SUFFIXES}
+
+    host_workload = map_container_output_path(built_workload, host_output_dir)
+    base_path = host_workload.with_suffix("") if host_workload.suffix else host_workload
+    texts: dict[str, str] = {}
+    for field_name, suffix in BUILD_ARTIFACT_SUFFIXES.items():
+        artifact_path = base_path.parent / f"{base_path.name}{suffix}"
+        texts[field_name] = (
+            artifact_path.read_text(encoding="utf-8") if artifact_path.exists() else ""
+        )
+    return texts
 
 
 def build_markdown_report(summary: dict[str, object]) -> str:
@@ -316,7 +339,8 @@ def build_emulate_docker_command(
                 f"--len={len_1d} --lmul={lmul} "
                 f"{f'--use-vf={shlex.quote(use_vf)} ' if use_vf else ''}"
                 f"--timeout={effective_timeout} "
-                f"--log-dir={shlex.quote(str(CONTAINER_OUTPUT_ROOT / 'logs'))}"
+                f"--log-dir={shlex.quote(str(CONTAINER_OUTPUT_ROOT / 'logs'))} "
+                f"--build-out-dir={shlex.quote(str(CONTAINER_BUILD_OUTPUT_ROOT))}"
             ),
         ]
     )
@@ -389,6 +413,7 @@ def run_emulate(
         else None
     )
     run_log_text = run_log.read_text(encoding="utf-8") if run_log and run_log.exists() else ""
+    artifact_texts = load_build_artifact_texts(out_dir, str(parsed.get("built_workload") or ""))
 
     summary: dict[str, object] = {
         "benchmark": bench,
@@ -428,6 +453,7 @@ def run_emulate(
         "report_text": report_text,
         "container_log_text": combined_output,
         "run_log_text": run_log_text,
+        **artifact_texts,
         "failed": failed,
     }
 

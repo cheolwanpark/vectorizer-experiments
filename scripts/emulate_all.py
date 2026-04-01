@@ -16,8 +16,7 @@ except ModuleNotFoundError:
 
 
 DEFAULT_DB_DIR = "artifacts"
-DEFAULT_SAMPLES = 10
-DEFAULT_CONCURRENCY = 10
+DEFAULT_CONCURRENCY = 5
 
 TABLE_COLUMNS = [
     "run_id",
@@ -27,7 +26,6 @@ TABLE_COLUMNS = [
     "failure_message",
     "bench",
     "use_vf",
-    "sample_index",
     "benchmark",
     "image",
     "simulator_target",
@@ -53,6 +51,10 @@ TABLE_COLUMNS = [
     "vplan_log_text",
     "container_log_text",
     "run_log_text",
+    "raw_ll_text",
+    "prevec_ll_text",
+    "opt_ll_text",
+    "asm_text",
 ]
 
 
@@ -77,8 +79,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--arch", default="RVV", choices=["RVV", "MAC"], help="Target architecture")
     parser.add_argument("--vlen", type=int, default=128, help="RVV vector length in bits")
     parser.add_argument("--llvm-custom", default="", help="Optional host LLVM build/bin directory")
-    parser.add_argument("--concurrency", type=int, default=DEFAULT_CONCURRENCY, help="Parallel sample count")
-    parser.add_argument("--samples", type=int, default=DEFAULT_SAMPLES, help="Samples per bench/VF")
+    parser.add_argument("--concurrency", type=int, default=DEFAULT_CONCURRENCY, help="Parallel emulate job count")
     parser.add_argument(
         "--db-dir",
         default=DEFAULT_DB_DIR,
@@ -92,7 +93,6 @@ def validate_args(args: argparse.Namespace) -> None:
     emulate.validate_positive_int("lmul", args.lmul)
     emulate.validate_positive_int("timeout", args.timeout)
     emulate.validate_positive_int("concurrency", args.concurrency)
-    emulate.validate_positive_int("samples", args.samples)
     if args.arch == "RVV" and args.vlen <= 0:
         emulate.fail("vlen must be a positive integer")
 
@@ -121,7 +121,6 @@ def create_table(conn: sqlite3.Connection) -> None:
             failure_message TEXT NOT NULL,
             bench TEXT NOT NULL,
             use_vf TEXT NOT NULL,
-            sample_index INTEGER NOT NULL,
             benchmark TEXT,
             image TEXT,
             simulator_target TEXT,
@@ -147,14 +146,18 @@ def create_table(conn: sqlite3.Connection) -> None:
             vplan_log_text TEXT,
             container_log_text TEXT,
             run_log_text TEXT,
-            PRIMARY KEY (bench, use_vf, sample_index)
+            raw_ll_text VARCHAR,
+            prevec_ll_text VARCHAR,
+            opt_ll_text VARCHAR,
+            asm_text VARCHAR,
+            PRIMARY KEY (bench, use_vf)
         )
         """
     )
     conn.commit()
 
 
-def make_empty_row(run_id: str, bench: str, use_vf: str, sample_index: int) -> dict[str, Any]:
+def make_empty_row(run_id: str, bench: str, use_vf: str) -> dict[str, Any]:
     row = {column: None for column in TABLE_COLUMNS}
     row["run_id"] = run_id
     row["created_at"] = datetime.now().isoformat(timespec="seconds")
@@ -163,7 +166,8 @@ def make_empty_row(run_id: str, bench: str, use_vf: str, sample_index: int) -> d
     row["failure_message"] = ""
     row["bench"] = bench
     row["use_vf"] = use_vf
-    row["sample_index"] = sample_index
+    for column in emulate.BUILD_ARTIFACT_SUFFIXES:
+        row[column] = ""
     return row
 
 
@@ -187,7 +191,7 @@ def make_vplan_failure_row(
     message: str,
     vplan_result: dict[str, Any],
 ) -> dict[str, Any]:
-    row = make_empty_row(run_id, bench, "", 0)
+    row = make_empty_row(run_id, bench, "")
     row.update(
         {
             "stage": "vplan",
@@ -213,14 +217,13 @@ def make_emulate_row(
     run_id: str,
     bench: str,
     use_vf: str,
-    sample_index: int,
     args: argparse.Namespace,
     vplan_result: dict[str, Any],
     emulate_result: dict[str, Any] | None,
     failure: str = "",
     failure_message: str = "",
 ) -> dict[str, Any]:
-    row = make_empty_row(run_id, bench, use_vf, sample_index)
+    row = make_empty_row(run_id, bench, use_vf)
     row.update(
         {
             "stage": "emulate",
@@ -243,17 +246,17 @@ def make_emulate_row(
     row.update(summary)
     row["bench"] = bench
     row["use_vf"] = use_vf
-    row["sample_index"] = sample_index
     row["container_log_text"] = emulate_result.get("container_log_text", "")
     row["run_log_text"] = emulate_result.get("run_log_text", "")
+    for column in emulate.BUILD_ARTIFACT_SUFFIXES:
+        row[column] = str(emulate_result.get(column, "") or "")
     return row
 
 
-def run_sample(
+def run_emulate_job(
     *,
     bench: str,
     use_vf: str,
-    sample_index: int,
     args: argparse.Namespace,
 ) -> dict[str, Any]:
     return emulate.run_emulate(
@@ -266,6 +269,10 @@ def run_sample(
         log_root=args.log_root,
         ensure_image=False,
     )
+
+
+def find_missing_artifacts(emulate_result: dict[str, Any]) -> list[str]:
+    return [column for column in emulate.BUILD_ARTIFACT_SUFFIXES if not emulate_result.get(column)]
 
 
 def main() -> None:
@@ -283,11 +290,10 @@ def main() -> None:
     create_table(conn)
 
     print(
-        f"emulate-all: benches={len(benches)} samples={args.samples} "
-        f"parallel={args.concurrency} db={db_path.name}"
+        f"emulate-all: benches={len(benches)} parallel={args.concurrency} db={db_path.name}"
     )
 
-    scheduled: list[tuple[str, str, int, dict[str, Any]]] = []
+    scheduled: list[tuple[str, str, dict[str, Any]]] = []
     any_failure = False
     vplan_failures = 0
 
@@ -340,8 +346,7 @@ def main() -> None:
 
         print(f"[vplan {index}/{len(benches)}] {bench} vf={len(vf_candidates)}")
         for use_vf in vf_candidates:
-            for sample_index in range(1, args.samples + 1):
-                scheduled.append((bench, use_vf, sample_index, vplan_result))
+            scheduled.append((bench, use_vf, vplan_result))
 
     print(f"emulate-jobs: {len(scheduled)}")
 
@@ -351,17 +356,16 @@ def main() -> None:
     with ThreadPoolExecutor(max_workers=args.concurrency) as executor:
         future_map = {
             executor.submit(
-                run_sample,
+                run_emulate_job,
                 bench=bench,
                 use_vf=use_vf,
-                sample_index=sample_index,
                 args=args,
-            ): (bench, use_vf, sample_index, vplan_result)
-            for bench, use_vf, sample_index, vplan_result in scheduled
+            ): (bench, use_vf, vplan_result)
+            for bench, use_vf, vplan_result in scheduled
         }
 
         for future in as_completed(future_map):
-            bench, use_vf, sample_index, vplan_result = future_map[future]
+            bench, use_vf, vplan_result = future_map[future]
             completed += 1
             try:
                 emulate_result = future.result()
@@ -372,7 +376,6 @@ def main() -> None:
                     run_id=run_id,
                     bench=bench,
                     use_vf=use_vf,
-                    sample_index=sample_index,
                     args=args,
                     vplan_result=vplan_result,
                     emulate_result=None,
@@ -380,7 +383,7 @@ def main() -> None:
                     failure_message=str(exc),
                 )
                 insert_row(conn, row)
-                print(f"[emu {completed}/{total_jobs}] {bench} {use_vf} #{sample_index} fail")
+                print(f"[emu {completed}/{total_jobs}] {bench} {use_vf} fail")
                 continue
 
             failure = ""
@@ -390,12 +393,18 @@ def main() -> None:
                 emulate_failures += 1
                 failure = "emulate_failed"
                 failure_message = str(emulate_result["summary"].get("status", "emulate failed"))
+            else:
+                missing_artifacts = find_missing_artifacts(emulate_result)
+                if missing_artifacts:
+                    any_failure = True
+                    emulate_failures += 1
+                    failure = "artifact_capture_failed"
+                    failure_message = f"missing artifacts: {', '.join(missing_artifacts)}"
 
             row = make_emulate_row(
                 run_id=run_id,
                 bench=bench,
                 use_vf=use_vf,
-                sample_index=sample_index,
                 args=args,
                 vplan_result=vplan_result,
                 emulate_result=emulate_result,
@@ -404,7 +413,7 @@ def main() -> None:
             )
             insert_row(conn, row)
             status_text = "fail" if failure else str(row.get("status", "done")).lower()
-            print(f"[emu {completed}/{total_jobs}] {bench} {use_vf} #{sample_index} {status_text}")
+            print(f"[emu {completed}/{total_jobs}] {bench} {use_vf} {status_text}")
 
     conn.close()
     print(

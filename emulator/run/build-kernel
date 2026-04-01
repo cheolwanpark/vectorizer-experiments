@@ -382,11 +382,12 @@ fi
 
 verify_forced_vector_ir "$OPT_LL" "$USE_VF" "$OPT_LOG"
 
+ASM_OUT="${BASE_PATH}.s"
+"${CC}" "${OBJECT_COMPILE_FLAGS[@]}" -S "$OPT_LL" -o "$ASM_OUT"
+echo "Assembly: $ASM_OUT"
+grep -E "vsetvli" "$ASM_OUT" | head -3 || true
+
 if [[ "$ASM" == "1" ]]; then
-    ASM_OUT="${BASE_PATH}.s"
-    "${CC}" "${OBJECT_COMPILE_FLAGS[@]}" -S "$OPT_LL" -o "$ASM_OUT"
-    echo "Assembly: $ASM_OUT"
-    grep -E "vsetvli" "$ASM_OUT" | head -3 || true
     exit 0
 fi
 
@@ -418,4 +419,4 @@ fi
 LINK_CMD+=(-o "$OUTPUT")
 "${LINK_CMD[@]}"
 echo "Output: $OUTPUT"
-echo "Artifacts: $RAW_LL $PREVEC_LL $OPT_LL $OPT_LOG"
+echo "Artifacts: $RAW_LL $PREVEC_LL $OPT_LL $OPT_LOG $ASM_OUT"

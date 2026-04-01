@@ -370,8 +370,9 @@ def build_kernel(
     *,
     lmul: int = 1,
     len_1d: int = 1000,
-    use_vf: int | None = None,
+    use_vf: str | None = None,
     cflags: str | None = None,
+    build_out_dir: Path | None = None,
 ) -> Path:
     """Build a .c kernel using run/build-kernel and return the ELF path."""
     build_script = root_dir / "run" / "build-kernel"
@@ -380,7 +381,7 @@ def build_kernel(
 
     # Determine output path
     kernel_name = source.stem
-    out_dir = root_dir / "run" / "out"
+    out_dir = build_out_dir if build_out_dir is not None else root_dir / "run" / "out"
     out_dir.mkdir(parents=True, exist_ok=True)
     vf_suffix = f"_vf{use_vf}" if use_vf is not None else ""
     output_elf = out_dir / f"{kernel_name}_{target}_lmul{lmul}{vf_suffix}.elf"
@@ -1128,6 +1129,7 @@ Verbose Mode (default: ON):
     parser.add_argument("-v", "--verbose", action="store_true", help="Verbose CLI output")
     parser.add_argument("--cflags", type=str, default=None, help="Additional C flags for kernel build (e.g., -ffast-math)")
     parser.add_argument("--sim-out-dir", type=str, default=None, help="Simulation output directory for backends that produce extra artifacts")
+    parser.add_argument("--build-out-dir", type=str, default=None, help="Kernel build output directory")
     parser.add_argument("extra_args", nargs="*", help="Additional simulator arguments")
 
     args, unknown = parser.parse_known_args(argv)
@@ -1189,6 +1191,7 @@ Verbose Mode (default: ON):
             len_1d=args.len,
             use_vf=args.use_vf,
             cflags=args.cflags,
+            build_out_dir=Path(args.build_out_dir) if args.build_out_dir else None,
         )
         print("-" * 40)
 
