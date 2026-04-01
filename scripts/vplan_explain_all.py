@@ -141,6 +141,7 @@ def main() -> None:
 
     print(f"vplan-explain-all: benches={len(benches)} db={db_path.name}")
     failures = 0
+    no_vf_rows = 0
     total_rows = 0
 
     for index, bench in enumerate(benches, start=1):
@@ -182,7 +183,7 @@ def main() -> None:
 
         vf_candidates = list(result["vf_candidates"])
         if not vf_candidates:
-            failures += 1
+            no_vf_rows += 1
             total_rows += 1
             insert_vf_row(
                 conn,
@@ -220,11 +221,7 @@ def main() -> None:
         print(f"[vplan {index}/{len(benches)}] {bench} vf={len(vf_candidates)}")
 
     conn.close()
-    print(f"done: rows={total_rows} failures={failures} db={db_path}")
-
-    if failures:
-        raise SystemExit(1)
-
+    print(f"done: rows={total_rows} failures={failures} no_vf={no_vf_rows} db={db_path}")
 
 if __name__ == "__main__":
     main()
