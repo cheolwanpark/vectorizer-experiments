@@ -1,4 +1,5 @@
 PYTHON ?= python3
+UV ?= uv
 IMAGE ?= vplan-cost-measure:latest
 PLATFORM ?= linux/amd64
 DOCKER ?= docker
@@ -14,11 +15,15 @@ LLVM_CUSTOM ?=
 VPLAN_LOG_ROOT ?= artifacts/vplan-explain
 CONCURRENCY ?= 10
 SAMPLES ?= 10
+VFS_DB ?= artifacts/vfs.db
+EMULATE_DB ?=
+PLOT_OUTPUT_HTML ?=
 
 BENCH := $(firstword $(filter s%,$(MAKECMDGOALS)))
 
 .PHONY: help emulate emulate-all vplan-explain
 .PHONY: vplan-explain-all
+.PHONY: plot-results
 
 help:
 	@echo "Targets:"
@@ -26,6 +31,7 @@ help:
 	@echo "  make emulate-all [IMAGE=...] [LEN=4096] [LMUL=1] [TIMEOUT=120] [ARCH=RVV] [VLEN=128] [LLVM_CUSTOM=/path/to/llvm-or-bin] [CONCURRENCY=10] [SAMPLES=10]"
 	@echo "  make vplan-explain sXXX [IMAGE=...] [PLATFORM=linux/amd64] [ARCH=RVV|MAC] [VLEN=128|256|512...] [LLVM_CUSTOM=/path/to/llvm-or-bin] [VF_USE='fixed:2'] [VPLAN_LOG_ROOT=artifacts/vplan-explain]"
 	@echo "  make vplan-explain-all [IMAGE=...] [PLATFORM=linux/amd64] [ARCH=RVV|MAC] [VLEN=128] [LLVM_CUSTOM=/path/to/llvm-or-bin] [VPLAN_LOG_ROOT=artifacts/vplan-explain]   # writes artifacts/vfs.db"
+	@echo "  make plot-results [VFS_DB=artifacts/vfs.db] [EMULATE_DB=artifacts/emulate-result-YYYYMMDDHHMM.sqlite] [PLOT_OUTPUT_HTML=artifacts/plots/report.html]"
 
 emulate:
 	@if [ -z "$(BENCH)" ]; then \
@@ -72,6 +78,9 @@ vplan-explain-all:
 		$(if $(strip $(LLVM_CUSTOM)),--llvm-custom "$(LLVM_CUSTOM)",) \
 		--output-root "$(VPLAN_LOG_ROOT)" \
 		--db-path "artifacts/vfs.db"
+
+plot-results:
+	@$(UV) run --with matplotlib python scripts/plot_results.py --vfs-db "$(VFS_DB)" $(if $(strip $(EMULATE_DB)),--emulate-db "$(EMULATE_DB)",) $(if $(strip $(PLOT_OUTPUT_HTML)),--output-html "$(PLOT_OUTPUT_HTML)",)
 
 s%:
 	@:
