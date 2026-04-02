@@ -44,8 +44,6 @@ class EmulateDockerCommandTest(unittest.TestCase):
             workload = build_dir / "s000_xiangshan.KunminghuV2Config_lmul1_vffixed:4.elf"
             workload.write_text("", encoding="utf-8")
             expected = {
-                "raw_ll_text": "raw",
-                "prevec_ll_text": "prevec",
                 "opt_ll_text": "opt",
                 "asm_text": "asm",
             }

@@ -10,8 +10,9 @@ from pathlib import Path
 
 try:
     import benchmark_sources
+    import llvm_pipeline
 except ModuleNotFoundError:
-    from scripts import benchmark_sources
+    from scripts import benchmark_sources, llvm_pipeline
 
 DEFAULT_IMAGE = "vplan-cost-measure:latest"
 DEFAULT_PLATFORM = "linux/amd64"
@@ -20,12 +21,7 @@ CONTAINER_PROJECT_ROOT = Path("/workspace/host-project")
 CONTAINER_OUTPUT_ROOT = Path("/workspace/output")
 CONTAINER_LLVM_CUSTOM_ROOT = Path("/workspace/llvm-custom")
 CONTAINER_RUN_COMMON_ROOT = CONTAINER_PROJECT_ROOT / "emulator" / "run" / "common"
-RVV_IR_TARGET_TRIPLE = "riscv64-unknown-unknown-elf"
-RVV_IR_TARGET_DATALAYOUT = "e-m:e-p:64:64-i64:64-i128:128-n32:64-S128"
-PREVEC_ARGS = (
-    "-passes=mem2reg,instcombine,simplifycfg,loop-simplify,"
-    "lcssa,indvars,loop-rotate,instcombine,simplifycfg"
-)
+CONTAINER_TSVC_SRC_ROOT = CONTAINER_PROJECT_ROOT / "emulator" / "benchmarks" / "TSVC_2" / "src"
 VPLAN_EXPLAIN_ARGS = "-passes=loop-vectorize -vplan-explain -disable-output"
 VPLAN_LINE_RE = re.compile(r"^LV:\s+VF=(.+?)\s+cost=([^\s]+)(?:\s+compare=([^\s]+))?\s*$")
 VPLAN_PLAN_RE = re.compile(r"^LV:\s+VPlan\[(\d+)\]\s+VFs=\{(.+)\}\s*$")
@@ -50,6 +46,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--platform", default=DEFAULT_PLATFORM, help="Docker platform")
     parser.add_argument("--arch", default="RVV", choices=["RVV", "MAC"], help="Target architecture")
     parser.add_argument("--vlen", type=int, default=128, help="RVV vector length in bits")
+    parser.add_argument("--len", dest="len_1d", type=int, default=llvm_pipeline.DEFAULT_LEN_1D, help="LEN_1D value")
+    parser.add_argument("--lmul", type=int, default=llvm_pipeline.DEFAULT_LMUL, help="LMUL value")
     parser.add_argument(
         "--llvm-custom",
         default="",
@@ -76,6 +74,10 @@ def parse_args() -> argparse.Namespace:
 def validate_args(args: argparse.Namespace) -> None:
     if args.arch == "RVV" and args.vlen <= 0:
         fail("vlen must be a positive integer")
+    if args.len_1d <= 0:
+        fail("len must be a positive integer")
+    if args.lmul <= 0:
+        fail("lmul must be a positive integer")
 
 
 def ensure_image_exists(image: str) -> None:
@@ -102,7 +104,7 @@ def resolve_llvm_custom(root: Path, llvm_custom: str) -> Path | None:
         fail(f"LLVM_CUSTOM path not found: {path}")
     if path.is_file():
         path = path.parent
-    for tool in ("clang", "opt", "llvm-extract"):
+    for tool in ("clang", "opt"):
         if not (path / tool).exists():
             fail(f"LLVM_CUSTOM is missing {tool}: {path / tool}")
     return path
@@ -115,15 +117,6 @@ def resolve_output_dir(root: Path, output_root: str, func: str) -> Path:
     out_dir = base / func
     out_dir.mkdir(parents=True, exist_ok=True)
     return out_dir
-
-
-def format_arch_opt_args(arch: str, vlen: int) -> str:
-    if arch != "RVV":
-        return ""
-    return (
-        f"-mtriple=riscv64-unknown-elf -mcpu=generic-rv64 -mattr=+v "
-        f"-riscv-v-vector-bits-min={vlen} -riscv-v-vector-bits-max={vlen}"
-    )
 
 
 def run_container_and_capture(
@@ -210,6 +203,8 @@ def run_vplan_explain(
     platform: str = DEFAULT_PLATFORM,
     arch: str = "RVV",
     vlen: int = 128,
+    len_1d: int = llvm_pipeline.DEFAULT_LEN_1D,
+    lmul: int = llvm_pipeline.DEFAULT_LMUL,
     llvm_custom: str = "",
     vf_use: str = "",
     output_root: str = DEFAULT_OUTPUT_ROOT,
@@ -222,6 +217,8 @@ def run_vplan_explain(
         platform=platform,
         arch=arch,
         vlen=vlen,
+        len_1d=len_1d,
+        lmul=lmul,
         llvm_custom=llvm_custom,
         vf_use=vf_use,
         output_root=output_root,
@@ -269,57 +266,47 @@ def run_vplan_explain(
     llvm_custom_dir = resolve_llvm_custom(root, llvm_custom)
     out_dir = resolve_output_dir(root, output_root, bench)
 
-    full_ll = out_dir / "full.ll"
-    raw_ll = out_dir / f"{bench}.ll"
-    prevec_ll = out_dir / f"{bench}.prevec.ll"
     vplan_log = out_dir / "vplan-explain.log"
     container_log = out_dir / "container.log"
     command_file = out_dir / "command.txt"
 
     container_source = CONTAINER_PROJECT_ROOT / source_path.relative_to(root)
-    container_full_ll = CONTAINER_OUTPUT_ROOT / full_ll.name
-    container_raw_ll = CONTAINER_OUTPUT_ROOT / raw_ll.name
-    container_prevec_ll = CONTAINER_OUTPUT_ROOT / prevec_ll.name
     container_vplan_log = CONTAINER_OUTPUT_ROOT / vplan_log.name
-    container_helper = CONTAINER_PROJECT_ROOT / "scripts" / "sanitize_ir.py"
+    container_pipeline_helper = CONTAINER_PROJECT_ROOT / "scripts" / "llvm_pipeline.py"
 
-    arch_opt_args = format_arch_opt_args(arch, vlen)
     forced_vf_arg = f"-vplan-use-vf={shlex.quote(vf_use)}" if vf_use else ""
-    compile_include_args = shlex.join(["-I", str(CONTAINER_RUN_COMMON_ROOT)])
+    compile_flags = llvm_pipeline.build_vplan_compile_flags(
+        run_common_include=CONTAINER_RUN_COMMON_ROOT,
+        tsvc_include=CONTAINER_TSVC_SRC_ROOT,
+        arch=arch,
+        len_1d=len_1d,
+        lmul=lmul,
+    )
+    compile_flag_args = " ".join(
+        f"--compile-flag={shlex.quote(flag)}" for flag in compile_flags
+    )
     if llvm_custom_dir is not None:
         clang_cmd = shlex.quote(str(CONTAINER_LLVM_CUSTOM_ROOT / "clang"))
         opt_cmd = shlex.quote(str(CONTAINER_LLVM_CUSTOM_ROOT / "opt"))
-        llvm_extract_cmd = shlex.quote(str(CONTAINER_LLVM_CUSTOM_ROOT / "llvm-extract"))
     else:
         clang_cmd = '$(command -v clang-vplan || command -v clang)'
         opt_cmd = '$(command -v opt-vplan || command -v opt)'
-        llvm_extract_cmd = '$(command -v llvm-extract-vplan || command -v llvm-extract)'
 
     inner_cmd = "\n".join(
         [
             "set -eu",
             f'CLANG_BIN="{clang_cmd}"',
             f'OPT_BIN="{opt_cmd}"',
-            f'LLVM_EXTRACT_BIN="{llvm_extract_cmd}"',
-            f'"$CLANG_BIN" -O0 -Xclang -disable-O0-optnone -S -emit-llvm '
-            f'{compile_include_args} '
-            f'{shlex.quote(str(container_source))} -o {shlex.quote(str(container_full_ll))}',
-            f'"$LLVM_EXTRACT_BIN" -S --func={shlex.quote(benchmark.function_name)} '
-            f'{shlex.quote(str(container_full_ll))} -o {shlex.quote(str(container_raw_ll))}',
-            (
-                f'python3 {shlex.quote(str(container_helper))} '
-                f'--input {shlex.quote(str(container_raw_ll))} '
-                f'--output {shlex.quote(str(container_raw_ll))} '
-                f'--triple {shlex.quote(RVV_IR_TARGET_TRIPLE)} '
-                f'--datalayout {shlex.quote(RVV_IR_TARGET_DATALAYOUT)}'
-            )
-            if arch == "RVV"
-            else ":",
-            f'"$OPT_BIN" {arch_opt_args} {PREVEC_ARGS} -S '
-            f'{shlex.quote(str(container_raw_ll))} -o {shlex.quote(str(container_prevec_ll))} >/dev/null 2>/dev/null',
-            f'"$OPT_BIN" {arch_opt_args} {VPLAN_EXPLAIN_ARGS} {forced_vf_arg} '
-            f'<{shlex.quote(str(container_prevec_ll))} 2>&1 | tee {shlex.quote(str(container_vplan_log))}',
-            f'printf "\\ngenerated %s\\n" {shlex.quote(str(container_prevec_ll))}',
+            'PREVEC_LL="$(mktemp /tmp/vplan-prevec-XXXXXX.ll)"',
+            f'python3 {shlex.quote(str(container_pipeline_helper))} emit-prevec '
+            f'--source {shlex.quote(str(container_source))} '
+            f'--prevec-ll "$PREVEC_LL" '
+            f'--clang-bin "$CLANG_BIN" '
+            f'--opt-bin "$OPT_BIN" '
+            f'--prevec-passes {shlex.quote(llvm_pipeline.PREVEC_PASSES)} '
+            f'{compile_flag_args}',
+            f'"$OPT_BIN" {VPLAN_EXPLAIN_ARGS} {forced_vf_arg} "$PREVEC_LL" 2>&1 | tee {shlex.quote(str(container_vplan_log))}',
+            'rm -f "$PREVEC_LL"',
         ]
     )
 
@@ -369,7 +356,7 @@ def run_vplan_explain(
         "container_log_text": combined_output,
         "vplan_log": str(vplan_log),
         "vplan_log_text": vplan_log_text,
-        "prevec_ir": str(prevec_ll),
+        "prevec_ir": "",
         "docker_command": docker_command,
         "vf_candidates": parse_vplan_vfs(vplan_log_text or combined_output),
     }
@@ -383,6 +370,8 @@ def main() -> None:
         platform=args.platform,
         arch=args.arch,
         vlen=args.vlen,
+        len_1d=args.len_1d,
+        lmul=args.lmul,
         llvm_custom=args.llvm_custom,
         vf_use=args.vf_use,
         output_root=args.output_root,

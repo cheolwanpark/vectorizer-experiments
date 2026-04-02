@@ -73,12 +73,12 @@ resolve_opt() {
         fi
     done
 
-    if command -v opt >/dev/null 2>&1; then
-        command -v opt
-        return 0
-    fi
     if command -v opt-vplan >/dev/null 2>&1; then
         command -v opt-vplan
+        return 0
+    fi
+    if command -v opt >/dev/null 2>&1; then
+        command -v opt
         return 0
     fi
 
@@ -109,14 +109,35 @@ resolve_llc() {
         fi
     done
 
-    if command -v llc >/dev/null 2>&1; then
-        command -v llc
-        return 0
-    fi
     if command -v llc-vplan >/dev/null 2>&1; then
         command -v llc-vplan
         return 0
     fi
+    if command -v llc >/dev/null 2>&1; then
+        command -v llc
+        return 0
+    fi
+
+    return 1
+}
+
+resolve_pipeline_helper() {
+    local candidates=()
+    if [[ -n "${HOST_PROJECT_ROOT:-}" ]]; then
+        candidates+=("${HOST_PROJECT_ROOT}/scripts/llvm_pipeline.py")
+    fi
+    candidates+=(
+        "${RVV_ROOT}/../host-project/scripts/llvm_pipeline.py"
+        "${SCRIPT_DIR}/../../scripts/llvm_pipeline.py"
+    )
+
+    local candidate
+    for candidate in "${candidates[@]}"; do
+        if [[ -f "$candidate" ]]; then
+            printf '%s\n' "$candidate"
+            return 0
+        fi
+    done
 
     return 1
 }
@@ -139,37 +160,6 @@ compile_to_object() {
     local src="$1"
     local obj="$2"
     "${CC}" "${OBJECT_COMPILE_FLAGS[@]}" -c "$src" -o "$obj"
-}
-
-emit_default_build_artifacts() {
-    local src="$1"
-    local output="$2"
-    local base_path="${output%.elf}"
-    local raw_ll="${base_path}.raw.ll"
-    local prevec_ll="${base_path}.prevec.ll"
-    local opt_ll="${base_path}.opt.ll"
-    local asm_out="${base_path}.s"
-    local opt_bin=""
-
-    echo "Generating raw IR: $raw_ll"
-    "${CC}" "${COMPILE_FLAGS[@]}" -O0 -Xclang -disable-O0-optnone -S -emit-llvm "$src" -o "$raw_ll"
-
-    if opt_bin="$(resolve_opt)"; then
-        echo "Canonicalizing pre-vector IR: $prevec_ll"
-        "${opt_bin}" -passes="${PREVEC_PASSES}" -S "$raw_ll" -o "$prevec_ll"
-    else
-        : > "$prevec_ll"
-        warn "opt not found; leaving ${prevec_ll} empty for default build artifact capture"
-    fi
-
-    echo "Generating optimized IR: $opt_ll"
-    "${CC}" "${COMPILE_FLAGS[@]}" -O3 -S -emit-llvm "$src" -o "$opt_ll"
-
-    echo "Assembly: $asm_out"
-    "${CC}" "${OBJECT_COMPILE_FLAGS[@]}" -S -o "$asm_out" "$src"
-    grep -E "vsetvli" "$asm_out" | head -3 || true
-
-    echo "Artifacts: $raw_ll $prevec_ll $opt_ll $asm_out"
 }
 
 verify_forced_vector_ir() {
@@ -398,80 +388,60 @@ fi
 
 OBJECT_COMPILE_FLAGS=("${COMPILE_FLAGS[@]}" -O3)
 
-if [[ "$ASM" == "1" && -z "$USE_VF" ]]; then
-    ASM_SOURCE="$SOURCE"
-    if [[ "$TSVC_MODE" -eq 1 ]]; then
-        ASM_SOURCE="$TSVC_LOOP_SOURCE"
-    fi
-    emit_default_build_artifacts "$ASM_SOURCE" "$OUTPUT"
-    exit 0
-fi
-
-if [[ -z "$USE_VF" ]]; then
-    SRCS=("${SUPPORT_SRCS[@]}" "${SOURCE}")
-    IR_SOURCE="$SOURCE"
-    if [[ "$TSVC_MODE" -eq 1 ]]; then
-        SRCS+=("${TSVC_LOOP_SOURCE}")
-        IR_SOURCE="$TSVC_LOOP_SOURCE"
-    fi
-    echo "Building: $KERNEL (target=$TARGET, lmul=$LMUL)"
-    LINK_CMD=("${CC}" -O3 "${LINK_FLAGS[@]}")
-    if [[ ${#LINK_ARGS[@]} -gt 0 ]]; then
-        LINK_CMD+=("${LINK_ARGS[@]}")
-    fi
-    LINK_CMD+=("${SRCS[@]}")
-    if [[ ${#LINK_LIBS[@]} -gt 0 ]]; then
-        LINK_CMD+=("${LINK_LIBS[@]}")
-    fi
-    LINK_CMD+=(-o "$OUTPUT")
-    "${LINK_CMD[@]}"
-    emit_default_build_artifacts "$IR_SOURCE" "$OUTPUT"
-    echo "Output: $OUTPUT"
-    exit 0
-fi
-
 OPT_BIN="$(resolve_opt)" || die "opt not found. Set OPT or ensure an LLVM build with opt is available."
 LLC_BIN="$(resolve_llc)" || die "llc not found. Set LLC or ensure an LLVM build with llc is available."
+PIPELINE_HELPER="$(resolve_pipeline_helper)" || die "llvm_pipeline.py not found"
 BASE_PATH="${OUTPUT%.elf}"
-RAW_LL="${BASE_PATH}.raw.ll"
-PREVEC_LL="${BASE_PATH}.prevec.ll"
 OPT_LL="${BASE_PATH}.opt.ll"
 OPT_LOG="${BASE_PATH}.opt.log"
+ASM_OUT="${BASE_PATH}.s"
 BUILD_DIR="${BASE_PATH}.build"
 mkdir -p "$BUILD_DIR"
 
-echo "Building: $KERNEL (target=$TARGET, lmul=$LMUL, use_vf=$USE_VF)"
-echo "Generating raw IR: $RAW_LL"
 IR_SOURCE="$SOURCE"
 if [[ "$TSVC_MODE" -eq 1 ]]; then
     IR_SOURCE="$TSVC_LOOP_SOURCE"
 fi
-"${CC}" "${COMPILE_FLAGS[@]}" -O0 -Xclang -disable-O0-optnone -S -emit-llvm "$IR_SOURCE" -o "$RAW_LL"
-
-echo "Canonicalizing pre-vector IR: $PREVEC_LL"
-"${OPT_BIN}" -passes="${PREVEC_PASSES}" -S "$RAW_LL" -o "$PREVEC_LL"
-
-echo "Running forced-VF optimization: $OPT_LL"
-if ! "${OPT_BIN}" \
-    -pass-remarks=loop-vectorize \
-    -pass-remarks-missed=loop-vectorize \
-    -pass-remarks-analysis=loop-vectorize \
-    -passes="${FORCED_OPT_PASSES}" \
-    -vplan-use-vf="${USE_VF}" \
-    -S "$PREVEC_LL" \
-    -o "$OPT_LL" >"$OPT_LOG" 2>&1; then
-    cat "$OPT_LOG" >&2
-    die "Forced VF optimization failed. Log: $OPT_LOG"
+KERNEL_OBJ="${BUILD_DIR}/${KERNEL}.o"
+PIPELINE_CMD=(
+    python3
+    "$PIPELINE_HELPER"
+    build-artifacts
+    --source "$IR_SOURCE"
+    --opt-ll "$OPT_LL"
+    --asm-out "$ASM_OUT"
+    --obj-out "$KERNEL_OBJ"
+    --clang-bin "$CC"
+    --opt-bin "$OPT_BIN"
+    --llc-bin "$LLC_BIN"
+    --prevec-passes "$PREVEC_PASSES"
+    --opt-passes "$FORCED_OPT_PASSES"
+)
+for flag in "${COMPILE_FLAGS[@]}"; do
+    PIPELINE_CMD+=("--compile-flag=$flag")
+done
+if [[ -n "$USE_VF" ]]; then
+    PIPELINE_CMD+=(--use-vf "$USE_VF" --opt-log "$OPT_LOG")
 fi
 
-verify_forced_vector_ir "$OPT_LL" "$USE_VF" "$OPT_LOG"
+echo "Building: $KERNEL (target=$TARGET, lmul=$LMUL, use_vf=$USE_VF)"
+if ! "${PIPELINE_CMD[@]}"; then
+    if [[ -f "$OPT_LOG" ]]; then
+        cat "$OPT_LOG" >&2
+        die "Forced VF optimization failed. Log: $OPT_LOG"
+    fi
+    die "LLVM pipeline failed for ${IR_SOURCE}"
+fi
+if [[ -n "$USE_VF" ]]; then
+    verify_forced_vector_ir "$OPT_LL" "$USE_VF" "$OPT_LOG"
+    rm -f "$OPT_LOG"
+fi
 
-ASM_OUT="${BASE_PATH}.s"
-"${LLC_BIN}" -O3 -o "$ASM_OUT" "$OPT_LL"
 echo "Assembly: $ASM_OUT"
 grep -E "vsetvli" "$ASM_OUT" | head -3 || true
 
 if [[ "$ASM" == "1" ]]; then
+    echo "Artifacts: $OPT_LL $ASM_OUT"
     exit 0
 fi
 
@@ -488,8 +458,6 @@ if [[ "$TSVC_MODE" -eq 1 ]]; then
     OBJECTS+=("$WRAPPER_OBJ")
 fi
 
-KERNEL_OBJ="${BUILD_DIR}/${KERNEL}.o"
-"${LLC_BIN}" -O3 --filetype=obj -o "$KERNEL_OBJ" "$OPT_LL"
 OBJECTS+=("$KERNEL_OBJ")
 
 LINK_CMD=("${CC}" "${LINK_FLAGS[@]}")
@@ -503,4 +471,4 @@ fi
 LINK_CMD+=(-o "$OUTPUT")
 "${LINK_CMD[@]}"
 echo "Output: $OUTPUT"
-echo "Artifacts: $RAW_LL $PREVEC_LL $OPT_LL $OPT_LOG $ASM_OUT"
+echo "Artifacts: $OPT_LL $ASM_OUT"

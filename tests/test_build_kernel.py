@@ -31,20 +31,17 @@ class BuildKernelTest(unittest.TestCase):
         forced_vf_block_start = script.index('verify_forced_vector_ir "$OPT_LL" "$USE_VF" "$OPT_LOG"')
         forced_vf_block_end = script.index("OBJECTS=()", forced_vf_block_start)
         forced_vf_block = script[forced_vf_block_start:forced_vf_block_end]
-        self.assertIn('ASM_OUT="${BASE_PATH}.s"', forced_vf_block)
-        self.assertIn('echo "Artifacts: $RAW_LL $PREVEC_LL $OPT_LL $OPT_LOG $ASM_OUT"', script)
+        self.assertIn('ASM_OUT="${BASE_PATH}.s"', script)
+        self.assertIn('echo "Artifacts: $OPT_LL $ASM_OUT"', script)
+        self.assertNotIn('RAW_LL="${BASE_PATH}.raw.ll"', script)
+        self.assertNotIn('PREVEC_LL="${BASE_PATH}.prevec.ll"', script)
 
-    def test_default_build_persists_ir_and_assembly_artifacts(self):
+    def test_default_build_uses_shared_llvm_pipeline(self):
         script = BUILD_KERNEL.read_text(encoding="utf-8")
-        helper_start = script.index("emit_default_build_artifacts() {")
-        helper_end = script.index("verify_forced_vector_ir()", helper_start)
-        helper_block = script[helper_start:helper_end]
-
-        self.assertIn('local raw_ll="${base_path}.raw.ll"', helper_block)
-        self.assertIn('local prevec_ll="${base_path}.prevec.ll"', helper_block)
-        self.assertIn('local opt_ll="${base_path}.opt.ll"', helper_block)
-        self.assertIn('local asm_out="${base_path}.s"', helper_block)
-        self.assertIn('emit_default_build_artifacts "$IR_SOURCE" "$OUTPUT"', script)
+        self.assertIn('PIPELINE_HELPER="$(resolve_pipeline_helper)" || die "llvm_pipeline.py not found"', script)
+        self.assertIn('python3', script)
+        self.assertIn('build-artifacts', script)
+        self.assertNotIn('emit_default_build_artifacts "$IR_SOURCE" "$OUTPUT"', script)
 
     def test_generated_mode_adds_tsvc_runtime_without_full_tsvc_runtime_sources(self):
         script = BUILD_KERNEL.read_text(encoding="utf-8")

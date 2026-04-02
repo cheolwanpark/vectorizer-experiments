@@ -32,8 +32,11 @@ class VPlanExplainTest(unittest.TestCase):
                     )
 
         inner_command = captured_command["command"][-1]
-        self.assertIn("--func=kernel", inner_command)
-        self.assertIn("-I /workspace/host-project/emulator/run/common", inner_command)
+        self.assertIn("llvm_pipeline.py", inner_command)
+        self.assertIn("emit-prevec", inner_command)
+        self.assertIn("--source /workspace/host-project/emulator/run/src/s123.c", inner_command)
+        self.assertIn("--compile-flag=-I", inner_command)
+        self.assertIn("/workspace/host-project/emulator/run/common", inner_command)
         self.assertEqual(result["source"], str(source))
         self.assertEqual(result["source_kind"], "manual")
         self.assertEqual(result["function_name"], "kernel")

@@ -24,6 +24,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--image", default=vplan_explain.DEFAULT_IMAGE, help="Docker image tag")
     parser.add_argument("--platform", default=vplan_explain.DEFAULT_PLATFORM, help="Docker platform")
     parser.add_argument("--arch", default="RVV", choices=["RVV", "MAC"], help="Target architecture")
+    parser.add_argument("--len", dest="len_1d", type=int, default=4096, help="LEN_1D value")
+    parser.add_argument("--lmul", type=int, default=1, help="LMUL value")
     parser.add_argument("--vlen", type=int, default=128, help="RVV vector length in bits")
     parser.add_argument("--llvm-custom", default="", help="Optional host LLVM build/bin directory")
     parser.add_argument(
@@ -155,6 +157,8 @@ def main() -> None:
             platform=args.platform,
             arch=args.arch,
             vlen=args.vlen,
+            len_1d=args.len_1d,
+            lmul=args.lmul,
             llvm_custom=args.llvm_custom,
             output_root=args.output_root,
             ensure_image=False,

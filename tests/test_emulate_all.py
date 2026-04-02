@@ -128,8 +128,6 @@ class EmulateAllTest(unittest.TestCase):
         }
 
         self.assertNotIn("sample_index", columns)
-        self.assertEqual(columns["raw_ll_text"], "VARCHAR")
-        self.assertEqual(columns["prevec_ll_text"], "VARCHAR")
         self.assertEqual(columns["opt_ll_text"], "VARCHAR")
         self.assertEqual(columns["asm_text"], "VARCHAR")
 
@@ -140,8 +138,6 @@ class EmulateAllTest(unittest.TestCase):
             "summary": {"status": "PASS", "kernel_cycles": 10, "total_cycles": 20},
             "container_log_text": "container",
             "run_log_text": "run",
-            "raw_ll_text": "raw",
-            "prevec_ll_text": "prevec",
             "opt_ll_text": "opt",
             "asm_text": "asm",
             "failed": False,
@@ -156,36 +152,30 @@ class EmulateAllTest(unittest.TestCase):
             emulate_result=emulate_result,
         )
 
-        self.assertEqual(row["raw_ll_text"], "raw")
-        self.assertEqual(row["prevec_ll_text"], "prevec")
         self.assertEqual(row["opt_ll_text"], "opt")
         self.assertEqual(row["asm_text"], "asm")
 
     def test_find_missing_artifacts_reports_empty_fields(self):
         missing = emulate_all.find_missing_artifacts(
             {
-                "raw_ll_text": "raw",
-                "prevec_ll_text": "",
                 "opt_ll_text": "opt",
                 "asm_text": "",
             },
             "fixed:4",
         )
 
-        self.assertEqual(missing, ["prevec_ll_text", "asm_text"])
+        self.assertEqual(missing, ["asm_text"])
 
-    def test_find_missing_artifacts_ignores_default_run(self):
+    def test_find_missing_artifacts_requires_default_run_artifacts(self):
         missing = emulate_all.find_missing_artifacts(
             {
-                "raw_ll_text": "",
-                "prevec_ll_text": "",
                 "opt_ll_text": "",
                 "asm_text": "",
             },
             "",
         )
 
-        self.assertEqual(missing, [])
+        self.assertEqual(missing, ["opt_ll_text", "asm_text"])
 
     def test_main_copies_vplan_failure_rows_from_vfs_db(self):
         with TemporaryDirectory() as tmp:
@@ -324,8 +314,6 @@ class EmulateAllTest(unittest.TestCase):
                 "summary": {"status": "PASS", "kernel_cycles": 10, "total_cycles": 20},
                 "container_log_text": "container",
                 "run_log_text": "run",
-                "raw_ll_text": "raw",
-                "prevec_ll_text": "prevec",
                 "opt_ll_text": "opt",
                 "asm_text": "asm",
                 "failed": False,

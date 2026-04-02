@@ -53,8 +53,6 @@ TABLE_COLUMNS = [
     "vplan_log_text",
     "container_log_text",
     "run_log_text",
-    "raw_ll_text",
-    "prevec_ll_text",
     "opt_ll_text",
     "asm_text",
 ]
@@ -231,8 +229,6 @@ def create_table(conn: sqlite3.Connection) -> None:
             vplan_log_text TEXT,
             container_log_text TEXT,
             run_log_text TEXT,
-            raw_ll_text VARCHAR,
-            prevec_ll_text VARCHAR,
             opt_ll_text VARCHAR,
             asm_text VARCHAR,
             PRIMARY KEY (bench, use_vf)
@@ -357,8 +353,6 @@ def run_emulate_job(
 
 
 def find_missing_artifacts(emulate_result: dict[str, Any], use_vf: str) -> list[str]:
-    if not use_vf:
-        return []
     return [column for column in emulate.BUILD_ARTIFACT_SUFFIXES if not emulate_result.get(column)]
 
 

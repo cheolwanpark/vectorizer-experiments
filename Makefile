@@ -28,8 +28,8 @@ help:
 	@echo "Targets:"
 	@echo "  make emulate sXXX [IMAGE=...] [LEN=4096] [LMUL=1] [USE_VF='fixed:4'] [TIMEOUT=120] [LOG_ROOT=artifacts/emulate]   # XiangShan"
 	@echo "  make emulate-all [IMAGE=...] [LEN=4096] [LMUL=1] [TIMEOUT=120] [ARCH=RVV] [VLEN=128] [LLVM_CUSTOM=/path/to/llvm-or-bin] [CONCURRENCY=5] [VFS_DB=artifacts/vfs.db]"
-	@echo "  make vplan-explain sXXX [IMAGE=...] [PLATFORM=linux/amd64] [ARCH=RVV|MAC] [VLEN=128|256|512...] [LLVM_CUSTOM=/path/to/llvm-or-bin] [VF_USE='fixed:2'] [VPLAN_LOG_ROOT=artifacts/vplan-explain] [VERBOSE=1]"
-	@echo "  make vplan-explain-all [IMAGE=...] [PLATFORM=linux/amd64] [ARCH=RVV|MAC] [VLEN=128] [LLVM_CUSTOM=/path/to/llvm-or-bin] [VPLAN_LOG_ROOT=artifacts/vplan-explain] [VFS_DB=artifacts/vfs.db]"
+	@echo "  make vplan-explain sXXX [IMAGE=...] [PLATFORM=linux/amd64] [ARCH=RVV|MAC] [LEN=4096] [LMUL=1] [VLEN=128|256|512...] [LLVM_CUSTOM=/path/to/llvm-or-bin] [VF_USE='fixed:2'] [VPLAN_LOG_ROOT=artifacts/vplan-explain] [VERBOSE=1]"
+	@echo "  make vplan-explain-all [IMAGE=...] [PLATFORM=linux/amd64] [ARCH=RVV|MAC] [LEN=4096] [LMUL=1] [VLEN=128] [LLVM_CUSTOM=/path/to/llvm-or-bin] [VPLAN_LOG_ROOT=artifacts/vplan-explain] [VFS_DB=artifacts/vfs.db]"
 	@echo "  make plot-results [VFS_DB=artifacts/vfs.db] [EMULATE_DB=artifacts/emulate-result-YYYYMMDDHHMM.sqlite] [PLOT_OUTPUT_HTML=artifacts/plots/report.html]"
 
 emulate:
@@ -54,7 +54,7 @@ emulate-all: $(VFS_DB)
 
 vplan-explain:
 	@if [ -z "$(BENCH)" ]; then \
-		echo "usage: make vplan-explain sXXX [IMAGE=...] [PLATFORM=linux/amd64] [ARCH=RVV|MAC] [VLEN=128|256|512...] [LLVM_CUSTOM=/path/to/llvm-or-bin] [VF_USE='fixed:2'] [VPLAN_LOG_ROOT=artifacts/vplan-explain] [VERBOSE=1]" >&2; \
+		echo "usage: make vplan-explain sXXX [IMAGE=...] [PLATFORM=linux/amd64] [ARCH=RVV|MAC] [LEN=4096] [LMUL=1] [VLEN=128|256|512...] [LLVM_CUSTOM=/path/to/llvm-or-bin] [VF_USE='fixed:2'] [VPLAN_LOG_ROOT=artifacts/vplan-explain] [VERBOSE=1]" >&2; \
 		exit 2; \
 	fi
 	@$(PYTHON) scripts/vplan_explain.py \
@@ -62,6 +62,8 @@ vplan-explain:
 		--image "$(IMAGE)" \
 		--platform "$(PLATFORM)" \
 		--arch "$(ARCH)" \
+		--len "$(LEN)" \
+		--lmul "$(LMUL)" \
 		--vlen "$(VLEN)" \
 		$(if $(strip $(LLVM_CUSTOM)),--llvm-custom "$(LLVM_CUSTOM)",) \
 		$(if $(strip $(VF_USE)),--vf-use "$(VF_USE)",) \
@@ -73,6 +75,8 @@ $(VFS_DB):
 		--image "$(IMAGE)" \
 		--platform "$(PLATFORM)" \
 		--arch "$(ARCH)" \
+		--len "$(LEN)" \
+		--lmul "$(LMUL)" \
 		--vlen "$(VLEN)" \
 		$(if $(strip $(LLVM_CUSTOM)),--llvm-custom "$(LLVM_CUSTOM)",) \
 		--output-root "$(VPLAN_LOG_ROOT)" \
@@ -85,6 +89,8 @@ vplan-explain-all: FORCE
 		--image "$(IMAGE)" \
 		--platform "$(PLATFORM)" \
 		--arch "$(ARCH)" \
+		--len "$(LEN)" \
+		--lmul "$(LMUL)" \
 		--vlen "$(VLEN)" \
 		$(if $(strip $(LLVM_CUSTOM)),--llvm-custom "$(LLVM_CUSTOM)",) \
 		--output-root "$(VPLAN_LOG_ROOT)" \

@@ -29,8 +29,6 @@ SIM_TARGET = "xiangshan.KunminghuV2Config"
 LEGACY_TIMEOUT_S = 120
 XIANSHAN_DEFAULT_TIMEOUT_S = 1800
 BUILD_ARTIFACT_SUFFIXES = {
-    "raw_ll_text": ".raw.ll",
-    "prevec_ll_text": ".prevec.ll",
     "opt_ll_text": ".opt.ll",
     "asm_text": ".s",
 }
