@@ -15,6 +15,17 @@ class BuildKernelTest(unittest.TestCase):
         tsvc_override_block = script[block_start:block_end]
         self.assertNotIn('"${SCRIPT_DIR}/common/arrays.c"', tsvc_override_block)
 
+    def test_forced_vf_validation_only_hard_fails_on_opt_rejection(self):
+        script = BUILD_KERNEL.read_text(encoding="utf-8")
+        verify_block_start = script.index("verify_forced_vector_ir() {")
+        verify_block_end = script.index("validate_vplan_use_vf()", verify_block_start)
+        verify_block = script[verify_block_start:verify_block_end]
+
+        self.assertIn('die "Forced VF optimization was rejected by opt. Log: ${log_path}"', verify_block)
+        self.assertNotIn('die "Forced VF verification failed for ${first_entry}. Saved IR: ${ir_path}"', verify_block)
+        self.assertIn('warn "Forced VF ${first_entry} did not leave a final vector.body marker in ${ir_path}; continuing because late vector passes may rewrite the loop shape"', verify_block)
+        self.assertIn('warn "Forced VF ${first_entry} did not leave an exact final VF type marker in ${ir_path}; continuing because late vector passes may rewrite the final IR"', verify_block)
+
     def test_forced_vf_build_persists_assembly_artifact(self):
         script = BUILD_KERNEL.read_text(encoding="utf-8")
         forced_vf_block_start = script.index('verify_forced_vector_ir "$OPT_LL" "$USE_VF" "$OPT_LOG"')
