@@ -28,6 +28,9 @@ ARG_DIRECT_RE = re.compile(
     r"^(?P<indent>\s*)(?P<lhs>.+?=\s*)func_args->arg_info\s*;\s*$"
 )
 ARGS_ASSIGN_RE = re.compile(r"^\s*(?P<var>[A-Za-z_]\w*)\.(?P<field>\w+)\s*=\s*(?P<expr>.+);\s*$")
+STRUCT_INIT_RE = re.compile(
+    r"^\s*static\s+struct\s*\{(?P<fields_decl>[^}]*)\}\s*(?P<var>[A-Za-z_]\w*)\s*=\s*\{(?P<values>[^}]*)\}\s*;\s*$"
+)
 RETURN_EXPR_RE = re.compile(r"^\s*return\s+(?P<expr>.+);\s*$")
 
 
@@ -95,10 +98,12 @@ def ensure_generated_source(root: Path, bench: str) -> Path:
 
 
 def convert_loop_source_to_kernel(bench: str, source_text: str) -> str:
+    signature_re = re.compile(rf"\breal_t\s+{re.escape(bench)}\s*\(\s*struct\s+args_t\s*\*\s*func_args\s*\)")
     loop_body = _extract_function_body(
         source_text,
-        re.compile(rf"\breal_t\s+{re.escape(bench)}\s*\(\s*struct\s+args_t\s*\*\s*func_args\s*\)")
+        signature_re,
     )
+    helper_text = _extract_helper_text(source_text, signature_re)
     prepare_body = _extract_function_body(
         source_text,
         re.compile(r"\bvoid\s*\*\s*tsvc_prepare_args\s*\(\s*void\s*\)")
@@ -114,16 +119,32 @@ def convert_loop_source_to_kernel(bench: str, source_text: str) -> str:
 
     lines = [
         f"/* {GENERATED_MINIMAL_MARKER}: {bench} */",
+        "#include <math.h>",
+        "#include <stdlib.h>",
         '#include "common.h"',
+        "",
+        "#ifndef ABS",
+        "#define ABS fabsf",
+        "#endif",
         "",
         "extern int *tsvc_ip;",
         "extern int tsvc_n1;",
         "extern int tsvc_n3;",
         "extern real_t tsvc_s1;",
         "extern real_t tsvc_s2;",
+        "extern real_t flat_2d_array[LEN_2D * LEN_2D];",
+        "extern real_t x[LEN_1D];",
+        "extern real_t tt[LEN_2D][LEN_2D];",
+        "extern real_t * __restrict__ xx;",
+        "extern real_t *yy;",
+        "extern real_t test(real_t *A);",
+        "extern real_t f(real_t a, real_t b);",
         "",
-        "void kernel(void) {",
     ]
+    if helper_text:
+        lines.extend(helper_text.splitlines())
+        lines.append("")
+    lines.append("void kernel(void) {")
     if body_text:
         lines.extend(_indent_block(body_text.splitlines(), "    "))
     lines.append("}")
@@ -155,9 +176,22 @@ def _extract_function_body(source_text: str, signature_re: re.Pattern[str]) -> s
 
 def _parse_prepare_args(body_text: str) -> ArgInfoSpec:
     assignments: dict[str, dict[str, str]] = {}
+    struct_initializers: dict[str, dict[str, str]] = {}
     return_expr: str | None = None
 
     for line in body_text.splitlines():
+        struct_init_match = STRUCT_INIT_RE.match(line)
+        if struct_init_match:
+            field_names = _parse_struct_field_names(struct_init_match.group("fields_decl"))
+            values = [
+                value.strip()
+                for value in struct_init_match.group("values").split(",")
+                if value.strip()
+            ]
+            if field_names and len(field_names) == len(values):
+                struct_initializers[struct_init_match.group("var")] = dict(zip(field_names, values))
+            continue
+
         assign_match = ARGS_ASSIGN_RE.match(line)
         if assign_match:
             assignments.setdefault(assign_match.group("var"), {})[assign_match.group("field")] = assign_match.group("expr").strip()
@@ -174,8 +208,28 @@ def _parse_prepare_args(body_text: str) -> ArgInfoSpec:
         variable = return_expr[1:]
         if variable in assignments:
             return ArgInfoSpec(kind="struct", fields=assignments[variable])
+        if variable in struct_initializers:
+            return ArgInfoSpec(kind="struct", fields=struct_initializers[variable])
 
     return ArgInfoSpec(kind="direct", expr=return_expr)
+
+
+def _parse_struct_field_names(fields_decl: str) -> list[str]:
+    return re.findall(r"([A-Za-z_]\w*)\s*(?:\[[^\]]+\])?\s*;", fields_decl)
+
+
+def _extract_helper_text(source_text: str, signature_re: re.Pattern[str]) -> str:
+    match = signature_re.search(source_text)
+    if match is None:
+        raise ConversionError(f"function matching {signature_re.pattern!r} not found")
+
+    helper_lines: list[str] = []
+    for line in source_text[:match.start()].splitlines():
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#include"):
+            continue
+        helper_lines.append(line.rstrip())
+    return "\n".join(helper_lines).strip()
 
 
 def _strip_outer_loop(lines: list[str]) -> list[str]:
@@ -265,6 +319,10 @@ def _rewrite_arg_info_lines(lines: list[str], arg_info: ArgInfoSpec) -> list[str
 def _direct_value_expr(arg_info: ArgInfoSpec) -> str:
     if arg_info.kind == "none":
         return "0"
+    if arg_info.kind == "struct" and arg_info.fields:
+        if len(arg_info.fields) == 1:
+            return next(iter(arg_info.fields.values()))
+        raise ConversionError("cannot rewrite scalar arg_info access from multi-field structured args")
     if arg_info.kind != "direct" or arg_info.expr is None:
         raise ConversionError("cannot rewrite scalar arg_info access from structured args")
     return arg_info.expr[1:] if arg_info.expr.startswith("&") else arg_info.expr

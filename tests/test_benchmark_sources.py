@@ -48,6 +48,29 @@ class BenchmarkSourcesTest(unittest.TestCase):
         self.assertIn("int j = LEN_2D/2;", converted)
         self.assertIn("int inc = tsvc_n1;", converted)
 
+    def test_convert_loop_source_to_kernel_keeps_helper_functions_and_compat_headers(self):
+        converted = benchmark_sources.convert_loop_source_to_kernel(
+            "s151",
+            (LOOPS_ROOT / "s151.c").read_text(encoding="utf-8"),
+        )
+
+        self.assertIn("#include <math.h>", converted)
+        self.assertIn("#include <stdlib.h>", converted)
+        self.assertIn("#define ABS fabsf", converted)
+        self.assertIn("extern real_t flat_2d_array[LEN_2D * LEN_2D];", converted)
+        self.assertIn("extern real_t * __restrict__ xx;", converted)
+        self.assertIn("void s151s(real_t a[LEN_1D], real_t b[LEN_1D],  int m)", converted)
+        self.assertIn("s151s(a, b,  1);", converted)
+
+    def test_convert_loop_source_to_kernel_rewrites_static_struct_initializer_args(self):
+        converted = benchmark_sources.convert_loop_source_to_kernel(
+            "s174",
+            (LOOPS_ROOT / "s174.c").read_text(encoding="utf-8"),
+        )
+
+        self.assertIn("int M = LEN_1D/2;", converted)
+        self.assertNotIn("int M = args;", converted)
+
     def test_resolve_benchmark_source_prefers_manual_source(self):
         with TemporaryDirectory() as tmp:
             root = Path(tmp)
