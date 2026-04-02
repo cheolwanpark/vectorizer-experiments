@@ -186,6 +186,15 @@ def make_vplan_result(record: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def make_default_vplan_result() -> dict[str, Any]:
+    return {
+        "source": "",
+        "vplan_log": "",
+        "vplan_log_text": "",
+        "container_log_text": "",
+    }
+
+
 def create_table(conn: sqlite3.Connection) -> None:
     conn.execute(
         """
@@ -417,6 +426,7 @@ def main() -> None:
         print(f"[vplan {index}/{len(benches)}] {bench} vf={len(candidate_records)}")
         for candidate_record in candidate_records:
             scheduled.append((bench, str(candidate_record["use_vf"]), make_vplan_result(candidate_record)))
+        scheduled.append((bench, "", make_default_vplan_result()))
 
     print(f"emulate-jobs: {len(scheduled)}")
 

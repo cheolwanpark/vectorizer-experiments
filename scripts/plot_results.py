@@ -134,6 +134,10 @@ def parse_vf_key(value: str) -> tuple[int, int, str]:
     return (2, 0, text)
 
 
+def display_vf(value: str) -> str:
+    return value if value.strip() else "default"
+
+
 def median(values: Sequence[float]) -> float:
     return float(statistics.median(values))
 
@@ -346,8 +350,6 @@ def load_emulate_data(
             failure_counts[failure] += 1
             continue
         use_vf = str(row["use_vf"] or "")
-        if not use_vf:
-            continue
         key = (bench, use_vf)
         aggregate = aggregates.setdefault(
             key,
@@ -371,16 +373,14 @@ def build_metric_summaries(
         if not samples:
             continue
         candidate = candidates.get((bench, use_vf))
-        if candidate is None:
-            continue
         points_by_bench[bench].append(
             MetricPoint(
                 bench=bench,
                 use_vf=use_vf,
-                selected=candidate.selected,
-                raw_cost=candidate.raw_cost,
-                raw_compare=candidate.raw_compare,
-                compare=candidate.compare,
+                selected=candidate.selected if candidate is not None else False,
+                raw_cost=candidate.raw_cost if candidate is not None else "",
+                raw_compare=candidate.raw_compare if candidate is not None else "",
+                compare=candidate.compare if candidate is not None else None,
                 samples=list(samples),
                 median_value=median(samples),
                 min_value=min(samples),
@@ -650,6 +650,7 @@ def build_bench_detail_data(
     return [
         {
             "vf": point.use_vf,
+            "label": display_vf(point.use_vf),
             "median": point.median_value,
             "min": point.min_value,
             "max": point.max_value,
@@ -704,9 +705,9 @@ def build_detail_summary_text(summary: BenchMetricSummary | None, metric_name: s
     if summary is None:
         return f"{metric_name}: no successful emulate rows"
     return (
-        f"{metric_name}: selected={summary.selected_vf or '-'}, "
-        f"compare-best={summary.compare_best_vf or '-'}, "
-        f"latency-best={summary.actual_best_vf or '-'}, "
+        f"{metric_name}: selected={display_vf(summary.selected_vf) if summary.selected_vf is not None else '-'}, "
+        f"compare-best={display_vf(summary.compare_best_vf) if summary.compare_best_vf is not None else '-'}, "
+        f"latency-best={display_vf(summary.actual_best_vf) if summary.actual_best_vf is not None else '-'}, "
         f"spearman={format_float(summary.spearman, digits=2)}"
     )
 
@@ -1319,12 +1320,12 @@ _APP_JS = r"""
           el.innerHTML = '<p style="color:#6b7280;padding:20px">No data for ' + metric + '.</p>';
           return;
         }
-        var vfs = pts.map(function(p){return p.vf;});
+        var vfLabels = pts.map(function(p){return p.label;});
         var medians = pts.map(function(p){return p.median;});
         var compares = pts.map(function(p){return p.compare;});
         var barColors = pts.map(function(p){return p.selected ? '#dc2626' : '#2563eb';});
         var barTrace = {
-          type: 'bar', name: 'median latency', x: vfs, y: medians,
+          type: 'bar', name: 'median latency', x: vfLabels, y: medians,
           marker: {color: barColors, opacity: 0.78},
           text: medians.map(function(v){return Math.round(v).toString();}),
           textposition: 'auto',
@@ -1342,7 +1343,7 @@ _APP_JS = r"""
         var hasCompare = compares.some(function(c){return c !== null;});
         if (hasCompare) {
           var cVfs = [], cVals = [];
-          pts.forEach(function(p){if(p.compare!==null){cVfs.push(p.vf);cVals.push(p.compare);}});
+          pts.forEach(function(p){if(p.compare!==null){cVfs.push(p.label);cVals.push(p.compare);}});
           traces.push({
             type: 'scatter', mode: 'markers', name: 'VPlan compare',
             x: cVfs, y: cVals, yaxis: 'y2',

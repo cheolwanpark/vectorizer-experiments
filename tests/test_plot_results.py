@@ -400,14 +400,132 @@ class PlotResultsTest(unittest.TestCase):
                 ) VALUES ('emulate', '', 's000', 'fixed:4', 10, 20)
                 """
             )
+            conn.execute(
+                """
+                INSERT INTO emulate_results (
+                    stage, failure, bench, use_vf, kernel_cycles, total_cycles
+                ) VALUES ('emulate', '', 's000', '', 12, 24)
+                """
+            )
             conn.commit()
             conn.close()
 
             aggregates, failure_counts = load_emulate_data(db_path, set())
 
         self.assertEqual(failure_counts, {})
+        self.assertEqual(aggregates[("s000", "")].kernel_samples, [12.0])
+        self.assertEqual(aggregates[("s000", "")].total_samples, [24.0])
         self.assertEqual(aggregates[("s000", "fixed:4")].kernel_samples, [10.0])
         self.assertEqual(aggregates[("s000", "fixed:4")].total_samples, [20.0])
+
+    def test_build_metric_summaries_includes_default_emulate_row_without_candidate(self):
+        candidates = {
+            ("bench", "fixed:4"): VFCandidate(
+                bench="bench",
+                use_vf="fixed:4",
+                raw_vf="4",
+                raw_cost="12",
+                raw_compare="600",
+                compare=600.0,
+                selected=True,
+            )
+        }
+        aggregates = {
+            ("bench", ""): EmulateAggregate(
+                bench="bench", use_vf="", kernel_samples=[15.0], total_samples=[15.0]
+            ),
+            ("bench", "fixed:4"): EmulateAggregate(
+                bench="bench", use_vf="fixed:4", kernel_samples=[10.0], total_samples=[10.0]
+            ),
+        }
+
+        summaries = build_metric_summaries("kernel_cycles", candidates, aggregates)
+
+        self.assertEqual(len(summaries), 1)
+        point_by_vf = {point.use_vf: point for point in summaries[0].points}
+        self.assertIn("", point_by_vf)
+        self.assertIsNone(point_by_vf[""].compare)
+        self.assertFalse(point_by_vf[""].selected)
+        self.assertEqual(summaries[0].actual_best_vf, "fixed:4")
+
+    def test_generate_plots_labels_default_bench_detail_point(self):
+        summary = BenchMetricSummary(
+            bench="s000",
+            metric_name="kernel_cycles",
+            points=[
+                MetricPoint(
+                    bench="s000",
+                    use_vf="",
+                    selected=False,
+                    raw_cost="",
+                    raw_compare="",
+                    compare=None,
+                    samples=[12.0],
+                    median_value=12.0,
+                    min_value=12.0,
+                    max_value=12.0,
+                    n_success=1,
+                ),
+                MetricPoint(
+                    bench="s000",
+                    use_vf="fixed:4",
+                    selected=True,
+                    raw_cost="12",
+                    raw_compare="600",
+                    compare=600.0,
+                    samples=[10.0],
+                    median_value=10.0,
+                    min_value=10.0,
+                    max_value=10.0,
+                    n_success=1,
+                    compare_rank=1,
+                    actual_rank=1,
+                ),
+            ],
+            selected_vf="fixed:4",
+            compare_best_vf="fixed:4",
+            actual_best_vf="fixed:4",
+            max_abs_rank_delta=0,
+            selected_rank_delta=0,
+            spearman=1.0,
+        )
+        data = ReportData(
+            vfs_db=Path("artifacts/vfs.db"),
+            emulate_db=Path("artifacts/emulate.sqlite"),
+            benches=["s000"],
+            candidates={},
+            candidate_counts={"s000": 1},
+            vplan_failures=[],
+            emulate_aggregates={},
+            emulate_failure_counts={},
+            metric_summaries={"kernel_cycles": [summary], "total_cycles": []},
+        )
+
+        plots = generate_plots(data)
+
+        self.assertEqual(
+            plots["detail:s000:kernel_cycles"],
+            [
+                {
+                    "vf": "fixed:4",
+                    "label": "fixed:4",
+                    "median": 10.0,
+                    "min": 10.0,
+                    "max": 10.0,
+                    "compare": 600.0,
+                    "selected": True,
+                },
+                {
+                    "vf": "",
+                    "label": "default",
+                    "median": 12.0,
+                    "min": 12.0,
+                    "max": 12.0,
+                    "compare": None,
+                    "selected": False,
+                },
+            ],
+        )
 
     def test_load_vfs_data_prefers_compare_column(self):
         with TemporaryDirectory() as tmp:

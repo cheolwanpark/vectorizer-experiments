@@ -104,6 +104,19 @@ class EmulateAllTest(unittest.TestCase):
         self.assertEqual(failures_by_bench["s001"]["failure"], "no_vf")
         self.assertEqual(failures_by_bench["s001"]["vplan_log_text"], "log1")
 
+    def test_make_default_vplan_result_returns_empty_metadata(self):
+        result = emulate_all.make_default_vplan_result()
+
+        self.assertEqual(
+            result,
+            {
+                "source": "",
+                "vplan_log": "",
+                "vplan_log_text": "",
+                "container_log_text": "",
+            },
+        )
+
     def test_create_table_uses_artifact_columns_without_sample_index(self):
         conn = sqlite3.connect(":memory:")
         self.addCleanup(conn.close)
@@ -321,11 +334,18 @@ class EmulateAllTest(unittest.TestCase):
             self.assertEqual(len(emulate_dbs), 1)
             result_conn = sqlite3.connect(emulate_dbs[0])
             rows = result_conn.execute(
-                "SELECT stage, bench, use_vf, failure, kernel_cycles, vplan_log_text FROM emulate_results"
+                "SELECT stage, bench, use_vf, failure, kernel_cycles, vplan_log_text "
+                "FROM emulate_results ORDER BY use_vf"
             ).fetchall()
             result_conn.close()
 
-        self.assertEqual(rows, [("emulate", "s000", "fixed:4", "", 10, "vplan log")])
+        self.assertEqual(
+            rows,
+            [
+                ("emulate", "s000", "", "", 10, ""),
+                ("emulate", "s000", "fixed:4", "", 10, "vplan log"),
+            ],
+        )
 
 
 if __name__ == "__main__":
