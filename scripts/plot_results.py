@@ -56,7 +56,7 @@ def parse_args() -> argparse.Namespace:
         "--top-mismatch-benches",
         type=int,
         default=DEFAULT_TOP_MISMATCH_BENCHES,
-        help="Number of top mismatch benchmarks to include as drill-down sections",
+        help="Deprecated compatibility flag; ignored.",
     )
     return parser.parse_args()
 
@@ -163,6 +163,25 @@ def pearson_correlation(xs: Sequence[float], ys: Sequence[float]) -> float | Non
     return num / (x_den * y_den)
 
 
+def linear_regression(xs: Sequence[float], ys: Sequence[float]) -> tuple[float, float, float | None] | None:
+    if len(xs) != len(ys) or len(xs) < 2:
+        return None
+    x_mean = sum(xs) / len(xs)
+    y_mean = sum(ys) / len(ys)
+    denom = sum((x - x_mean) ** 2 for x in xs)
+    if denom == 0.0:
+        return None
+    slope = sum((x - x_mean) * (y - y_mean) for x, y in zip(xs, ys)) / denom
+    intercept = y_mean - slope * x_mean
+    total_var = sum((y - y_mean) ** 2 for y in ys)
+    if total_var == 0.0:
+        r_squared = None
+    else:
+        residual_var = sum((y - (slope * x + intercept)) ** 2 for x, y in zip(xs, ys))
+        r_squared = max(0.0, 1.0 - (residual_var / total_var))
+    return slope, intercept, r_squared
+
+
 def escape(value: object) -> str:
     return html.escape(str(value))
 
@@ -172,14 +191,13 @@ def require_matplotlib():
         import matplotlib
 
         matplotlib.use("Agg")
-        from matplotlib import colors as mcolors
         from matplotlib import pyplot as plt
     except ModuleNotFoundError:
         fail(
             "matplotlib is required to render this report.\n"
             "Run with: uv run --with matplotlib python scripts/plot_results.py ..."
         )
-    return plt, mcolors
+    return plt
 
 
 @dataclass
@@ -226,7 +244,6 @@ class MetricPoint:
     min_value: float
     max_value: float
     n_success: int
-    best_ratio: float | None = None
     cost_rank: int | None = None
     actual_rank: int | None = None
 
@@ -374,10 +391,6 @@ def build_metric_summaries(
 
     summaries: list[BenchMetricSummary] = []
     for bench, points in sorted(points_by_bench.items()):
-        best_median = min(point.median_value for point in points)
-        for point in points:
-            point.best_ratio = point.median_value / best_median if best_median else None
-
         selected_vf = next((point.use_vf for point in points if point.selected), None)
         rankable = [point for point in points if point.cost is not None]
         cost_best_vf = None
@@ -466,7 +479,7 @@ def figure_to_data_url(fig) -> str:
 
 
 def make_placeholder_figure(title: str, message: str) -> str:
-    plt, _ = require_matplotlib()
+    plt = require_matplotlib()
     fig, ax = plt.subplots(figsize=(8, 2.8))
     ax.axis("off")
     ax.set_title(title, loc="left")
@@ -477,7 +490,7 @@ def make_placeholder_figure(title: str, message: str) -> str:
 
 
 def render_coverage_summary(data: ReportData) -> str:
-    plt, _ = require_matplotlib()
+    plt = require_matplotlib()
     fig, axes = plt.subplots(1, 2, figsize=(13, 4.5))
 
     reason_counts: Counter[str] = Counter()
@@ -515,101 +528,63 @@ def render_coverage_summary(data: ReportData) -> str:
     return data_url
 
 
-def build_heatmap_inputs(
+def rankable_points(summary: BenchMetricSummary) -> list[MetricPoint]:
+    return [
+        point
+        for point in summary.points
+        if point.cost_rank is not None and point.actual_rank is not None and point.cost is not None
+    ]
+
+
+def select_top_n_vfs(summary: BenchMetricSummary, n: int, *, by: str) -> set[str]:
+    rankable = rankable_points(summary)
+    if len(rankable) < n:
+        return set()
+    if by == "cost":
+        ordered = sorted(rankable, key=lambda point: (float(point.cost), parse_vf_key(point.use_vf)))
+    elif by == "latency":
+        ordered = sorted(rankable, key=lambda point: (point.median_value, parse_vf_key(point.use_vf)))
+    else:
+        raise KeyError(by)
+    return {point.use_vf for point in ordered[:n]}
+
+
+def build_top_n_overlap_distributions(
     summaries: Iterable[BenchMetricSummary],
     *,
-    value_kind: str,
-) -> tuple[list[str], list[str], list[list[float]], list[tuple[int, int]]]:
-    rows = list(summaries)
-    if not rows:
-        return [], [], [], []
-    row_labels = [summary.bench for summary in rows]
-    col_labels = sorted(
-        {point.use_vf for summary in rows for point in summary.points},
-        key=parse_vf_key,
-    )
-    matrix: list[list[float]] = []
-    selected_cells: list[tuple[int, int]] = []
-    for row_index, summary in enumerate(rows):
-        point_map = {point.use_vf: point for point in summary.points}
-        row_values: list[float] = []
-        for col_index, use_vf in enumerate(col_labels):
-            point = point_map.get(use_vf)
-            value = math.nan
-            if point is not None:
-                if value_kind == "best_ratio":
-                    value = float(point.best_ratio) if point.best_ratio is not None else math.nan
-                elif value_kind == "rank_delta":
-                    if point.cost_rank is not None and point.actual_rank is not None:
-                        value = float(point.actual_rank - point.cost_rank)
-                else:
-                    raise KeyError(value_kind)
-                if point.selected:
-                    selected_cells.append((row_index, col_index))
-            row_values.append(value)
-        matrix.append(row_values)
-    return row_labels, col_labels, matrix, selected_cells
+    max_n: int = 4,
+) -> tuple[list[int], list[list[float]], list[int]]:
+    summary_list = list(summaries)
+    ns: list[int] = []
+    distributions: list[list[float]] = []
+    eligible_counts: list[int] = []
+    for n in range(1, max_n + 1):
+        ratios: list[float] = []
+        for summary in summary_list:
+            rankable = rankable_points(summary)
+            if len(rankable) < n:
+                continue
+            predicted = select_top_n_vfs(summary, n, by="cost")
+            actual = select_top_n_vfs(summary, n, by="latency")
+            ratios.append(len(predicted & actual) / n)
+        if not ratios:
+            continue
+        ns.append(n)
+        distributions.append(ratios)
+        eligible_counts.append(len(ratios))
+    return ns, distributions, eligible_counts
 
 
-def render_heatmap(
-    summaries: list[BenchMetricSummary],
-    *,
-    title: str,
-    value_kind: str,
-) -> str:
-    row_labels, col_labels, matrix, selected_cells = build_heatmap_inputs(
-        summaries, value_kind=value_kind
-    )
-    if not row_labels or not col_labels:
-        return make_placeholder_figure(title, "No comparable rows available.")
-
-    plt, mcolors = require_matplotlib()
-    n_rows = len(row_labels)
-    n_cols = len(col_labels)
-    fig, ax = plt.subplots(
-        figsize=(max(8.0, 2.5 + n_cols * 0.9), max(5.0, 1.8 + n_rows * 0.28))
-    )
-    masked = [[math.nan if math.isnan(value) else value for value in row] for row in matrix]
-
-    if value_kind == "rank_delta":
-        finite = [value for row in matrix for value in row if not math.isnan(value)]
-        limit = max(abs(value) for value in finite) if finite else 1.0
-        cmap = plt.get_cmap("coolwarm").copy()
-        cmap.set_bad("#F1F1F1")
-        norm = mcolors.TwoSlopeNorm(vmin=-limit, vcenter=0.0, vmax=limit)
-        image = ax.imshow(masked, aspect="auto", cmap=cmap, norm=norm)
-    else:
-        finite = [value for row in matrix for value in row if not math.isnan(value)]
-        vmax = max(finite) if finite else 1.0
-        cmap = plt.get_cmap("viridis").copy()
-        cmap.set_bad("#F1F1F1")
-        image = ax.imshow(masked, aspect="auto", cmap=cmap, vmin=1.0, vmax=max(1.0, vmax))
-
-    ax.set_title(title, loc="left")
-    ax.set_xticks(range(n_cols))
-    ax.set_xticklabels(col_labels, rotation=45, ha="right")
-    ax.set_yticks(range(n_rows))
-    ax.set_yticklabels(row_labels)
-    ax.set_xlabel("VF")
-    ax.set_ylabel("Benchmark")
-
-    if n_rows * n_cols <= 250:
-        for row_index, row in enumerate(matrix):
-            for col_index, value in enumerate(row):
-                if math.isnan(value):
-                    continue
-                text = f"{value:.2f}" if value_kind == "best_ratio" else f"{int(value):+d}"
-                ax.text(col_index, row_index, text, ha="center", va="center", fontsize=8, color="white")
-
-    if selected_cells:
-        xs = [cell[1] for cell in selected_cells]
-        ys = [cell[0] for cell in selected_cells]
-        ax.scatter(xs, ys, marker="*", s=70, facecolors="none", edgecolors="white", linewidths=1.2)
-
-    fig.colorbar(image, ax=ax, fraction=0.02, pad=0.02)
-    data_url = figure_to_data_url(fig)
-    plt.close(fig)
-    return data_url
+def list_plottable_benches(data: ReportData) -> list[str]:
+    metric_maps = [
+        {summary.bench: summary for summary in data.metric_summaries["kernel_cycles"]},
+        {summary.bench: summary for summary in data.metric_summaries["total_cycles"]},
+    ]
+    benches: list[str] = []
+    for bench in data.benches:
+        if any(metric_map.get(bench) and metric_map[bench].points for metric_map in metric_maps):
+            benches.append(bench)
+    return benches
 
 
 def render_scatter(summaries: list[BenchMetricSummary], *, title: str) -> str:
@@ -617,21 +592,22 @@ def render_scatter(summaries: list[BenchMetricSummary], *, title: str) -> str:
     other_points: list[MetricPoint] = []
     for summary in summaries:
         for point in summary.points:
-            if point.cost is None or point.best_ratio is None:
+            if point.cost is None:
                 continue
             if point.selected:
                 selected_points.append(point)
             else:
                 other_points.append(point)
-    if not selected_points and not other_points:
+    all_points = other_points + selected_points
+    if not all_points:
         return make_placeholder_figure(title, "No rows with both cost and latency are available.")
 
-    plt, _ = require_matplotlib()
+    plt = require_matplotlib()
     fig, ax = plt.subplots(figsize=(8, 5))
     if other_points:
         ax.scatter(
             [point.cost for point in other_points],
-            [point.best_ratio for point in other_points],
+            [point.median_value for point in other_points],
             label="non-selected",
             c="#3A86FF",
             alpha=0.7,
@@ -640,77 +616,214 @@ def render_scatter(summaries: list[BenchMetricSummary], *, title: str) -> str:
     if selected_points:
         ax.scatter(
             [point.cost for point in selected_points],
-            [point.best_ratio for point in selected_points],
+            [point.median_value for point in selected_points],
             label="selected",
             c="#FB5607",
             alpha=0.9,
             s=45,
             marker="D",
         )
-    ax.axhline(1.0, color="#666666", linestyle="--", linewidth=1)
+
+    fit = linear_regression(
+        [float(point.cost) for point in all_points],
+        [point.median_value for point in all_points],
+    )
+    if fit is not None:
+        slope, intercept, r_squared = fit
+        x_min = min(float(point.cost) for point in all_points)
+        x_max = max(float(point.cost) for point in all_points)
+        if x_min == x_max:
+            x_max = x_min + 1.0
+        xs = [x_min, x_max]
+        ys = [slope * x + intercept for x in xs]
+        label = "linear fit"
+        if r_squared is not None:
+            label += f" (R²={r_squared:.2f})"
+        ax.plot(xs, ys, color="#222222", linewidth=2, linestyle="--", label=label)
+
     ax.set_title(title, loc="left")
     ax.set_xlabel("Effective VPlan cost (cost / VF)")
-    ax.set_ylabel("Best ratio (1.0 = best in bench)")
+    ax.set_ylabel("Median latency (cycles)")
     ax.legend(loc="best")
+    ax.grid(color="#E6E6E6", linewidth=0.8)
     data_url = figure_to_data_url(fig)
     plt.close(fig)
     return data_url
 
 
-def render_bench_detail(summary: BenchMetricSummary) -> str:
-    rankable = [point for point in summary.points if point.cost_rank is not None and point.actual_rank is not None]
-    if not summary.points:
-        return make_placeholder_figure(summary.bench, "No successful samples available.")
+def render_ranking_quality(metric_summaries: dict[str, list[BenchMetricSummary]]) -> str:
+    plt = require_matplotlib()
+    fig, axes = plt.subplots(1, 2, figsize=(13, 4.8))
+    metric_defs = [
+        ("kernel_cycles", "kernel_cycles", "#FB5607"),
+        ("total_cycles", "total_cycles", "#3A86FF"),
+    ]
+
+    ax = axes[0]
+    spearman_values = [
+        [summary.spearman for summary in metric_summaries[metric_name] if summary.spearman is not None]
+        for metric_name, _, _ in metric_defs
+    ]
+    if any(values for values in spearman_values):
+        labels = [label for _, label, _ in metric_defs]
+        boxplot = ax.boxplot(
+            [values if values else [math.nan] for values in spearman_values],
+            tick_labels=labels,
+            patch_artist=True,
+        )
+        for patch, (_, _, color) in zip(boxplot["boxes"], metric_defs):
+            patch.set_facecolor(color)
+            patch.set_alpha(0.25)
+        for idx, ((_, _, color), values) in enumerate(zip(metric_defs, spearman_values), start=1):
+            for offset, value in enumerate(values):
+                jitter = ((offset % 7) - 3) * 0.025
+                ax.scatter(idx + jitter, value, color=color, s=28, alpha=0.85)
+        ax.axhline(0.0, color="#999999", linewidth=1, linestyle=":")
+        ax.set_ylim(-1.05, 1.05)
+        ax.set_ylabel("Spearman rank correlation")
+        ax.set_title("Per-bench Spearman distribution", loc="left")
+        ax.grid(axis="y", color="#E6E6E6", linewidth=0.8)
+    else:
+        ax.axis("off")
+        ax.text(0.02, 0.5, "No rankable benches available.", transform=ax.transAxes, va="center")
+
+    ax = axes[1]
+    has_overlap = False
+    cmap = plt.get_cmap("RdYlGn")
+    bar_width = 0.32
+    metric_offsets = [-0.18, 0.18]
+    metric_hatches = ["", "//"]
+    for metric_index, (metric_name, _, color) in enumerate(metric_defs):
+        ns, distributions, eligible_counts = build_top_n_overlap_distributions(metric_summaries[metric_name])
+        for n, ratios, count in zip(ns, distributions, eligible_counts):
+            has_overlap = True
+            position = n + metric_offsets[metric_index]
+            bottom = 0.0
+            for overlap_count in range(0, n + 1):
+                ratio_value = overlap_count / n
+                bucket_count = sum(
+                    1
+                    for ratio in ratios
+                    if math.isclose(ratio, ratio_value, rel_tol=1e-9, abs_tol=1e-9)
+                )
+                if bucket_count == 0:
+                    continue
+                height = bucket_count / count
+                fill_color = cmap(overlap_count / max(1, n))
+                ax.bar(
+                    position,
+                    height,
+                    width=bar_width,
+                    bottom=bottom,
+                    color=fill_color,
+                    edgecolor=color,
+                    linewidth=1.1,
+                    hatch=metric_hatches[metric_index],
+                    alpha=0.88,
+                )
+                if height >= 0.11:
+                    ax.text(
+                        position,
+                        bottom + height / 2,
+                        f"{overlap_count}/{n}",
+                        ha="center",
+                        va="center",
+                        fontsize=8,
+                        color="#222222",
+                    )
+                bottom += height
+            ax.text(position, 1.02, f"n={count}", ha="center", va="bottom", fontsize=8, color=color)
+    if has_overlap:
+        ax.set_title("Top-N overlap distribution (Top-1~4)", loc="left")
+        ax.set_xlabel("Top-N")
+        ax.set_ylabel("Bench share")
+        ax.set_ylim(0.0, 1.05)
+        ax.set_xticks([1, 2, 3, 4])
+        ax.set_xticklabels(["Top-1", "Top-2", "Top-3", "Top-4"])
+        ax.grid(axis="y", color="#E6E6E6", linewidth=0.8)
+        handles = [
+            plt.Rectangle((0, 0), 1, 1, facecolor="#DDDDDD", edgecolor=color, hatch=hatch, linewidth=1.1)
+            for (_, _, color), hatch in zip(metric_defs, metric_hatches)
+        ]
+        ax.legend(handles, [label for _, label, _ in metric_defs], loc="lower right")
+    else:
+        ax.axis("off")
+        ax.text(0.02, 0.5, "No rankable benches available.", transform=ax.transAxes, va="center")
+
+    data_url = figure_to_data_url(fig)
+    plt.close(fig)
+    return data_url
+
+
+def render_metric_detail_axis(ax, summary: BenchMetricSummary | None, *, title: str) -> None:
+    if summary is None or not summary.points:
+        ax.axis("off")
+        ax.set_title(title, loc="left")
+        ax.text(0.02, 0.5, "No successful emulate samples for this metric.", transform=ax.transAxes, va="center")
+        return
 
     ordered_points = sorted(
         summary.points,
-        key=lambda point: (
-            point.actual_rank if point.actual_rank is not None else 999,
-            point.median_value,
-            parse_vf_key(point.use_vf),
-        ),
+        key=lambda point: (point.median_value, parse_vf_key(point.use_vf)),
     )
-
-    plt, _ = require_matplotlib()
-    fig, axes = plt.subplots(1, 2, figsize=(13, 4.5))
-    ax = axes[0]
-    labels = [point.use_vf for point in ordered_points]
-    samples = [point.samples for point in ordered_points]
-    boxplot = ax.boxplot(samples, tick_labels=labels, patch_artist=True)
-    for patch, point in zip(boxplot["boxes"], ordered_points):
-        patch.set_facecolor("#FB5607" if point.selected else "#3A86FF")
-        patch.set_alpha(0.45 if point.selected else 0.25)
-    for index, point in enumerate(ordered_points, start=1):
-        xs = [index] * len(point.samples)
-        ax.scatter(xs, point.samples, s=12, c="#1D3557", alpha=0.6)
-    ax.set_title(f"{summary.bench}: kernel_cycles distribution", loc="left")
-    ax.set_xlabel("VF")
-    ax.set_ylabel("Cycles")
-    ax.tick_params(axis="x", rotation=45)
-
-    ax = axes[1]
-    if rankable:
-        max_rank = max(
-            max(point.cost_rank or 0, point.actual_rank or 0)
-            for point in rankable
+    x_positions = list(range(len(ordered_points)))
+    max_latency = max(point.median_value for point in ordered_points)
+    for x_index, point in enumerate(ordered_points):
+        color = "#FB5607" if point.selected else "#3A86FF"
+        ax.bar(x_index, point.median_value, width=0.72, color=color, alpha=0.78)
+        inside_threshold = max_latency * 0.18
+        if point.median_value >= inside_threshold:
+            label_y = point.median_value - max_latency * 0.05
+            label_va = "top"
+            label_color = "white"
+        else:
+            label_y = point.median_value + max_latency * 0.02
+            label_va = "bottom"
+            label_color = "#222222"
+        ax.text(
+            x_index,
+            label_y,
+            f"{point.median_value:.0f}",
+            ha="center",
+            va=label_va,
+            fontsize=8,
+            color=label_color,
+            fontweight="bold",
         )
-        for point in sorted(rankable, key=lambda item: parse_vf_key(item.use_vf)):
-            color = "#FB5607" if point.selected else "#3A86FF"
-            ax.plot([0, 1], [point.cost_rank, point.actual_rank], color=color, linewidth=2, alpha=0.85)
-            ax.scatter([0, 1], [point.cost_rank, point.actual_rank], color=color, s=40)
-            ax.text(-0.05, point.cost_rank, point.use_vf, ha="right", va="center", fontsize=9)
-            ax.text(1.05, point.actual_rank, point.use_vf, ha="left", va="center", fontsize=9)
-        ax.set_xlim(-0.25, 1.25)
-        ax.set_ylim(max_rank + 0.5, 0.5)
-        ax.set_xticks([0, 1])
-        ax.set_xticklabels(["Effective cost rank", "Latency rank"])
-        ax.set_yticks(range(1, max_rank + 1))
-        ax.set_title(f"{summary.bench}: rank change", loc="left")
-        ax.grid(axis="y", color="#DDDDDD", linewidth=0.8)
-    else:
-        ax.axis("off")
-        ax.text(0.02, 0.5, "No rankable points with cost + latency.", transform=ax.transAxes, va="center")
 
+    ax.set_title(title, loc="left")
+    ax.set_xticks(x_positions)
+    ax.set_xticklabels([point.use_vf for point in ordered_points], rotation=45, ha="right")
+    ax.set_ylabel("Median latency (cycles)")
+    ax.grid(axis="y", color="#E6E6E6", linewidth=0.8)
+
+    cost_points = [(x_index, point.cost) for x_index, point in enumerate(ordered_points) if point.cost is not None]
+    ax2 = ax.twinx()
+    if cost_points:
+        ax2.scatter(
+            [x_index for x_index, _ in cost_points],
+            [float(cost) for _, cost in cost_points],
+            color="#222222",
+            marker="o",
+            s=42,
+            alpha=0.9,
+        )
+        ax2.set_ylabel("Effective VPlan cost (cost / VF)")
+    else:
+        ax2.set_yticks([])
+        ax2.set_ylabel("Effective VPlan cost unavailable")
+
+
+def render_bench_detail(
+    bench: str,
+    kernel_summary: BenchMetricSummary | None,
+    total_summary: BenchMetricSummary | None,
+) -> str:
+    plt = require_matplotlib()
+    fig, axes = plt.subplots(2, 1, figsize=(11, 8), sharex=False)
+    render_metric_detail_axis(axes[0], kernel_summary, title=f"{bench}: kernel_cycles detail")
+    render_metric_detail_axis(axes[1], total_summary, title=f"{bench}: total_cycles detail")
+    axes[1].set_xlabel("VF")
     data_url = figure_to_data_url(fig)
     plt.close(fig)
     return data_url
@@ -738,6 +851,10 @@ def build_summary_cards(data: ReportData) -> list[tuple[str, str]]:
         for summary in comparable
         if summary.selected_vf and summary.selected_vf == summary.actual_best_vf
     ]
+    kernel_spearmans = [summary.spearman for summary in kernel_summaries if summary.spearman is not None]
+    avg_spearman = sum(kernel_spearmans) / len(kernel_spearmans) if kernel_spearmans else None
+    top1_ns, top1_distributions, _ = build_top_n_overlap_distributions(kernel_summaries, max_n=1)
+    top1_overlap = (sum(top1_distributions[0]) / len(top1_distributions[0])) if top1_ns and top1_distributions else None
     return [
         ("VFS DB", str(data.vfs_db)),
         ("Emulate DB", str(data.emulate_db)),
@@ -747,33 +864,9 @@ def build_summary_cards(data: ReportData) -> list[tuple[str, str]]:
         ("VPlan failures", str(len(data.vplan_failures))),
         ("Emulate failures", str(sum(data.emulate_failure_counts.values()))),
         ("Selected VF matches actual best", f"{len(selected_matches)}/{len(comparable) or 0}"),
+        ("Mean kernel Spearman", format_float(avg_spearman, digits=2)),
+        ("Kernel top-1 overlap", format_float(top1_overlap, digits=2)),
     ]
-
-
-def build_top_mismatch_rows(summaries: list[BenchMetricSummary], limit: int) -> list[list[str]]:
-    ordered = sorted(
-        summaries,
-        key=lambda summary: (
-            summary.max_abs_rank_delta is None,
-            -(summary.max_abs_rank_delta or -1),
-            abs(summary.selected_rank_delta or 0),
-            summary.bench,
-        ),
-    )
-    rows: list[list[str]] = []
-    for summary in ordered[:limit]:
-        rows.append(
-            [
-                summary.bench,
-                summary.selected_vf or "-",
-                summary.cost_best_vf or "-",
-                summary.actual_best_vf or "-",
-                str(summary.max_abs_rank_delta) if summary.max_abs_rank_delta is not None else "-",
-                str(summary.selected_rank_delta) if summary.selected_rank_delta is not None else "-",
-                format_float(summary.spearman, digits=2),
-            ]
-        )
-    return rows
 
 
 def render_cards(cards: list[tuple[str, str]]) -> str:
@@ -788,17 +881,6 @@ def render_cards(cards: list[tuple[str, str]]) -> str:
     return "<div class='cards'>" + "".join(items) + "</div>"
 
 
-def render_table(headers: Sequence[str], rows: Sequence[Sequence[str]]) -> str:
-    if not rows:
-        return "<p class='empty'>No rows.</p>"
-    thead = "".join(f"<th>{escape(header)}</th>" for header in headers)
-    body_rows = []
-    for row in rows:
-        cells = "".join(f"<td>{escape(cell)}</td>" for cell in row)
-        body_rows.append(f"<tr>{cells}</tr>")
-    return "<table><thead><tr>" + thead + "</tr></thead><tbody>" + "".join(body_rows) + "</tbody></table>"
-
-
 def render_image_section(title: str, data_url: str, caption: str = "") -> str:
     caption_html = f"<p class='caption'>{escape(caption)}</p>" if caption else ""
     return (
@@ -810,33 +892,74 @@ def render_image_section(title: str, data_url: str, caption: str = "") -> str:
     )
 
 
-def render_html(data: ReportData, plots: dict[str, str], top_rows: list[list[str]], top_benches: list[str]) -> str:
-    cards_html = render_cards(build_summary_cards(data))
-    top_table = render_table(
-        [
-            "bench",
-            "selected_vf",
-            "cost_best_vf",
-            "actual_best_vf",
-            "max_abs_rank_delta",
-            "selected_rank_delta",
-            "spearman",
-        ],
-        top_rows,
+def build_detail_summary_text(summary: BenchMetricSummary | None, metric_name: str) -> str:
+    if summary is None:
+        return f"{metric_name}: no successful emulate rows"
+    return (
+        f"{metric_name}: selected={summary.selected_vf or '-'}, "
+        f"cost-best={summary.cost_best_vf or '-'}, "
+        f"latency-best={summary.actual_best_vf or '-'}, "
+        f"spearman={format_float(summary.spearman, digits=2)}"
     )
 
-    detail_sections = []
-    kernel_map = {summary.bench: summary for summary in data.metric_summaries["kernel_cycles"]}
-    for bench in top_benches:
-        summary = kernel_map.get(bench)
-        if summary is None:
-            continue
-        title = f"Bench detail: {bench}"
-        caption = (
-            f"selected={summary.selected_vf or '-'}, cost-best={summary.cost_best_vf or '-'}, "
-            f"actual-best={summary.actual_best_vf or '-'}"
+
+def render_bench_picker(benches: Sequence[str]) -> str:
+    if not benches:
+        return (
+            "<section class='plot-section'>"
+            "<h2>Bench detail</h2>"
+            "<p class='empty'>No benches with plottable detail are available.</p>"
+            "</section>"
         )
-        detail_sections.append(render_image_section(title, plots[f"detail:{bench}"], caption))
+    options = ["<option value=''>-- Select a bench --</option>"]
+    for bench in benches:
+        options.append(f"<option value='{escape(bench)}'>{escape(bench)}</option>")
+    return (
+        "<section class='plot-section'>"
+        "<h2>Bench detail</h2>"
+        f"<p>Search benches, then select one to reveal kernel/total detail with latency-sorted VF order. ({len(benches)} plottable benches)</p>"
+        "<div class='bench-picker'>"
+        "<input id='bench-search' type='search' placeholder='Search bench...' autocomplete='off' />"
+        f"<select id='bench-select' size='12'>{''.join(options)}</select>"
+        "</div>"
+        "<p id='bench-empty' class='empty'>Select a bench to show detail.</p>"
+        "</section>"
+    )
+
+
+def render_html(data: ReportData, plots: dict[str, str]) -> str:
+    cards_html = render_cards(build_summary_cards(data))
+    plottable_benches = list_plottable_benches(data)
+
+    kernel_map = {summary.bench: summary for summary in data.metric_summaries["kernel_cycles"]}
+    total_map = {summary.bench: summary for summary in data.metric_summaries["total_cycles"]}
+    vplan_failure_map: dict[str, list[VPlanFailure]] = defaultdict(list)
+    for failure in data.vplan_failures:
+        vplan_failure_map[failure.bench].append(failure)
+
+    detail_sections = []
+    for bench in plottable_benches:
+        kernel_summary = kernel_map.get(bench)
+        total_summary = total_map.get(bench)
+        failure_text = ""
+        if vplan_failure_map.get(bench):
+            failure_text = " | vplan failures: " + ", ".join(
+                sorted({failure.failure for failure in vplan_failure_map[bench]})
+            )
+        caption = (
+            f"Candidates={data.candidate_counts.get(bench, 0)}"
+            f". {build_detail_summary_text(kernel_summary, 'kernel_cycles')}"
+            f". {build_detail_summary_text(total_summary, 'total_cycles')}"
+            f"{failure_text}"
+        )
+        detail_sections.append(
+            "<section class='plot-section bench-detail hidden' "
+            f"id='detail-{escape(bench)}' data-bench='{escape(bench)}'>"
+            f"<h2>Bench detail: {escape(bench)}</h2>"
+            f"<p class='caption'>{escape(caption)}</p>"
+            f"<img src='{plots[f'detail:{bench}']}' alt='{escape(f'Bench detail: {bench}')}' />"
+            "</section>"
+        )
 
     html_parts = [
         "<!DOCTYPE html>",
@@ -877,7 +1000,7 @@ def render_html(data: ReportData, plots: dict[str, str], top_rows: list[list[str
         }
         .cards {
           display: grid;
-          grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+          grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
           gap: 12px;
           margin: 20px 0 28px 0;
         }
@@ -919,25 +1042,30 @@ def render_html(data: ReportData, plots: dict[str, str], top_rows: list[list[str
           margin-top: -2px;
           margin-bottom: 14px;
         }
-        table {
+        .bench-picker {
+          display: grid;
+          grid-template-columns: minmax(220px, 360px);
+          gap: 12px;
+        }
+        #bench-search,
+        #bench-select {
           width: 100%;
-          border-collapse: collapse;
-          background: var(--card);
           border: 1px solid var(--line);
-          border-radius: 12px;
-          overflow: hidden;
-        }
-        th, td {
+          border-radius: 10px;
           padding: 10px 12px;
-          border-bottom: 1px solid var(--line);
-          text-align: left;
-          font-size: 14px;
+          box-sizing: border-box;
+          font: inherit;
+          background: #fff;
+          color: var(--ink);
         }
-        thead th {
-          background: #ecebe5;
+        #bench-select {
+          min-height: 280px;
+        }
+        .hidden {
+          display: none;
         }
         .empty {
-          padding: 12px 0;
+          padding: 12px 0 0 0;
         }
         @media (max-width: 720px) {
           body {
@@ -945,6 +1073,9 @@ def render_html(data: ReportData, plots: dict[str, str], top_rows: list[list[str
           }
           .plot-section {
             padding: 12px;
+          }
+          .bench-picker {
+            grid-template-columns: 1fr;
           }
         }
         """,
@@ -961,19 +1092,9 @@ def render_html(data: ReportData, plots: dict[str, str], top_rows: list[list[str
             "Failures and candidate coverage before reading cost-vs-latency plots.",
         ),
         render_image_section(
-            "Best ratio heatmap: kernel_cycles",
-            plots["best_ratio:kernel_cycles"],
-            "Each cell is median(metric) / best median in the same bench. Selected VF is marked with a star.",
-        ),
-        render_image_section(
-            "Best ratio heatmap: total_cycles",
-            plots["best_ratio:total_cycles"],
-            "Same view for total_cycles.",
-        ),
-        render_image_section(
             "Effective cost vs latency scatter: kernel_cycles",
             plots["scatter:kernel_cycles"],
-            "Lower and closer to 1.0 is better. Orange diamonds are LLVM-selected VFs.",
+            "x uses cost/VF, y uses measured median latency. Dashed line is a linear fit for comparison.",
         ),
         render_image_section(
             "Effective cost vs latency scatter: total_cycles",
@@ -981,65 +1102,98 @@ def render_html(data: ReportData, plots: dict[str, str], top_rows: list[list[str
             "Same view for total_cycles.",
         ),
         render_image_section(
-            "Rank delta heatmap: kernel_cycles",
-            plots["rank_delta:kernel_cycles"],
-            "actual_rank - cost_rank. Positive means measured latency ranked worse than effective cost predicted.",
+            "Ranking quality overview",
+            plots["ranking_quality"],
+            "Left: per-bench Spearman distribution. Right: 100% stacked bars showing the share of benches at each overlap level for Top-1~Top-4.",
         ),
-        render_image_section(
-            "Rank delta heatmap: total_cycles",
-            plots["rank_delta:total_cycles"],
-            "Same view for total_cycles.",
-        ),
-        "<section class='plot-section'>",
-        "<h2>Top mismatch benches</h2>",
-        "<p>Kernel-based ranking gap between effective VPlan cost order (cost / VF) and measured latency order.</p>",
-        top_table,
-        "</section>",
+        render_bench_picker(plottable_benches),
         *detail_sections,
         "</main>",
+        "<script>",
+        """
+        (() => {
+          const searchInput = document.getElementById('bench-search');
+          const select = document.getElementById('bench-select');
+          const empty = document.getElementById('bench-empty');
+          const sections = Array.from(document.querySelectorAll('.bench-detail'));
+
+          function hideAll() {
+            sections.forEach((section) => section.classList.add('hidden'));
+          }
+
+          function showSelected() {
+            const value = select.value;
+            hideAll();
+            if (!value) {
+              empty.classList.remove('hidden');
+              return;
+            }
+            empty.classList.add('hidden');
+            const target = document.querySelector(`.bench-detail[data-bench="${CSS.escape(value)}"]`);
+            if (target) {
+              target.classList.remove('hidden');
+              target.scrollIntoView({ behavior: 'smooth', block: 'start' });
+            }
+          }
+
+          function applyFilter() {
+            const term = searchInput.value.trim().toLowerCase();
+            const currentValue = select.value;
+            let hasVisibleSelected = false;
+            Array.from(select.options).forEach((option, index) => {
+              if (index === 0) {
+                option.hidden = false;
+                return;
+              }
+              const visible = !term || option.value.toLowerCase().includes(term);
+              option.hidden = !visible;
+              if (visible && option.value === currentValue) {
+                hasVisibleSelected = true;
+              }
+            });
+            if (!hasVisibleSelected) {
+              select.value = '';
+            }
+            showSelected();
+          }
+
+          searchInput.addEventListener('input', applyFilter);
+          select.addEventListener('change', showSelected);
+          hideAll();
+        })();
+        """,
+        "</script>",
         "</body>",
         "</html>",
     ]
     return "".join(html_parts)
 
 
-def generate_plots(data: ReportData, top_mismatch_benches: int) -> tuple[dict[str, str], list[list[str]], list[str]]:
+def generate_plots(data: ReportData) -> dict[str, str]:
     plots = {
         "coverage": render_coverage_summary(data),
+        "ranking_quality": render_ranking_quality(data.metric_summaries),
     }
     for metric_name, summaries in data.metric_summaries.items():
         label = metric_label(metric_name)
-        plots[f"best_ratio:{metric_name}"] = render_heatmap(
-            summaries,
-            title=f"Best ratio heatmap ({label})",
-            value_kind="best_ratio",
-        )
         plots[f"scatter:{metric_name}"] = render_scatter(
             summaries,
             title=f"Effective cost vs latency ({label})",
         )
-        plots[f"rank_delta:{metric_name}"] = render_heatmap(
-            summaries,
-            title=f"Rank delta heatmap ({label})",
-            value_kind="rank_delta",
-        )
 
-    kernel_summaries = data.metric_summaries["kernel_cycles"]
-    top_rows = build_top_mismatch_rows(kernel_summaries, top_mismatch_benches)
-    top_benches = [row[0] for row in top_rows]
-    kernel_map = {summary.bench: summary for summary in kernel_summaries}
-    for bench in top_benches:
-        summary = kernel_map.get(bench)
-        if summary is None:
-            continue
-        plots[f"detail:{bench}"] = render_bench_detail(summary)
-    return plots, top_rows, top_benches
+    kernel_map = {summary.bench: summary for summary in data.metric_summaries["kernel_cycles"]}
+    total_map = {summary.bench: summary for summary in data.metric_summaries["total_cycles"]}
+    for bench in list_plottable_benches(data):
+        plots[f"detail:{bench}"] = render_bench_detail(
+            bench,
+            kernel_map.get(bench),
+            total_map.get(bench),
+        )
+    return plots
 
 
 def main() -> None:
     args = parse_args()
-    if args.top_mismatch_benches <= 0:
-        fail("--top-mismatch-benches must be a positive integer")
 
     root = repo_root()
     bench_filter = {bench.strip() for bench in args.bench if bench.strip()}
@@ -1048,8 +1202,8 @@ def main() -> None:
     output_html = resolve_output_html(root, args.output_html, emulate_db)
 
     data = load_report_data(vfs_db, emulate_db, bench_filter)
-    plots, top_rows, top_benches = generate_plots(data, args.top_mismatch_benches)
-    report_html = render_html(data, plots, top_rows, top_benches)
+    plots = generate_plots(data)
+    report_html = render_html(data, plots)
     output_html.write_text(report_html, encoding="utf-8")
     print(f"wrote {output_html}")
 
