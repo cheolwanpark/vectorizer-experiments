@@ -65,6 +65,11 @@ def parse_args() -> argparse.Namespace:
         default=DEFAULT_OUTPUT_ROOT,
         help="Host output root for generated IR and logs",
     )
+    parser.add_argument(
+        "--verbose",
+        action="store_true",
+        help="Stream full vplan-explain output to stdout while still writing logs",
+    )
     return parser.parse_args()
 
 
@@ -380,7 +385,7 @@ def main() -> None:
         llvm_custom=args.llvm_custom,
         vf_use=args.vf_use,
         output_root=args.output_root,
-        echo_output=False,
+        echo_output=args.verbose,
     )
     if int(result["exit_code"]) != 0:
         container_log = str(result.get("container_log") or "").strip()

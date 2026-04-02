@@ -1,5 +1,6 @@
 import unittest
 from pathlib import Path
+from io import StringIO
 from tempfile import TemporaryDirectory
 from unittest.mock import patch
 
@@ -36,6 +37,37 @@ class VPlanExplainTest(unittest.TestCase):
         self.assertEqual(result["source"], str(source))
         self.assertEqual(result["source_kind"], "manual")
         self.assertEqual(result["function_name"], "kernel")
+
+    def test_main_keeps_summary_only_by_default(self):
+        with patch(
+            "sys.argv",
+            ["vplan_explain.py", "--bench", "s000"],
+        ):
+            with patch.object(
+                vplan_explain,
+                "run_vplan_explain",
+                return_value={"bench": "s000", "exit_code": 0, "vf_candidates": [1, 2]},
+            ) as run_mock:
+                with patch("sys.stdout", new_callable=StringIO) as stdout:
+                    vplan_explain.main()
+
+        self.assertFalse(run_mock.call_args.kwargs["echo_output"])
+        self.assertEqual(stdout.getvalue().strip(), "s000: 2 VF(s)")
+
+    def test_main_enables_full_output_when_verbose_requested(self):
+        with patch(
+            "sys.argv",
+            ["vplan_explain.py", "--bench", "s000", "--verbose"],
+        ):
+            with patch.object(
+                vplan_explain,
+                "run_vplan_explain",
+                return_value={"bench": "s000", "exit_code": 0, "vf_candidates": [1]},
+            ) as run_mock:
+                with patch("sys.stdout", new_callable=StringIO):
+                    vplan_explain.main()
+
+        self.assertTrue(run_mock.call_args.kwargs["echo_output"])
 
 
 if __name__ == "__main__":
