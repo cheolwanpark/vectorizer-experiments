@@ -356,7 +356,9 @@ def run_emulate_job(
     )
 
 
-def find_missing_artifacts(emulate_result: dict[str, Any]) -> list[str]:
+def find_missing_artifacts(emulate_result: dict[str, Any], use_vf: str) -> list[str]:
+    if not use_vf:
+        return []
     return [column for column in emulate.BUILD_ARTIFACT_SUFFIXES if not emulate_result.get(column)]
 
 
@@ -474,7 +476,7 @@ def main() -> None:
                 failure = "emulate_failed"
                 failure_message = str(emulate_result["summary"].get("status", "emulate failed"))
             else:
-                missing_artifacts = find_missing_artifacts(emulate_result)
+                missing_artifacts = find_missing_artifacts(emulate_result, use_vf)
                 if missing_artifacts:
                     any_failure = True
                     emulate_failures += 1

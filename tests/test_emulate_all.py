@@ -168,10 +168,24 @@ class EmulateAllTest(unittest.TestCase):
                 "prevec_ll_text": "",
                 "opt_ll_text": "opt",
                 "asm_text": "",
-            }
+            },
+            "fixed:4",
         )
 
         self.assertEqual(missing, ["prevec_ll_text", "asm_text"])
+
+    def test_find_missing_artifacts_ignores_default_run(self):
+        missing = emulate_all.find_missing_artifacts(
+            {
+                "raw_ll_text": "",
+                "prevec_ll_text": "",
+                "opt_ll_text": "",
+                "asm_text": "",
+            },
+            "",
+        )
+
+        self.assertEqual(missing, [])
 
     def test_main_copies_vplan_failure_rows_from_vfs_db(self):
         with TemporaryDirectory() as tmp:
