@@ -5,6 +5,7 @@ import argparse
 import base64
 import html
 import io
+import json
 import math
 import sqlite3
 import statistics
@@ -618,100 +619,59 @@ def list_plottable_benches(data: ReportData) -> list[str]:
     return benches
 
 
-def render_scatter(summaries: list[BenchMetricSummary], *, title: str) -> str:
-    selected_points: list[MetricPoint] = []
-    other_points: list[MetricPoint] = []
+def render_scatter_interactive(
+    summaries: list[BenchMetricSummary],
+    *,
+    title: str,
+    chart_id: str,
+) -> str:
+    point_data: list[dict] = []
     for summary in summaries:
         for point in summary.points:
             if point.compare is None:
                 continue
-            if point.selected:
-                selected_points.append(point)
-            else:
-                other_points.append(point)
-    all_points = other_points + selected_points
-    if not all_points:
-        return make_placeholder_figure(title, "No rows with both cost and latency are available.")
+            vf_factor = parse_vf_factor(point.use_vf)
+            vf_type = "fixed" if point.use_vf.startswith("fixed:") else "scalable"
+            point_data.append(
+                {
+                    "x": point.compare,
+                    "y": point.median_value,
+                    "bench": point.bench,
+                    "vf": point.use_vf,
+                    "vfFactor": vf_factor,
+                    "vfType": vf_type,
+                    "isScalar": vf_factor == 1,
+                    "selected": point.selected,
+                    "suspect": is_suspect_compare_outlier(point),
+                }
+            )
 
-    candidate_fit_points = [point for point in all_points if not is_suspect_compare_outlier(point)]
-    fit_points = candidate_fit_points or all_points
-    excluded_from_fit = len(all_points) - len(fit_points) if candidate_fit_points else 0
+    all_vfs = sorted({p["vf"] for p in point_data}, key=parse_vf_key)
 
-    plt = require_matplotlib()
-    fig, ax = plt.subplots(figsize=(8, 5))
-    if other_points:
-        ax.scatter(
-            [point.compare for point in other_points],
-            [point.median_value for point in other_points],
-            label="non-selected",
-            c="#3A86FF",
-            alpha=0.7,
-            s=35,
-        )
-    if selected_points:
-        ax.scatter(
-            [point.compare for point in selected_points],
-            [point.median_value for point in selected_points],
-            label="selected",
-            c="#FB5607",
-            alpha=0.9,
-            s=45,
-            marker="D",
+    if not point_data:
+        return (
+            "<section class='plot-section'>"
+            f"<h2>{escape(title)}</h2>"
+            "<p class='caption'>No rows with both cost and latency are available.</p>"
+            "</section>"
         )
 
-    fit = linear_regression(
-        [float(point.compare) for point in fit_points],
-        [point.median_value for point in fit_points],
+    cid = escape(chart_id)
+    data_json = json.dumps(point_data, separators=(",", ":"))
+    vfs_json = json.dumps(all_vfs)
+
+    return (
+        f"<section class='plot-section scatter-section' id='scatter-{cid}'>"
+        f"<h2>{escape(title)}</h2>"
+        "<p class='caption'>x = VPlan compare, y = median latency. "
+        "Gray = scalar (VF 1), blue gradient = vectorized (darker = higher VF). "
+        "Circle = fixed, diamond = scalable.</p>"
+        f"<div class='vf-toggle-row' id='vf-toggles-{cid}'></div>"
+        f"<canvas id='scatter-canvas-{cid}' width='1200' height='750'></canvas>"
+        f"<p class='scatter-stats' id='scatter-stats-{cid}'></p>"
+        f"<script>renderScatterChart('{cid}',{data_json},{vfs_json});</script>"
+        "</section>"
     )
-    if fit is not None:
-        slope, intercept, r_squared = fit
-        x_min = min(float(point.compare) for point in fit_points)
-        x_max = max(float(point.compare) for point in fit_points)
-        if x_min == x_max:
-            x_max = x_min + 1.0
-        xs = [x_min, x_max]
-        ys = [slope * x + intercept for x in xs]
-        label = "linear fit"
-        if excluded_from_fit:
-            suffix = "" if excluded_from_fit == 1 else "s"
-            label += f" (excl. {excluded_from_fit} suspect outlier{suffix}"
-        else:
-            label += " ("
-        if r_squared is not None:
-            label += f"R²={r_squared:.2f}"
-        else:
-            label += "R²=n/a"
-        label += ")"
-        ax.plot(xs, ys, color="#222222", linewidth=2, linestyle="--", label=label)
-
-    if excluded_from_fit:
-        x_min = min(float(point.compare) for point in fit_points)
-        x_max = max(float(point.compare) for point in fit_points)
-        if x_min == x_max:
-            x_max = x_min + 1.0
-        x_pad = max((x_max - x_min) * 0.05, 0.1)
-        ax.set_xlim(x_min - x_pad, x_max + x_pad)
-        suffix = "" if excluded_from_fit == 1 else "s"
-        ax.text(
-            0.02,
-            0.98,
-            f"{excluded_from_fit} suspect compare outlier{suffix} omitted from fit/x-range",
-            transform=ax.transAxes,
-            ha="left",
-            va="top",
-            fontsize=9,
-            color="#5d6470",
-            bbox={"facecolor": "white", "alpha": 0.85, "edgecolor": "#d8d8d4", "pad": 4},
-        )
-
-    ax.set_title(title, loc="left")
-    ax.set_xlabel("VPlan compare")
-    ax.set_ylabel("Median latency (cycles)")
-    ax.legend(loc="best")
-    ax.grid(color="#E6E6E6", linewidth=0.8)
-    data_url = figure_to_data_url(fig)
-    plt.close(fig)
-    return data_url
 
 
 def render_ranking_quality(metric_summaries: dict[str, list[BenchMetricSummary]]) -> str:
@@ -995,6 +955,275 @@ def render_bench_picker(benches: Sequence[str]) -> str:
     )
 
 
+_SCATTER_JS = r"""
+function renderScatterChart(chartId, data, allVFs) {
+  var SUSPECT_ABS = 1e6;
+  var M = {top: 44, right: 28, bottom: 52, left: 72};
+  var canvas = document.getElementById('scatter-canvas-' + chartId);
+  var ctx = canvas.getContext('2d');
+  var dpr = window.devicePixelRatio || 1;
+  var W = canvas.width, H = canvas.height;
+  canvas.style.width = (W / dpr) + 'px';
+  canvas.style.maxWidth = '100%';
+  canvas.style.height = 'auto';
+  canvas.width = W * dpr; canvas.height = H * dpr;
+  ctx.scale(dpr, dpr);
+
+  var enabledVFs = {};
+  allVFs.forEach(function(v){ enabledVFs[v] = true; });
+  var hoveredIdx = -1;
+
+  function vfColor(vf, factor) {
+    if (factor === 1) return '#999999';
+    var maxLog = Math.log2(Math.max.apply(null, allVFs.map(function(v){
+      var f = parseInt(v.split(':')[1]); return f > 1 ? f : 2;
+    })));
+    var minLog = 1;
+    var t = maxLog > minLog ? (Math.log2(factor) - minLog) / (maxLog - minLog) : 0.5;
+    t = Math.max(0, Math.min(1, t));
+    var r = Math.round(191 - t * 161);
+    var g = Math.round(219 - t * 161);
+    var b = Math.round(254 - t * 116);
+    return 'rgb(' + r + ',' + g + ',' + b + ')';
+  }
+
+  function visible() {
+    return data.filter(function(p){ return enabledVFs[p.vf]; });
+  }
+  function fitPoints(pts) {
+    var c = pts.filter(function(p){ return !p.suspect; });
+    return c.length > 0 ? c : pts;
+  }
+  function bounds(pts) {
+    if (!pts.length) return {xMin:0,xMax:1,yMin:0,yMax:1};
+    var nonSuspect = pts.filter(function(p){ return !p.suspect; });
+    var src = nonSuspect.length > 0 ? nonSuspect : pts;
+    var xMin=Infinity,xMax=-Infinity,yMin=Infinity,yMax=-Infinity;
+    src.forEach(function(p){
+      if(p.x<xMin)xMin=p.x; if(p.x>xMax)xMax=p.x;
+      if(p.y<yMin)yMin=p.y; if(p.y>yMax)yMax=p.y;
+    });
+    if(xMin===xMax){xMin-=1;xMax+=1;}
+    if(yMin===yMax){yMin-=1;yMax+=1;}
+    var xPad=(xMax-xMin)*0.06, yPad=(yMax-yMin)*0.06;
+    return {xMin:xMin-xPad,xMax:xMax+xPad,yMin:yMin-yPad,yMax:yMax+yPad};
+  }
+  function tx(x,b){return M.left+(x-b.xMin)/(b.xMax-b.xMin)*(W-M.left-M.right);}
+  function ty(y,b){return M.top+(b.yMax-y)/(b.yMax-b.yMin)*(H-M.top-M.bottom);}
+
+  function niceSteps(min,max,target){
+    var range=max-min; if(range<=0) return [min];
+    var raw=range/target;
+    var mag=Math.pow(10,Math.floor(Math.log10(raw)));
+    var norm=raw/mag;
+    var step; if(norm<1.5)step=mag; else if(norm<3.5)step=2*mag; else if(norm<7.5)step=5*mag; else step=10*mag;
+    var ticks=[]; var v=Math.ceil(min/step)*step;
+    while(v<=max+step*0.001){ticks.push(v);v+=step;}
+    return ticks;
+  }
+
+  function linReg(pts){
+    if(pts.length<2)return null;
+    var xM=0,yM=0;pts.forEach(function(p){xM+=p.x;yM+=p.y;});
+    xM/=pts.length;yM/=pts.length;
+    var num=0,den=0;
+    pts.forEach(function(p){den+=(p.x-xM)*(p.x-xM);num+=(p.x-xM)*(p.y-yM);});
+    if(den===0)return null;
+    var slope=num/den,intercept=yM-slope*xM;
+    var totVar=0,resVar=0;
+    pts.forEach(function(p){totVar+=(p.y-yM)*(p.y-yM);resVar+=(p.y-(slope*p.x+intercept))*(p.y-(slope*p.x+intercept));});
+    var r2=totVar===0?null:Math.max(0,1-resVar/totVar);
+    return {slope:slope,intercept:intercept,r2:r2};
+  }
+
+  function fmt(v){
+    if(Math.abs(v)>=1e6) return v.toExponential(1);
+    if(Math.abs(v)>=1000) return v.toLocaleString('en-US',{maximumFractionDigits:0});
+    if(Math.abs(v)>=1) return v.toFixed(1);
+    return v.toPrecision(3);
+  }
+
+  function drawShape(cx,cy,type,r,color){
+    ctx.fillStyle=color; ctx.strokeStyle='rgba(0,0,0,0.25)'; ctx.lineWidth=0.8;
+    if(type==='scalable'){
+      ctx.beginPath();ctx.moveTo(cx,cy-r);ctx.lineTo(cx+r,cy);ctx.lineTo(cx,cy+r);ctx.lineTo(cx-r,cy);ctx.closePath();
+    } else {
+      ctx.beginPath();ctx.arc(cx,cy,r*0.8,0,2*Math.PI);
+    }
+    ctx.fill();ctx.stroke();
+  }
+
+  function render(){
+    ctx.clearRect(0,0,W,H);
+    ctx.fillStyle='#fff';ctx.fillRect(0,0,W,H);
+    var vis=visible();
+    if(!vis.length){
+      ctx.fillStyle='#5d6470';ctx.font='14px sans-serif';ctx.textAlign='center';
+      ctx.fillText('No data for selected VFs.',W/2,H/2);
+      document.getElementById('scatter-stats-'+chartId).textContent='';
+      return;
+    }
+    var b=bounds(vis);
+    var fp=fitPoints(vis);
+    var excl=vis.length-fp.length;
+
+    // grid + axes
+    ctx.strokeStyle='#E6E6E6';ctx.lineWidth=0.8;
+    var xTicks=niceSteps(b.xMin,b.xMax,6);
+    var yTicks=niceSteps(b.yMin,b.yMax,5);
+    xTicks.forEach(function(v){var x=tx(v,b);ctx.beginPath();ctx.moveTo(x,M.top);ctx.lineTo(x,H-M.bottom);ctx.stroke();});
+    yTicks.forEach(function(v){var y=ty(v,b);ctx.beginPath();ctx.moveTo(M.left,y);ctx.lineTo(W-M.right,y);ctx.stroke();});
+
+    // tick labels
+    ctx.fillStyle='#5d6470';ctx.font='11px sans-serif';ctx.textAlign='center';ctx.textBaseline='top';
+    xTicks.forEach(function(v){ctx.fillText(fmt(v),tx(v,b),H-M.bottom+6);});
+    ctx.textAlign='right';ctx.textBaseline='middle';
+    yTicks.forEach(function(v){ctx.fillText(fmt(v),M.left-8,ty(v,b));});
+
+    // axis labels
+    ctx.fillStyle='#1e1f24';ctx.font='13px sans-serif';ctx.textAlign='center';ctx.textBaseline='top';
+    ctx.fillText('VPlan compare',W/2,H-16);
+    ctx.save();ctx.translate(16,H/2);ctx.rotate(-Math.PI/2);ctx.textBaseline='bottom';
+    ctx.fillText('Median latency (cycles)',0,0);ctx.restore();
+
+    // regression line
+    var reg=linReg(fp);
+    if(reg){
+      ctx.strokeStyle='#222';ctx.lineWidth=2;ctx.setLineDash([8,5]);
+      var x1=tx(b.xMin,b),x2=tx(b.xMax,b);
+      var y1=ty(reg.slope*b.xMin+reg.intercept,b);
+      var y2=ty(reg.slope*b.xMax+reg.intercept,b);
+      ctx.beginPath();ctx.moveTo(x1,y1);ctx.lineTo(x2,y2);ctx.stroke();
+      ctx.setLineDash([]);
+    }
+
+    // points (draw scalar first, then vectorized so vectorized is on top)
+    var scalarPts=vis.filter(function(p){return p.isScalar;});
+    var vecPts=vis.filter(function(p){return !p.isScalar;});
+    vecPts.sort(function(a,b_){return a.vfFactor-b_.vfFactor;});
+    scalarPts.concat(vecPts).forEach(function(p,i){
+      var cx=tx(p.x,b),cy=ty(p.y,b);
+      if(cx<M.left||cx>W-M.right||cy<M.top||cy>H-M.bottom) return;
+      drawShape(cx,cy,p.vfType,5.5,vfColor(p.vf,p.vfFactor));
+    });
+
+    // hover tooltip
+    if(hoveredIdx>=0 && hoveredIdx<vis.length){
+      var p=vis[hoveredIdx];
+      var cx=tx(p.x,b),cy=ty(p.y,b);
+      // highlight
+      ctx.strokeStyle='#1e1f24';ctx.lineWidth=2;
+      ctx.beginPath();ctx.arc(cx,cy,10,0,2*Math.PI);ctx.stroke();
+      // tooltip box
+      var lines=[p.bench,'VF: '+p.vf,'compare: '+fmt(p.x),'median: '+fmt(p.y)];
+      if(p.selected) lines.push('(LLVM selected)');
+      ctx.font='12px monospace';
+      var tw=Math.max.apply(null,lines.map(function(l){return ctx.measureText(l).width;}))+16;
+      var th=lines.length*18+12;
+      var bx=cx+14,by=cy-th/2;
+      if(bx+tw>W-4)bx=cx-14-tw;
+      if(by<4)by=4; if(by+th>H-4)by=H-4-th;
+      ctx.fillStyle='rgba(255,255,255,0.95)';ctx.strokeStyle='#d8d8d4';ctx.lineWidth=1;
+      ctx.beginPath();ctx.roundRect(bx,by,tw,th,6);ctx.fill();ctx.stroke();
+      ctx.fillStyle='#1e1f24';ctx.textAlign='left';ctx.textBaseline='top';
+      lines.forEach(function(l,i){ctx.fillText(l,bx+8,by+6+i*18);});
+    }
+
+    // legend
+    var legendItems=[];
+    var seenVFs={};
+    allVFs.forEach(function(vf){
+      if(!enabledVFs[vf]) return;
+      if(seenVFs[vf]) return; seenVFs[vf]=true;
+      var factor=parseInt(vf.split(':')[1]);
+      var type=vf.split(':')[0];
+      legendItems.push({vf:vf,factor:factor,type:type,color:vfColor(vf,factor)});
+    });
+    if(legendItems.length>0){
+      var lx=M.left+10,ly=M.top+6;
+      legendItems.forEach(function(it,i){
+        var y=ly+i*20;
+        drawShape(lx+6,y+6,it.type,5,it.color);
+        ctx.fillStyle='#1e1f24';ctx.font='11px sans-serif';ctx.textAlign='left';ctx.textBaseline='middle';
+        ctx.fillText(it.vf,lx+16,y+6);
+      });
+      if(reg){
+        var y=ly+legendItems.length*20;
+        ctx.strokeStyle='#222';ctx.lineWidth=2;ctx.setLineDash([6,4]);
+        ctx.beginPath();ctx.moveTo(lx,y+6);ctx.lineTo(lx+12,y+6);ctx.stroke();
+        ctx.setLineDash([]);
+        var label='fit';
+        if(reg.r2!==null) label+=' R\u00b2='+reg.r2.toFixed(2);
+        ctx.fillStyle='#1e1f24';ctx.font='11px sans-serif';
+        ctx.fillText(label,lx+16,y+6);
+      }
+    }
+
+    // stats text
+    var statsEl=document.getElementById('scatter-stats-'+chartId);
+    var parts=[vis.length+' points'];
+    if(reg && reg.r2!==null) parts.push('R\u00b2='+reg.r2.toFixed(3));
+    if(excl>0) parts.push(excl+' suspect outlier'+(excl===1?'':'s')+' excluded from fit');
+    statsEl.textContent=parts.join(' \u00b7 ');
+  }
+
+  // hover interaction
+  canvas.addEventListener('mousemove',function(e){
+    var rect=canvas.getBoundingClientRect();
+    var scaleX=W/rect.width, scaleY=H/rect.height;
+    var mx=(e.clientX-rect.left)*scaleX, my=(e.clientY-rect.top)*scaleY;
+    var vis=visible(); var best=-1,bestD=Infinity;
+    var b=bounds(vis);
+    vis.forEach(function(p,i){
+      var dx=tx(p.x,b)-mx,dy=ty(p.y,b)-my;
+      var d=dx*dx+dy*dy;
+      if(d<bestD && d<400){bestD=d;best=i;}
+    });
+    if(best!==hoveredIdx){hoveredIdx=best;render();}
+  });
+  canvas.addEventListener('mouseleave',function(){
+    if(hoveredIdx>=0){hoveredIdx=-1;render();}
+  });
+
+  // build toggle buttons
+  var row=document.getElementById('vf-toggles-'+chartId);
+  function mkBtn(text,cls,onClick){
+    var b=document.createElement('button');b.textContent=text;b.className=cls;
+    b.addEventListener('click',onClick);row.appendChild(b);return b;
+  }
+  mkBtn('All','vf-group-btn',function(){allVFs.forEach(function(v){enabledVFs[v]=true;});syncBtns();render();});
+  mkBtn('Scalar','vf-group-btn',function(){allVFs.forEach(function(v){enabledVFs[v]=(parseInt(v.split(':')[1])===1);});syncBtns();render();});
+  mkBtn('Vectorized','vf-group-btn',function(){allVFs.forEach(function(v){enabledVFs[v]=(parseInt(v.split(':')[1])>1);});syncBtns();render();});
+  var sep=document.createElement('div');sep.className='vf-sep';row.appendChild(sep);
+
+  var vfBtns={};
+  allVFs.forEach(function(vf){
+    var factor=parseInt(vf.split(':')[1]);
+    var type=vf.split(':')[0];
+    var btn=document.createElement('button');
+    btn.className='vf-toggle-btn active';
+    var sw=document.createElement('span');sw.className='vf-swatch';
+    sw.style.background=vfColor(vf,factor);
+    if(type==='scalable'){sw.style.borderRadius='0';sw.style.transform='rotate(45deg)';}
+    btn.appendChild(sw);
+    btn.appendChild(document.createTextNode(' '+vf));
+    btn.addEventListener('click',function(){enabledVFs[vf]=!enabledVFs[vf];syncBtns();render();});
+    row.appendChild(btn);
+    vfBtns[vf]=btn;
+  });
+
+  function syncBtns(){
+    allVFs.forEach(function(vf){
+      if(enabledVFs[vf])vfBtns[vf].classList.add('active');
+      else vfBtns[vf].classList.remove('active');
+    });
+  }
+
+  render();
+}
+"""
+
+
 def render_html(data: ReportData, plots: dict[str, str]) -> str:
     cards_html = render_cards(build_summary_cards(data))
     plottable_benches = list_plottable_benches(data)
@@ -1135,6 +1364,52 @@ def render_html(data: ReportData, plots: dict[str, str]) -> str:
         .empty {
           padding: 12px 0 0 0;
         }
+        .scatter-section canvas {
+          width: 100%;
+          height: auto;
+          display: block;
+          border-radius: 10px;
+          background: #fff;
+          cursor: crosshair;
+        }
+        .vf-toggle-row {
+          display: flex;
+          flex-wrap: wrap;
+          gap: 6px;
+          margin: 8px 0 12px 0;
+          align-items: center;
+        }
+        .vf-toggle-btn, .vf-group-btn {
+          display: inline-flex;
+          align-items: center;
+          gap: 4px;
+          padding: 4px 10px;
+          border: 1px solid var(--line);
+          border-radius: 8px;
+          background: var(--card);
+          cursor: pointer;
+          font-size: 13px;
+          font-family: inherit;
+          transition: opacity 0.12s;
+          user-select: none;
+        }
+        .vf-toggle-btn { opacity: 0.35; }
+        .vf-toggle-btn.active { opacity: 1; font-weight: 600; }
+        .vf-group-btn { background: #f0f0ee; font-size: 12px; }
+        .vf-group-btn:hover { background: #e4e4e0; }
+        .vf-sep { width: 1px; height: 22px; background: var(--line); margin: 0 4px; }
+        .vf-swatch {
+          display: inline-block;
+          width: 10px;
+          height: 10px;
+          border-radius: 2px;
+          flex-shrink: 0;
+        }
+        .scatter-stats {
+          font-size: 13px;
+          color: var(--muted);
+          margin-top: 6px;
+        }
         @media (max-width: 720px) {
           body {
             padding: 14px;
@@ -1148,6 +1423,9 @@ def render_html(data: ReportData, plots: dict[str, str]) -> str:
         }
         """,
         "</style>",
+        "<script>",
+        _SCATTER_JS,
+        "</script>",
         "</head>",
         "<body>",
         "<main>",
@@ -1159,16 +1437,8 @@ def render_html(data: ReportData, plots: dict[str, str]) -> str:
             plots["coverage"],
             "Failures and candidate coverage before reading compare-vs-latency plots.",
         ),
-        render_image_section(
-            "VPlan compare vs latency scatter: kernel_cycles",
-            plots["scatter:kernel_cycles"],
-            "x uses the VPlan compare value as-is, y uses measured median latency. Dashed line is a linear fit for comparison.",
-        ),
-        render_image_section(
-            "VPlan compare vs latency scatter: total_cycles",
-            plots["scatter:total_cycles"],
-            "Same view for total_cycles.",
-        ),
+        plots["scatter:kernel_cycles"],
+        plots["scatter:total_cycles"],
         render_image_section(
             "Ranking quality overview",
             plots["ranking_quality"],
@@ -1244,9 +1514,10 @@ def generate_plots(data: ReportData) -> dict[str, str]:
     }
     for metric_name, summaries in data.metric_summaries.items():
         label = metric_label(metric_name)
-        plots[f"scatter:{metric_name}"] = render_scatter(
+        plots[f"scatter:{metric_name}"] = render_scatter_interactive(
             summaries,
             title=f"VPlan compare vs latency ({label})",
+            chart_id=metric_name,
         )
 
     kernel_map = {summary.bench: summary for summary in data.metric_summaries["kernel_cycles"]}

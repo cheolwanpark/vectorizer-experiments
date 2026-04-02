@@ -2,7 +2,6 @@ import sqlite3
 import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
-from unittest.mock import patch
 
 from scripts.plot_results import (
     BenchMetricSummary,
@@ -18,7 +17,7 @@ from scripts.plot_results import (
     load_vfs_data,
     parse_effective_cost,
     parse_vf_factor,
-    render_scatter,
+    render_scatter_interactive,
     render_html,
 )
 
@@ -154,7 +153,7 @@ class PlotResultsTest(unittest.TestCase):
         self.assertTrue(is_suspect_compare_outlier(suspect))
         self.assertFalse(is_suspect_compare_outlier(normal))
 
-    def test_render_scatter_excludes_suspect_compare_outliers_from_linear_fit(self):
+    def test_render_scatter_interactive_flags_suspect_outliers_in_data(self):
         summary = BenchMetricSummary(
             bench="bench",
             metric_name="kernel_cycles",
@@ -206,61 +205,15 @@ class PlotResultsTest(unittest.TestCase):
             selected_rank_delta=0,
             spearman=1.0,
         )
-        captured: dict[str, list[float]] = {}
-        ax_calls: dict[str, object] = {}
 
-        def fake_linear_regression(xs, ys):
-            captured["xs"] = list(xs)
-            captured["ys"] = list(ys)
-            return None
+        html = render_scatter_interactive([summary], title="scatter", chart_id="test")
 
-        class FakeAxes:
-            transAxes = object()
-
-            def scatter(self, *args, **kwargs):
-                return None
-
-            def plot(self, *args, **kwargs):
-                return None
-
-            def set_xlim(self, xmin, xmax):
-                ax_calls["xlim"] = (xmin, xmax)
-
-            def text(self, *args, **kwargs):
-                ax_calls["text"] = args[2]
-
-            def set_title(self, *args, **kwargs):
-                return None
-
-            def set_xlabel(self, *args, **kwargs):
-                return None
-
-            def set_ylabel(self, *args, **kwargs):
-                return None
-
-            def legend(self, *args, **kwargs):
-                return None
-
-            def grid(self, *args, **kwargs):
-                return None
-
-        class FakePlt:
-            def subplots(self, **kwargs):
-                return object(), FakeAxes()
-
-            def close(self, fig):
-                return None
-
-        with (
-            patch("scripts.plot_results.linear_regression", side_effect=fake_linear_regression),
-            patch("scripts.plot_results.require_matplotlib", return_value=FakePlt()),
-            patch("scripts.plot_results.figure_to_data_url", return_value="data:image/png;base64,test"),
-        ):
-            render_scatter([summary], title="scatter")
-
-        self.assertEqual(captured["xs"], [1000.0, 2000.0])
-        self.assertEqual(captured["ys"], [13.0, 10.0])
-        self.assertIn("1 suspect compare outlier omitted from fit/x-range", ax_calls["text"])
+        self.assertIn("<canvas", html)
+        self.assertIn('"suspect":true', html)
+        self.assertIn('"suspect":false', html)
+        self.assertIn('"isScalar":true', html)
+        self.assertIn('"isScalar":false', html)
+        self.assertIn("vf-toggles-test", html)
 
     def test_count_suspect_compare_outliers_counts_kernel_summary_points(self):
         summaries = [
@@ -347,8 +300,8 @@ class PlotResultsTest(unittest.TestCase):
         )
         plots = {
             "coverage": "coverage.png",
-            "scatter:kernel_cycles": "scatter-kernel.png",
-            "scatter:total_cycles": "scatter-total.png",
+            "scatter:kernel_cycles": "<section class='plot-section scatter-section'>scatter-kernel</section>",
+            "scatter:total_cycles": "<section class='plot-section scatter-section'>scatter-total</section>",
             "ranking_quality": "ranking-quality.png",
             "detail:s000": "detail-s000.png",
         }
@@ -421,8 +374,8 @@ class PlotResultsTest(unittest.TestCase):
         )
         plots = {
             "coverage": "coverage.png",
-            "scatter:kernel_cycles": "scatter-kernel.png",
-            "scatter:total_cycles": "scatter-total.png",
+            "scatter:kernel_cycles": "<section class='plot-section scatter-section'>scatter-kernel</section>",
+            "scatter:total_cycles": "<section class='plot-section scatter-section'>scatter-total</section>",
             "ranking_quality": "ranking-quality.png",
             "detail:s175": "detail-s175.png",
         }
