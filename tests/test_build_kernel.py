@@ -34,6 +34,18 @@ class BuildKernelTest(unittest.TestCase):
         self.assertIn('ASM_OUT="${BASE_PATH}.s"', forced_vf_block)
         self.assertIn('echo "Artifacts: $RAW_LL $PREVEC_LL $OPT_LL $OPT_LOG $ASM_OUT"', script)
 
+    def test_default_build_persists_ir_and_assembly_artifacts(self):
+        script = BUILD_KERNEL.read_text(encoding="utf-8")
+        helper_start = script.index("emit_default_build_artifacts() {")
+        helper_end = script.index("verify_forced_vector_ir()", helper_start)
+        helper_block = script[helper_start:helper_end]
+
+        self.assertIn('local raw_ll="${base_path}.raw.ll"', helper_block)
+        self.assertIn('local prevec_ll="${base_path}.prevec.ll"', helper_block)
+        self.assertIn('local opt_ll="${base_path}.opt.ll"', helper_block)
+        self.assertIn('local asm_out="${base_path}.s"', helper_block)
+        self.assertIn('emit_default_build_artifacts "$IR_SOURCE" "$OUTPUT"', script)
+
     def test_generated_mode_adds_tsvc_runtime_without_full_tsvc_runtime_sources(self):
         script = BUILD_KERNEL.read_text(encoding="utf-8")
         block_start = script.index('elif [[ "$GENERATED_MODE" -eq 1 ]]; then', script.index("SUPPORT_SRCS=()"))
