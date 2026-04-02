@@ -20,7 +20,7 @@ class VPlanExplainTest(unittest.TestCase):
             def fake_run_container(command, log_path, *, echo_output=False):
                 del log_path, echo_output
                 captured_command["command"] = command
-                return 0, "LV: VF=4 cost=8\nLV: selected VF=4 plan=0\n"
+                return 0, "LV: VPlan[0] VFs={4}\nLV: VF=4 cost=8 compare=2000\nLV: selected VF=4 plan=0\n"
 
             with patch.object(vplan_explain, "repo_root", return_value=root):
                 with patch.object(vplan_explain, "run_container_and_capture", side_effect=fake_run_container):
@@ -37,6 +37,41 @@ class VPlanExplainTest(unittest.TestCase):
         self.assertEqual(result["source"], str(source))
         self.assertEqual(result["source_kind"], "manual")
         self.assertEqual(result["function_name"], "kernel")
+        self.assertEqual(result["vf_candidates"][0]["compare"], "2000")
+
+    def test_parse_vplan_vfs_reads_compare_when_present(self):
+        parsed = vplan_explain.parse_vplan_vfs(
+            "\n".join(
+                [
+                    "LV: VPlan[1] VFs={2,4}",
+                    "LV: VF=2 cost=7 compare=3500",
+                    "LV: VF=4 cost=7 compare=1750",
+                    "LV: selected VF=4 plan=1",
+                ]
+            )
+        )
+
+        self.assertEqual(
+            parsed,
+            [
+                {
+                    "raw_vf": "2",
+                    "use_vf": "fixed:2",
+                    "cost": "7",
+                    "compare": "3500",
+                    "plan_index": 1,
+                    "selected": False,
+                },
+                {
+                    "raw_vf": "4",
+                    "use_vf": "fixed:4",
+                    "cost": "7",
+                    "compare": "1750",
+                    "plan_index": 1,
+                    "selected": True,
+                },
+            ],
+        )
 
     def test_main_keeps_summary_only_by_default(self):
         with patch(

@@ -27,7 +27,7 @@ PREVEC_ARGS = (
     "lcssa,indvars,loop-rotate,instcombine,simplifycfg"
 )
 VPLAN_EXPLAIN_ARGS = "-passes=loop-vectorize -vplan-explain -disable-output"
-VPLAN_LINE_RE = re.compile(r"^LV:\s+VF=(.+?)\s+cost=([^\s]+)\s*$")
+VPLAN_LINE_RE = re.compile(r"^LV:\s+VF=(.+?)\s+cost=([^\s]+)(?:\s+compare=([^\s]+))?\s*$")
 VPLAN_PLAN_RE = re.compile(r"^LV:\s+VPlan\[(\d+)\]\s+VFs=\{(.+)\}\s*$")
 VPLAN_SELECTED_RE = re.compile(r"^LV:\s+selected VF=(.+?)\s+plan=(\d+)\s*$")
 
@@ -189,6 +189,7 @@ def parse_vplan_vfs(text: str) -> list[dict[str, object]]:
                 "raw_vf": raw_vf,
                 "use_vf": normalized,
                 "cost": vf_match.group(2).strip(),
+                "compare": (vf_match.group(3) or "").strip(),
                 "plan_index": current_plan,
                 "selected": False,
             }

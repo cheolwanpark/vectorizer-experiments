@@ -12,6 +12,7 @@ from scripts.plot_results import (
     build_metric_summaries,
     build_top_n_overlap_distributions,
     load_emulate_data,
+    load_vfs_data,
     parse_effective_cost,
     parse_vf_factor,
     render_html,
@@ -31,14 +32,15 @@ class PlotResultsTest(unittest.TestCase):
         self.assertIsNone(parse_effective_cost("", "fixed:4"))
         self.assertIsNone(parse_effective_cost("24", "unknown"))
 
-    def test_build_metric_summaries_ranks_by_effective_cost(self):
+    def test_build_metric_summaries_ranks_by_compare(self):
         candidates = {
             ("bench", "fixed:2"): VFCandidate(
                 bench="bench",
                 use_vf="fixed:2",
                 raw_vf="2",
                 raw_cost="24",
-                cost=parse_effective_cost("24", "fixed:2"),
+                raw_compare="3500",
+                compare=3500.0,
                 selected=False,
             ),
             ("bench", "fixed:4"): VFCandidate(
@@ -46,7 +48,8 @@ class PlotResultsTest(unittest.TestCase):
                 use_vf="fixed:4",
                 raw_vf="4",
                 raw_cost="32",
-                cost=parse_effective_cost("32", "fixed:4"),
+                raw_compare="1750",
+                compare=1750.0,
                 selected=True,
             ),
         }
@@ -64,20 +67,21 @@ class PlotResultsTest(unittest.TestCase):
         self.assertEqual(len(summaries), 1)
         summary: BenchMetricSummary = summaries[0]
         point_by_vf = {point.use_vf: point for point in summary.points}
-        self.assertEqual(point_by_vf["fixed:2"].cost, 12.0)
-        self.assertEqual(point_by_vf["fixed:4"].cost, 8.0)
-        self.assertEqual(summary.cost_best_vf, "fixed:4")
+        self.assertEqual(point_by_vf["fixed:2"].compare, 3500.0)
+        self.assertEqual(point_by_vf["fixed:4"].compare, 1750.0)
+        self.assertEqual(summary.compare_best_vf, "fixed:4")
 
     def test_build_top_n_overlap_distributions_uses_overlap_ratio(self):
         def make_candidates(bench, rows, selected_vf):
             candidates = {}
-            for use_vf, raw_cost in rows:
+            for use_vf, raw_compare in rows:
                 candidates[(bench, use_vf)] = VFCandidate(
                     bench=bench,
                     use_vf=use_vf,
                     raw_vf=use_vf.split(":", 1)[1],
-                    raw_cost=str(raw_cost),
-                    cost=parse_effective_cost(str(raw_cost), use_vf),
+                    raw_cost="",
+                    raw_compare=str(raw_compare),
+                    compare=float(raw_compare),
                     selected=(use_vf == selected_vf),
                 )
             return candidates
@@ -125,18 +129,19 @@ class PlotResultsTest(unittest.TestCase):
                     use_vf="fixed:2",
                     selected=True,
                     raw_cost="24",
-                    cost=12.0,
+                    raw_compare="3500",
+                    compare=3500.0,
                     samples=[10.0],
                     median_value=10.0,
                     min_value=10.0,
                     max_value=10.0,
                     n_success=1,
-                    cost_rank=1,
+                    compare_rank=1,
                     actual_rank=1,
                 )
             ],
             selected_vf="fixed:2",
-            cost_best_vf="fixed:2",
+            compare_best_vf="fixed:2",
             actual_best_vf="fixed:2",
             max_abs_rank_delta=0,
             selected_rank_delta=0,
@@ -204,6 +209,49 @@ class PlotResultsTest(unittest.TestCase):
         self.assertEqual(failure_counts, {})
         self.assertEqual(aggregates[("s000", "fixed:4")].kernel_samples, [10.0])
         self.assertEqual(aggregates[("s000", "fixed:4")].total_samples, [20.0])
+
+    def test_load_vfs_data_prefers_compare_column(self):
+        with TemporaryDirectory() as tmp:
+            db_path = Path(tmp) / "vfs.sqlite"
+            conn = sqlite3.connect(db_path)
+            conn.execute(
+                """
+                CREATE TABLE vfs (
+                    bench TEXT NOT NULL,
+                    use_vf TEXT NOT NULL,
+                    raw_vf TEXT NOT NULL,
+                    cost TEXT NOT NULL,
+                    compare TEXT NOT NULL,
+                    plan_index INTEGER,
+                    selected INTEGER NOT NULL,
+                    failure TEXT NOT NULL,
+                    failure_message TEXT NOT NULL,
+                    source TEXT NOT NULL,
+                    vplan_log_path TEXT NOT NULL,
+                    vplan_log_text TEXT NOT NULL,
+                    created_at TEXT NOT NULL
+                )
+                """
+            )
+            conn.execute(
+                """
+                INSERT INTO vfs (
+                    bench, use_vf, raw_vf, cost, compare, plan_index, selected,
+                    failure, failure_message, source, vplan_log_path, vplan_log_text, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                ("s000", "fixed:4", "4", "7", "1750", 1, 1, "", "", "", "", "", "2026-04-02T00:00:00"),
+            )
+            conn.commit()
+            conn.close()
+
+            candidates, candidate_counts, failures = load_vfs_data(db_path, set())
+
+        self.assertEqual(candidate_counts, {"s000": 1})
+        self.assertEqual(failures, [])
+        self.assertEqual(candidates[("s000", "fixed:4")].raw_cost, "7")
+        self.assertEqual(candidates[("s000", "fixed:4")].raw_compare, "1750")
+        self.assertEqual(candidates[("s000", "fixed:4")].compare, 1750.0)
 
 
 if __name__ == "__main__":

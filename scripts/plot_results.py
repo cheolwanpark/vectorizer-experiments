@@ -206,7 +206,8 @@ class VFCandidate:
     use_vf: str
     raw_vf: str
     raw_cost: str
-    cost: float | None
+    raw_compare: str
+    compare: float | None
     selected: bool
 
 
@@ -238,13 +239,14 @@ class MetricPoint:
     use_vf: str
     selected: bool
     raw_cost: str
-    cost: float | None
+    raw_compare: str
+    compare: float | None
     samples: list[float]
     median_value: float
     min_value: float
     max_value: float
     n_success: int
-    cost_rank: int | None = None
+    compare_rank: int | None = None
     actual_rank: int | None = None
 
 
@@ -254,7 +256,7 @@ class BenchMetricSummary:
     metric_name: str
     points: list[MetricPoint]
     selected_vf: str | None
-    cost_best_vf: str | None
+    compare_best_vf: str | None
     actual_best_vf: str | None
     max_abs_rank_delta: int | None
     selected_rank_delta: int | None
@@ -279,9 +281,12 @@ def load_vfs_data(
 ) -> tuple[dict[tuple[str, str], VFCandidate], dict[str, int], list[VPlanFailure]]:
     conn = sqlite3.connect(db_path)
     conn.row_factory = sqlite3.Row
+    columns = {str(row["name"]) for row in conn.execute("PRAGMA table_info(vfs)").fetchall()}
+    has_compare = "compare" in columns
+    select_compare = ", compare" if has_compare else ""
     rows = conn.execute(
-        """
-        SELECT bench, use_vf, raw_vf, cost, selected, failure, failure_message
+        f"""
+        SELECT bench, use_vf, raw_vf, cost{select_compare}, selected, failure, failure_message
         FROM vfs
         ORDER BY bench, use_vf
         """
@@ -313,7 +318,12 @@ def load_vfs_data(
             use_vf=use_vf,
             raw_vf=str(row["raw_vf"] or ""),
             raw_cost=str(row["cost"] or ""),
-            cost=parse_effective_cost(str(row["cost"] or ""), use_vf),
+            raw_compare=str(row["compare"] or "") if has_compare else "",
+            compare=(
+                parse_cost(str(row["compare"] or ""))
+                if has_compare and str(row["compare"] or "").strip()
+                else parse_effective_cost(str(row["cost"] or ""), use_vf)
+            ),
             selected=bool(int(row["selected"] or 0)),
         )
         candidate_counts[bench] += 1
@@ -380,7 +390,8 @@ def build_metric_summaries(
                 use_vf=use_vf,
                 selected=candidate.selected,
                 raw_cost=candidate.raw_cost,
-                cost=candidate.cost,
+                raw_compare=candidate.raw_compare,
+                compare=candidate.compare,
                 samples=list(samples),
                 median_value=median(samples),
                 min_value=min(samples),
@@ -392,35 +403,35 @@ def build_metric_summaries(
     summaries: list[BenchMetricSummary] = []
     for bench, points in sorted(points_by_bench.items()):
         selected_vf = next((point.use_vf for point in points if point.selected), None)
-        rankable = [point for point in points if point.cost is not None]
-        cost_best_vf = None
+        rankable = [point for point in points if point.compare is not None]
+        compare_best_vf = None
         actual_best_vf = None
         max_abs_rank_delta = None
         selected_rank_delta = None
         spearman = None
         if rankable:
-            cost_rank_map = dense_rank({point.use_vf: float(point.cost) for point in rankable})
+            compare_rank_map = dense_rank({point.use_vf: float(point.compare) for point in rankable})
             actual_rank_map = dense_rank({point.use_vf: point.median_value for point in rankable})
-            cost_best_vf = min(
-                rankable, key=lambda point: (float(point.cost), parse_vf_key(point.use_vf))
+            compare_best_vf = min(
+                rankable, key=lambda point: (float(point.compare), parse_vf_key(point.use_vf))
             ).use_vf
             actual_best_vf = min(
                 rankable, key=lambda point: (point.median_value, parse_vf_key(point.use_vf))
             ).use_vf
             deltas: list[int] = []
-            ordered_cost_ranks: list[float] = []
+            ordered_compare_ranks: list[float] = []
             ordered_actual_ranks: list[float] = []
             for point in rankable:
-                point.cost_rank = cost_rank_map[point.use_vf]
+                point.compare_rank = compare_rank_map[point.use_vf]
                 point.actual_rank = actual_rank_map[point.use_vf]
-                delta = point.actual_rank - point.cost_rank
+                delta = point.actual_rank - point.compare_rank
                 deltas.append(abs(delta))
                 if point.use_vf == selected_vf:
                     selected_rank_delta = delta
-                ordered_cost_ranks.append(float(point.cost_rank))
+                ordered_compare_ranks.append(float(point.compare_rank))
                 ordered_actual_ranks.append(float(point.actual_rank))
             max_abs_rank_delta = max(deltas) if deltas else None
-            spearman = pearson_correlation(ordered_cost_ranks, ordered_actual_ranks)
+            spearman = pearson_correlation(ordered_compare_ranks, ordered_actual_ranks)
         else:
             actual_best_vf = min(
                 points, key=lambda point: (point.median_value, parse_vf_key(point.use_vf))
@@ -432,7 +443,7 @@ def build_metric_summaries(
                 metric_name=metric_name,
                 points=sorted(points, key=lambda point: parse_vf_key(point.use_vf)),
                 selected_vf=selected_vf,
-                cost_best_vf=cost_best_vf,
+                compare_best_vf=compare_best_vf,
                 actual_best_vf=actual_best_vf,
                 max_abs_rank_delta=max_abs_rank_delta,
                 selected_rank_delta=selected_rank_delta,
@@ -532,7 +543,7 @@ def rankable_points(summary: BenchMetricSummary) -> list[MetricPoint]:
     return [
         point
         for point in summary.points
-        if point.cost_rank is not None and point.actual_rank is not None and point.cost is not None
+        if point.compare_rank is not None and point.actual_rank is not None and point.compare is not None
     ]
 
 
@@ -540,8 +551,8 @@ def select_top_n_vfs(summary: BenchMetricSummary, n: int, *, by: str) -> set[str
     rankable = rankable_points(summary)
     if len(rankable) < n:
         return set()
-    if by == "cost":
-        ordered = sorted(rankable, key=lambda point: (float(point.cost), parse_vf_key(point.use_vf)))
+    if by == "compare":
+        ordered = sorted(rankable, key=lambda point: (float(point.compare), parse_vf_key(point.use_vf)))
     elif by == "latency":
         ordered = sorted(rankable, key=lambda point: (point.median_value, parse_vf_key(point.use_vf)))
     else:
@@ -564,7 +575,7 @@ def build_top_n_overlap_distributions(
             rankable = rankable_points(summary)
             if len(rankable) < n:
                 continue
-            predicted = select_top_n_vfs(summary, n, by="cost")
+            predicted = select_top_n_vfs(summary, n, by="compare")
             actual = select_top_n_vfs(summary, n, by="latency")
             ratios.append(len(predicted & actual) / n)
         if not ratios:
@@ -592,7 +603,7 @@ def render_scatter(summaries: list[BenchMetricSummary], *, title: str) -> str:
     other_points: list[MetricPoint] = []
     for summary in summaries:
         for point in summary.points:
-            if point.cost is None:
+            if point.compare is None:
                 continue
             if point.selected:
                 selected_points.append(point)
@@ -606,7 +617,7 @@ def render_scatter(summaries: list[BenchMetricSummary], *, title: str) -> str:
     fig, ax = plt.subplots(figsize=(8, 5))
     if other_points:
         ax.scatter(
-            [point.cost for point in other_points],
+            [point.compare for point in other_points],
             [point.median_value for point in other_points],
             label="non-selected",
             c="#3A86FF",
@@ -615,7 +626,7 @@ def render_scatter(summaries: list[BenchMetricSummary], *, title: str) -> str:
         )
     if selected_points:
         ax.scatter(
-            [point.cost for point in selected_points],
+            [point.compare for point in selected_points],
             [point.median_value for point in selected_points],
             label="selected",
             c="#FB5607",
@@ -625,13 +636,13 @@ def render_scatter(summaries: list[BenchMetricSummary], *, title: str) -> str:
         )
 
     fit = linear_regression(
-        [float(point.cost) for point in all_points],
+        [float(point.compare) for point in all_points],
         [point.median_value for point in all_points],
     )
     if fit is not None:
         slope, intercept, r_squared = fit
-        x_min = min(float(point.cost) for point in all_points)
-        x_max = max(float(point.cost) for point in all_points)
+        x_min = min(float(point.compare) for point in all_points)
+        x_max = max(float(point.compare) for point in all_points)
         if x_min == x_max:
             x_max = x_min + 1.0
         xs = [x_min, x_max]
@@ -642,7 +653,7 @@ def render_scatter(summaries: list[BenchMetricSummary], *, title: str) -> str:
         ax.plot(xs, ys, color="#222222", linewidth=2, linestyle="--", label=label)
 
     ax.set_title(title, loc="left")
-    ax.set_xlabel("Effective VPlan cost (cost / VF)")
+    ax.set_xlabel("VPlan compare")
     ax.set_ylabel("Median latency (cycles)")
     ax.legend(loc="best")
     ax.grid(color="#E6E6E6", linewidth=0.8)
@@ -797,21 +808,23 @@ def render_metric_detail_axis(ax, summary: BenchMetricSummary | None, *, title: 
     ax.set_ylabel("Median latency (cycles)")
     ax.grid(axis="y", color="#E6E6E6", linewidth=0.8)
 
-    cost_points = [(x_index, point.cost) for x_index, point in enumerate(ordered_points) if point.cost is not None]
+    compare_points = [
+        (x_index, point.compare) for x_index, point in enumerate(ordered_points) if point.compare is not None
+    ]
     ax2 = ax.twinx()
-    if cost_points:
+    if compare_points:
         ax2.scatter(
-            [x_index for x_index, _ in cost_points],
-            [float(cost) for _, cost in cost_points],
+            [x_index for x_index, _ in compare_points],
+            [float(compare) for _, compare in compare_points],
             color="#222222",
             marker="o",
             s=42,
             alpha=0.9,
         )
-        ax2.set_ylabel("Effective VPlan cost (cost / VF)")
+        ax2.set_ylabel("VPlan compare")
     else:
         ax2.set_yticks([])
-        ax2.set_ylabel("Effective VPlan cost unavailable")
+        ax2.set_ylabel("VPlan compare unavailable")
 
 
 def render_bench_detail(
@@ -897,7 +910,7 @@ def build_detail_summary_text(summary: BenchMetricSummary | None, metric_name: s
         return f"{metric_name}: no successful emulate rows"
     return (
         f"{metric_name}: selected={summary.selected_vf or '-'}, "
-        f"cost-best={summary.cost_best_vf or '-'}, "
+        f"compare-best={summary.compare_best_vf or '-'}, "
         f"latency-best={summary.actual_best_vf or '-'}, "
         f"spearman={format_float(summary.spearman, digits=2)}"
     )
@@ -967,7 +980,7 @@ def render_html(data: ReportData, plots: dict[str, str]) -> str:
         "<head>",
         "<meta charset='utf-8' />",
         "<meta name='viewport' content='width=device-width, initial-scale=1' />",
-        "<title>VPlan vs Emulate Report</title>",
+        "<title>VPlan Compare vs Emulate Report</title>",
         "<style>",
         """
         :root {
@@ -1083,21 +1096,21 @@ def render_html(data: ReportData, plots: dict[str, str]) -> str:
         "</head>",
         "<body>",
         "<main>",
-        "<h1>VPlan Effective Cost vs Emulate Latency</h1>",
+        "<h1>VPlan Compare vs Emulate Latency</h1>",
         "<p>Single-file HTML report with base64-embedded plot images.</p>",
         cards_html,
         render_image_section(
             "Coverage summary",
             plots["coverage"],
-            "Failures and candidate coverage before reading cost-vs-latency plots.",
+            "Failures and candidate coverage before reading compare-vs-latency plots.",
         ),
         render_image_section(
-            "Effective cost vs latency scatter: kernel_cycles",
+            "VPlan compare vs latency scatter: kernel_cycles",
             plots["scatter:kernel_cycles"],
-            "x uses cost/VF, y uses measured median latency. Dashed line is a linear fit for comparison.",
+            "x uses the VPlan compare value as-is, y uses measured median latency. Dashed line is a linear fit for comparison.",
         ),
         render_image_section(
-            "Effective cost vs latency scatter: total_cycles",
+            "VPlan compare vs latency scatter: total_cycles",
             plots["scatter:total_cycles"],
             "Same view for total_cycles.",
         ),
@@ -1178,7 +1191,7 @@ def generate_plots(data: ReportData) -> dict[str, str]:
         label = metric_label(metric_name)
         plots[f"scatter:{metric_name}"] = render_scatter(
             summaries,
-            title=f"Effective cost vs latency ({label})",
+            title=f"VPlan compare vs latency ({label})",
         )
 
     kernel_map = {summary.bench: summary for summary in data.metric_summaries["kernel_cycles"]}
