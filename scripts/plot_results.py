@@ -638,6 +638,38 @@ def build_ranking_data(metric_summaries: dict[str, list[BenchMetricSummary]]) ->
     return {"spearman": spearman, "overlap": overlap}
 
 
+def build_speedup_data(metric_summaries: dict[str, list[BenchMetricSummary]]) -> dict:
+    result: dict[str, list[dict]] = {}
+    for metric_name, summaries in metric_summaries.items():
+        entries: list[dict] = []
+        for summary in summaries:
+            default_point: MetricPoint | None = None
+            best_non_default: MetricPoint | None = None
+            for point in summary.points:
+                if not point.use_vf.strip():
+                    default_point = point
+                elif best_non_default is None or point.median_value < best_non_default.median_value:
+                    best_non_default = point
+            if default_point is None or best_non_default is None:
+                continue
+            if default_point.median_value <= 0:
+                continue
+            ratio = 1.0 - (best_non_default.median_value / default_point.median_value)
+            ratio = max(0.0, min(1.0, ratio))
+            entries.append(
+                {
+                    "bench": summary.bench,
+                    "speedup": round(ratio, 4),
+                    "bestVF": best_non_default.use_vf,
+                    "defaultCycles": round(default_point.median_value),
+                    "bestCycles": round(best_non_default.median_value),
+                }
+            )
+        entries.sort(key=lambda e: -e["speedup"])
+        result[metric_name] = entries
+    return result
+
+
 def build_bench_detail_data(
     summary: BenchMetricSummary | None,
 ) -> list[dict]:
@@ -689,6 +721,21 @@ def build_summary_cards(data: ReportData) -> list[tuple[str, str]]:
     top1_overlap = (sum(top1_distributions[0]) / len(top1_distributions[0])) if top1_ns and top1_distributions else None
     kernel_suspect_outliers = count_suspect_compare_outliers(kernel_summaries)
     outlier_suffix = "" if kernel_suspect_outliers == 1 else "s"
+    speedup_ratios: list[float] = []
+    for summary in kernel_summaries:
+        default_pt = next((p for p in summary.points if not p.use_vf.strip()), None)
+        best_nd = min(
+            (p for p in summary.points if p.use_vf.strip()),
+            key=lambda p: p.median_value,
+            default=None,
+        )
+        if default_pt and best_nd and default_pt.median_value > 0:
+            speedup_ratios.append(
+                max(0.0, min(1.0, 1.0 - best_nd.median_value / default_pt.median_value))
+            )
+    median_speedup = format_float(
+        statistics.median(speedup_ratios) if speedup_ratios else None, digits=2
+    )
     return [
         ("Benchmarks", str(len(data.benches))),
         ("Kernel comparable benches", str(len(comparable))),
@@ -697,6 +744,7 @@ def build_summary_cards(data: ReportData) -> list[tuple[str, str]]:
         ("Selected VF matches actual best", f"{len(selected_matches)}/{len(comparable) or 0}"),
         ("Mean kernel Spearman", format_float(avg_spearman, digits=2)),
         ("Kernel top-1 overlap", format_float(top1_overlap, digits=2)),
+        ("Median kernel speedup", median_speedup),
         ("Kernel scatter fit exclusions", f"{kernel_suspect_outliers} suspect compare outlier{outlier_suffix}"),
     ]
 
@@ -1290,6 +1338,41 @@ _APP_JS = r"""
     }
   })();
 
+  // -- Potential Speedup box + jitter --
+  (function() {
+    var colors = {kernel_cycles: '#dc2626', total_cycles: '#2563eb'};
+    var metrics = ['kernel_cycles', 'total_cycles'];
+    var traces = [];
+    metrics.forEach(function(m) {
+      var entries = D.speedup[m];
+      if (!entries || !entries.length) return;
+      traces.push({
+        type: 'box', name: m,
+        y: entries.map(function(e){return e.speedup;}),
+        text: entries.map(function(e){
+          return e.bench + '<br>speedup: ' + (e.speedup * 100).toFixed(1) + '%'
+              + '<br>best VF: ' + e.bestVF
+              + '<br>default: ' + e.defaultCycles.toLocaleString() + ' cycles'
+              + '<br>best: ' + e.bestCycles.toLocaleString() + ' cycles';
+        }),
+        boxpoints: 'all', jitter: 0.4, pointpos: 0,
+        hovertemplate: '%{text}<extra>%{fullData.name}</extra>',
+        marker: {color: colors[m], size: 6, opacity: 0.7},
+        line: {color: colors[m]},
+        fillcolor: colors[m] + '30'
+      });
+    });
+    if (traces.length) {
+      Plotly.newPlot('chart-speedup', traces, Object.assign({}, BASE, {
+        title: {text: 'Per-bench potential speedup distribution', x: 0, font: {size: 16}},
+        yaxis: Object.assign({}, BASE.yaxis, {title: {text: 'Speedup ratio (1 \u2212 best/default)'}, range: [-0.05, 1.05]}),
+        showlegend: false
+      }), CFG);
+    } else {
+      document.getElementById('chart-speedup').innerHTML = '<p style="color:#6b7280;padding:40px">No speedup data available.</p>';
+    }
+  })();
+
   // -- Bench detail --
   (function() {
     var searchInput = document.getElementById('bench-search');
@@ -1436,6 +1519,7 @@ def render_html(data: ReportData, plots: dict) -> str:
             "total_cycles": plots["scatter:total_cycles"],
         },
         "ranking": plots["ranking"],
+        "speedup": plots["speedup"],
         "benchDetails": {
             bench: {
                 "kernel_cycles": plots.get(f"detail:{bench}:kernel_cycles", []),
@@ -1459,6 +1543,7 @@ def render_html(data: ReportData, plots: dict) -> str:
         ("kernel-scatter", "Kernel"),
         ("total-scatter", "Total"),
         ("ranking", "Ranking"),
+        ("speedup", "Speedup"),
         ("bench-detail", "Bench Detail"),
     ]
     nav_html = " ".join(
@@ -1514,6 +1599,12 @@ def render_html(data: ReportData, plots: dict) -> str:
         "<p class='caption'>Left: per-bench Spearman distribution. Right: 100%% stacked bars showing the share of benches at each overlap level for Top-1~Top-4.</p>",
         "<div id='chart-spearman'></div><div id='chart-topn'></div>",
         "</section>",
+        "<section class='section section-accent' id='speedup'>",
+        "<h2>Potential speedup</h2>",
+        "<p class='caption'>Per-benchmark speedup ratio: 1 &minus; (best non-default cycles / default cycles). "
+        "Higher = more improvement from vectorization. Sorted descending.</p>",
+        "<div id='chart-speedup'></div>",
+        "</section>",
         "<section class='section' id='bench-detail'>",
         "<h2>Bench detail</h2>",
     ]
@@ -1559,6 +1650,7 @@ def generate_plots(data: ReportData) -> dict:
     plots: dict = {
         "coverage": build_coverage_data(data),
         "ranking": build_ranking_data(data.metric_summaries),
+        "speedup": build_speedup_data(data.metric_summaries),
     }
     for metric_name, summaries in data.metric_summaries.items():
         plots[f"scatter:{metric_name}"] = build_scatter_data(summaries)
