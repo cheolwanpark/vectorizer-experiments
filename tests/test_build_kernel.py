@@ -43,6 +43,26 @@ class BuildKernelTest(unittest.TestCase):
         self.assertIn('-I"${SCRIPT_DIR}/../benchmarks/TSVC_2/src"', generated_flags_block)
         self.assertNotIn("-DTSVC_MEASURE_CYCLES", generated_flags_block)
 
+    def test_generated_runtime_exports_tsvc_compat_arrays(self):
+        arrays_header = (REPO_ROOT / "emulator" / "run" / "common" / "arrays.h").read_text(encoding="utf-8")
+        arrays_source = (REPO_ROOT / "emulator" / "run" / "common" / "arrays.c").read_text(encoding="utf-8")
+
+        self.assertIn("flat_2d_array", arrays_header)
+        self.assertIn("x[LEN_1D]", arrays_header)
+        self.assertIn("real_t * __restrict__ xx;", arrays_header)
+        self.assertIn("flat_2d_array[LEN_2D * LEN_2D]", arrays_source)
+        self.assertIn("tt[LEN_2D][LEN_2D]", arrays_source)
+        self.assertIn("xx = x;", arrays_source)
+
+    def test_generated_runtime_exports_minimal_test_helpers(self):
+        runtime_source = (REPO_ROOT / "emulator" / "run" / "common" / "tsvc_runtime.c").read_text(encoding="utf-8")
+
+        self.assertIn("__attribute__((weak)) real_t test(real_t *A)", runtime_source)
+        self.assertIn("__attribute__((weak)) real_t f(real_t a, real_t b)", runtime_source)
+        self.assertIn("for (int i = 0; i < 4; i++)", runtime_source)
+        self.assertIn("sum += A[i];", runtime_source)
+        self.assertIn("return a * b;", runtime_source)
+
 
 if __name__ == "__main__":
     unittest.main()

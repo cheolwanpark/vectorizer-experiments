@@ -77,3 +77,19 @@ void exit(int code) {
         __asm__ volatile("" ::: "memory");
     }
 }
+
+__attribute__((weak)) real_t test(real_t *A) {
+    real_t sum = (real_t)0.0f;
+
+    if (A == NULL) {
+        return sum;
+    }
+    for (int i = 0; i < 4; i++) {
+        sum += A[i];
+    }
+    return sum;
+}
+
+__attribute__((weak)) real_t f(real_t a, real_t b) {
+    return a * b;
+}

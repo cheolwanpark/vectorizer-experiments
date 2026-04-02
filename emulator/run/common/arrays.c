@@ -9,8 +9,13 @@ __attribute__((aligned(ARRAY_ALIGNMENT))) real_t e[LEN_1D];
 __attribute__((aligned(ARRAY_ALIGNMENT))) real_t aa[LEN_2D][LEN_2D];
 __attribute__((aligned(ARRAY_ALIGNMENT))) real_t bb[LEN_2D][LEN_2D];
 __attribute__((aligned(ARRAY_ALIGNMENT))) real_t cc[LEN_2D][LEN_2D];
+__attribute__((aligned(ARRAY_ALIGNMENT))) real_t tt[LEN_2D][LEN_2D];
+__attribute__((aligned(ARRAY_ALIGNMENT))) real_t flat_2d_array[LEN_2D * LEN_2D];
+__attribute__((aligned(ARRAY_ALIGNMENT))) real_t x[LEN_1D];
 
 __attribute__((aligned(ARRAY_ALIGNMENT))) int indx[LEN_1D];
+real_t * __restrict__ xx;
+real_t *yy;
 
 __attribute__((weak)) void init_arrays(void) {
     for (size_t i = 0; i < LEN_1D; i++) {
@@ -19,6 +24,7 @@ __attribute__((weak)) void init_arrays(void) {
         c[i] = 1.0f;
         d[i] = 1.0f;
         e[i] = 1.0f;
+        x[i] = 0.0f;
         indx[i] = (int)(i % LEN_1D);
     }
     for (size_t i = 0; i < LEN_2D; i++) {
@@ -26,6 +32,10 @@ __attribute__((weak)) void init_arrays(void) {
             aa[i][j] = 0.0f;
             bb[i][j] = 1.0f;
             cc[i][j] = 1.0f;
+            tt[i][j] = 0.0f;
+            flat_2d_array[i * LEN_2D + j] = 0.0f;
         }
     }
+    xx = x;
+    yy = x;
 }
