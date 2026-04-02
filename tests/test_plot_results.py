@@ -2,6 +2,7 @@ import sqlite3
 import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from unittest.mock import patch
 
 from scripts.plot_results import (
     BenchMetricSummary,
@@ -11,10 +12,13 @@ from scripts.plot_results import (
     VFCandidate,
     build_metric_summaries,
     build_top_n_overlap_distributions,
+    count_suspect_compare_outliers,
+    is_suspect_compare_outlier,
     load_emulate_data,
     load_vfs_data,
     parse_effective_cost,
     parse_vf_factor,
+    render_scatter,
     render_html,
 )
 
@@ -119,6 +123,189 @@ class PlotResultsTest(unittest.TestCase):
         self.assertEqual(distributions[1], [0.5, 1.0])
         self.assertEqual(distributions[2], [1.0, 1.0])
 
+    def test_is_suspect_compare_outlier_detects_s175_style_values(self):
+        suspect = MetricPoint(
+            bench="s175",
+            use_vf="scalable:4",
+            selected=True,
+            raw_cost="13",
+            raw_compare="3489662553",
+            compare=3489662553.0,
+            samples=[3423.0],
+            median_value=3423.0,
+            min_value=3423.0,
+            max_value=3423.0,
+            n_success=1,
+        )
+        normal = MetricPoint(
+            bench="s279",
+            use_vf="fixed:1",
+            selected=False,
+            raw_cost="17",
+            raw_compare="17000",
+            compare=17000.0,
+            samples=[6000.0],
+            median_value=6000.0,
+            min_value=6000.0,
+            max_value=6000.0,
+            n_success=1,
+        )
+
+        self.assertTrue(is_suspect_compare_outlier(suspect))
+        self.assertFalse(is_suspect_compare_outlier(normal))
+
+    def test_render_scatter_excludes_suspect_compare_outliers_from_linear_fit(self):
+        summary = BenchMetricSummary(
+            bench="bench",
+            metric_name="kernel_cycles",
+            points=[
+                MetricPoint(
+                    bench="bench",
+                    use_vf="fixed:1",
+                    selected=False,
+                    raw_cost="7",
+                    raw_compare="15032392536",
+                    compare=15032392536.0,
+                    samples=[6749.0],
+                    median_value=6749.0,
+                    min_value=6749.0,
+                    max_value=6749.0,
+                    n_success=1,
+                ),
+                MetricPoint(
+                    bench="bench",
+                    use_vf="fixed:2",
+                    selected=False,
+                    raw_cost="10",
+                    raw_compare="1000",
+                    compare=1000.0,
+                    samples=[13.0],
+                    median_value=13.0,
+                    min_value=13.0,
+                    max_value=13.0,
+                    n_success=1,
+                ),
+                MetricPoint(
+                    bench="bench",
+                    use_vf="fixed:4",
+                    selected=True,
+                    raw_cost="12",
+                    raw_compare="2000",
+                    compare=2000.0,
+                    samples=[10.0],
+                    median_value=10.0,
+                    min_value=10.0,
+                    max_value=10.0,
+                    n_success=1,
+                ),
+            ],
+            selected_vf="fixed:4",
+            compare_best_vf="fixed:4",
+            actual_best_vf="fixed:4",
+            max_abs_rank_delta=0,
+            selected_rank_delta=0,
+            spearman=1.0,
+        )
+        captured: dict[str, list[float]] = {}
+        ax_calls: dict[str, object] = {}
+
+        def fake_linear_regression(xs, ys):
+            captured["xs"] = list(xs)
+            captured["ys"] = list(ys)
+            return None
+
+        class FakeAxes:
+            transAxes = object()
+
+            def scatter(self, *args, **kwargs):
+                return None
+
+            def plot(self, *args, **kwargs):
+                return None
+
+            def set_xlim(self, xmin, xmax):
+                ax_calls["xlim"] = (xmin, xmax)
+
+            def text(self, *args, **kwargs):
+                ax_calls["text"] = args[2]
+
+            def set_title(self, *args, **kwargs):
+                return None
+
+            def set_xlabel(self, *args, **kwargs):
+                return None
+
+            def set_ylabel(self, *args, **kwargs):
+                return None
+
+            def legend(self, *args, **kwargs):
+                return None
+
+            def grid(self, *args, **kwargs):
+                return None
+
+        class FakePlt:
+            def subplots(self, **kwargs):
+                return object(), FakeAxes()
+
+            def close(self, fig):
+                return None
+
+        with (
+            patch("scripts.plot_results.linear_regression", side_effect=fake_linear_regression),
+            patch("scripts.plot_results.require_matplotlib", return_value=FakePlt()),
+            patch("scripts.plot_results.figure_to_data_url", return_value="data:image/png;base64,test"),
+        ):
+            render_scatter([summary], title="scatter")
+
+        self.assertEqual(captured["xs"], [1000.0, 2000.0])
+        self.assertEqual(captured["ys"], [13.0, 10.0])
+        self.assertIn("1 suspect compare outlier omitted from fit/x-range", ax_calls["text"])
+
+    def test_count_suspect_compare_outliers_counts_kernel_summary_points(self):
+        summaries = [
+            BenchMetricSummary(
+                bench="bench",
+                metric_name="kernel_cycles",
+                points=[
+                    MetricPoint(
+                        bench="bench",
+                        use_vf="fixed:1",
+                        selected=False,
+                        raw_cost="7",
+                        raw_compare="15032392536",
+                        compare=15032392536.0,
+                        samples=[6749.0],
+                        median_value=6749.0,
+                        min_value=6749.0,
+                        max_value=6749.0,
+                        n_success=1,
+                    ),
+                    MetricPoint(
+                        bench="bench",
+                        use_vf="fixed:4",
+                        selected=True,
+                        raw_cost="13",
+                        raw_compare="1750",
+                        compare=1750.0,
+                        samples=[10.0],
+                        median_value=10.0,
+                        min_value=10.0,
+                        max_value=10.0,
+                        n_success=1,
+                    ),
+                ],
+                selected_vf="fixed:4",
+                compare_best_vf="fixed:4",
+                actual_best_vf="fixed:4",
+                max_abs_rank_delta=0,
+                selected_rank_delta=0,
+                spearman=1.0,
+            )
+        ]
+
+        self.assertEqual(count_suspect_compare_outliers(summaries), 1)
+
     def test_render_html_swaps_removed_sections_for_selector_and_quality_overview(self):
         summary = BenchMetricSummary(
             bench="s000",
@@ -177,6 +364,73 @@ class PlotResultsTest(unittest.TestCase):
         self.assertNotIn("Best ratio heatmap", html)
         self.assertNotIn("Rank delta heatmap", html)
         self.assertNotIn("Top mismatch benches", html)
+
+    def test_render_html_reports_kernel_scatter_fit_exclusions(self):
+        summary = BenchMetricSummary(
+            bench="s175",
+            metric_name="kernel_cycles",
+            points=[
+                MetricPoint(
+                    bench="s175",
+                    use_vf="fixed:1",
+                    selected=False,
+                    raw_cost="7",
+                    raw_compare="15032392536",
+                    compare=15032392536.0,
+                    samples=[6749.0],
+                    median_value=6749.0,
+                    min_value=6749.0,
+                    max_value=6749.0,
+                    n_success=1,
+                    compare_rank=2,
+                    actual_rank=2,
+                ),
+                MetricPoint(
+                    bench="s175",
+                    use_vf="scalable:4",
+                    selected=True,
+                    raw_cost="13",
+                    raw_compare="3489662553",
+                    compare=3489662553.0,
+                    samples=[3423.0],
+                    median_value=3423.0,
+                    min_value=3423.0,
+                    max_value=3423.0,
+                    n_success=1,
+                    compare_rank=1,
+                    actual_rank=1,
+                ),
+            ],
+            selected_vf="scalable:4",
+            compare_best_vf="scalable:4",
+            actual_best_vf="scalable:4",
+            max_abs_rank_delta=0,
+            selected_rank_delta=0,
+            spearman=1.0,
+        )
+        data = ReportData(
+            vfs_db=Path("artifacts/vfs.db"),
+            emulate_db=Path("artifacts/emulate.sqlite"),
+            benches=["s175"],
+            candidates={},
+            candidate_counts={"s175": 2},
+            vplan_failures=[],
+            emulate_aggregates={},
+            emulate_failure_counts={},
+            metric_summaries={"kernel_cycles": [summary], "total_cycles": []},
+        )
+        plots = {
+            "coverage": "coverage.png",
+            "scatter:kernel_cycles": "scatter-kernel.png",
+            "scatter:total_cycles": "scatter-total.png",
+            "ranking_quality": "ranking-quality.png",
+            "detail:s175": "detail-s175.png",
+        }
+
+        html = render_html(data, plots)
+
+        self.assertIn("Kernel scatter fit exclusions", html)
+        self.assertIn("2 suspect compare outliers", html)
 
     def test_load_emulate_data_reads_schema_without_sample_index(self):
         with TemporaryDirectory() as tmp:

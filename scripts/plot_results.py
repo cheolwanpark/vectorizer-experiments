@@ -20,6 +20,8 @@ DEFAULT_VFS_DB = "artifacts/vfs.db"
 DEFAULT_EMULATE_GLOB = "artifacts/emulate-result-*.sqlite"
 DEFAULT_OUTPUT_ROOT = "artifacts/plots"
 DEFAULT_TOP_MISMATCH_BENCHES = 8
+SUSPECT_COMPARE_ABS_THRESHOLD = 1_000_000.0
+SUSPECT_COMPARE_RATIO_THRESHOLD = 100_000.0
 
 
 def fail(message: str, exit_code: int = 2) -> "NoReturn":
@@ -586,6 +588,24 @@ def build_top_n_overlap_distributions(
     return ns, distributions, eligible_counts
 
 
+def is_suspect_compare_outlier(point: MetricPoint) -> bool:
+    if point.compare is None or point.compare < SUSPECT_COMPARE_ABS_THRESHOLD:
+        return False
+    effective_cost = parse_effective_cost(point.raw_cost, point.use_vf)
+    if effective_cost is None or effective_cost <= 0.0:
+        return False
+    return (point.compare / effective_cost) >= SUSPECT_COMPARE_RATIO_THRESHOLD
+
+
+def count_suspect_compare_outliers(summaries: Iterable[BenchMetricSummary]) -> int:
+    return sum(
+        1
+        for summary in summaries
+        for point in summary.points
+        if point.compare is not None and is_suspect_compare_outlier(point)
+    )
+
+
 def list_plottable_benches(data: ReportData) -> list[str]:
     metric_maps = [
         {summary.bench: summary for summary in data.metric_summaries["kernel_cycles"]},
@@ -613,6 +633,10 @@ def render_scatter(summaries: list[BenchMetricSummary], *, title: str) -> str:
     if not all_points:
         return make_placeholder_figure(title, "No rows with both cost and latency are available.")
 
+    candidate_fit_points = [point for point in all_points if not is_suspect_compare_outlier(point)]
+    fit_points = candidate_fit_points or all_points
+    excluded_from_fit = len(all_points) - len(fit_points) if candidate_fit_points else 0
+
     plt = require_matplotlib()
     fig, ax = plt.subplots(figsize=(8, 5))
     if other_points:
@@ -636,21 +660,49 @@ def render_scatter(summaries: list[BenchMetricSummary], *, title: str) -> str:
         )
 
     fit = linear_regression(
-        [float(point.compare) for point in all_points],
-        [point.median_value for point in all_points],
+        [float(point.compare) for point in fit_points],
+        [point.median_value for point in fit_points],
     )
     if fit is not None:
         slope, intercept, r_squared = fit
-        x_min = min(float(point.compare) for point in all_points)
-        x_max = max(float(point.compare) for point in all_points)
+        x_min = min(float(point.compare) for point in fit_points)
+        x_max = max(float(point.compare) for point in fit_points)
         if x_min == x_max:
             x_max = x_min + 1.0
         xs = [x_min, x_max]
         ys = [slope * x + intercept for x in xs]
         label = "linear fit"
+        if excluded_from_fit:
+            suffix = "" if excluded_from_fit == 1 else "s"
+            label += f" (excl. {excluded_from_fit} suspect outlier{suffix}"
+        else:
+            label += " ("
         if r_squared is not None:
-            label += f" (R²={r_squared:.2f})"
+            label += f"R²={r_squared:.2f}"
+        else:
+            label += "R²=n/a"
+        label += ")"
         ax.plot(xs, ys, color="#222222", linewidth=2, linestyle="--", label=label)
+
+    if excluded_from_fit:
+        x_min = min(float(point.compare) for point in fit_points)
+        x_max = max(float(point.compare) for point in fit_points)
+        if x_min == x_max:
+            x_max = x_min + 1.0
+        x_pad = max((x_max - x_min) * 0.05, 0.1)
+        ax.set_xlim(x_min - x_pad, x_max + x_pad)
+        suffix = "" if excluded_from_fit == 1 else "s"
+        ax.text(
+            0.02,
+            0.98,
+            f"{excluded_from_fit} suspect compare outlier{suffix} omitted from fit/x-range",
+            transform=ax.transAxes,
+            ha="left",
+            va="top",
+            fontsize=9,
+            color="#5d6470",
+            bbox={"facecolor": "white", "alpha": 0.85, "edgecolor": "#d8d8d4", "pad": 4},
+        )
 
     ax.set_title(title, loc="left")
     ax.set_xlabel("VPlan compare")
@@ -868,6 +920,8 @@ def build_summary_cards(data: ReportData) -> list[tuple[str, str]]:
     avg_spearman = sum(kernel_spearmans) / len(kernel_spearmans) if kernel_spearmans else None
     top1_ns, top1_distributions, _ = build_top_n_overlap_distributions(kernel_summaries, max_n=1)
     top1_overlap = (sum(top1_distributions[0]) / len(top1_distributions[0])) if top1_ns and top1_distributions else None
+    kernel_suspect_outliers = count_suspect_compare_outliers(kernel_summaries)
+    outlier_suffix = "" if kernel_suspect_outliers == 1 else "s"
     return [
         ("VFS DB", str(data.vfs_db)),
         ("Emulate DB", str(data.emulate_db)),
@@ -879,6 +933,7 @@ def build_summary_cards(data: ReportData) -> list[tuple[str, str]]:
         ("Selected VF matches actual best", f"{len(selected_matches)}/{len(comparable) or 0}"),
         ("Mean kernel Spearman", format_float(avg_spearman, digits=2)),
         ("Kernel top-1 overlap", format_float(top1_overlap, digits=2)),
+        ("Kernel scatter fit exclusions", f"{kernel_suspect_outliers} suspect compare outlier{outlier_suffix}"),
     ]
 
 
