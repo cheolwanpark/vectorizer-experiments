@@ -85,6 +85,42 @@ resolve_opt() {
     return 1
 }
 
+resolve_llc() {
+    local candidates=()
+    if [[ -n "${LLC:-}" ]]; then
+        candidates+=("${LLC}")
+    fi
+    if [[ -n "${LLVM_BIN_DIR:-}" ]]; then
+        candidates+=("${LLVM_BIN_DIR}/llc")
+    fi
+    if [[ -n "${LLVM_BUILD_DIR:-}" ]]; then
+        candidates+=("${LLVM_BUILD_DIR}/bin/llc" "${LLVM_BUILD_DIR}/llc")
+    fi
+    candidates+=(
+        "${RVV_ROOT}/llvm-build/bin/llc"
+        "${RVV_ROOT}/llvm-build/llc"
+    )
+
+    local candidate
+    for candidate in "${candidates[@]}"; do
+        if [[ -x "$candidate" ]]; then
+            printf '%s\n' "$candidate"
+            return 0
+        fi
+    done
+
+    if command -v llc >/dev/null 2>&1; then
+        command -v llc
+        return 0
+    fi
+    if command -v llc-vplan >/dev/null 2>&1; then
+        command -v llc-vplan
+        return 0
+    fi
+
+    return 1
+}
+
 append_split_flags() {
     local raw="$1"
     local var_name="$2"
@@ -364,6 +400,7 @@ if [[ -z "$USE_VF" ]]; then
 fi
 
 OPT_BIN="$(resolve_opt)" || die "opt not found. Set OPT or ensure an LLVM build with opt is available."
+LLC_BIN="$(resolve_llc)" || die "llc not found. Set LLC or ensure an LLVM build with llc is available."
 BASE_PATH="${OUTPUT%.elf}"
 RAW_LL="${BASE_PATH}.raw.ll"
 PREVEC_LL="${BASE_PATH}.prevec.ll"
@@ -390,7 +427,7 @@ if ! "${OPT_BIN}" \
     -pass-remarks-analysis=loop-vectorize \
     -passes="${FORCED_OPT_PASSES}" \
     -vplan-use-vf="${USE_VF}" \
-    -S "$RAW_LL" \
+    -S "$PREVEC_LL" \
     -o "$OPT_LL" >"$OPT_LOG" 2>&1; then
     cat "$OPT_LOG" >&2
     die "Forced VF optimization failed. Log: $OPT_LOG"
@@ -399,7 +436,7 @@ fi
 verify_forced_vector_ir "$OPT_LL" "$USE_VF" "$OPT_LOG"
 
 ASM_OUT="${BASE_PATH}.s"
-"${CC}" "${OBJECT_COMPILE_FLAGS[@]}" -S "$OPT_LL" -o "$ASM_OUT"
+"${LLC_BIN}" -O3 -o "$ASM_OUT" "$OPT_LL"
 echo "Assembly: $ASM_OUT"
 grep -E "vsetvli" "$ASM_OUT" | head -3 || true
 
@@ -421,7 +458,7 @@ if [[ "$TSVC_MODE" -eq 1 ]]; then
 fi
 
 KERNEL_OBJ="${BUILD_DIR}/${KERNEL}.o"
-"${CC}" "${OBJECT_COMPILE_FLAGS[@]}" -c "$OPT_LL" -o "$KERNEL_OBJ"
+"${LLC_BIN}" -O3 --filetype=obj -o "$KERNEL_OBJ" "$OPT_LL"
 OBJECTS+=("$KERNEL_OBJ")
 
 LINK_CMD=("${CC}" "${LINK_FLAGS[@]}")
