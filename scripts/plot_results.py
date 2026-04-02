@@ -2,9 +2,7 @@
 from __future__ import annotations
 
 import argparse
-import base64
 import html
-import io
 import json
 import math
 import sqlite3
@@ -189,18 +187,6 @@ def escape(value: object) -> str:
     return html.escape(str(value))
 
 
-def require_matplotlib():
-    try:
-        import matplotlib
-
-        matplotlib.use("Agg")
-        from matplotlib import pyplot as plt
-    except ModuleNotFoundError:
-        fail(
-            "matplotlib is required to render this report.\n"
-            "Run with: uv run --with matplotlib python scripts/plot_results.py ..."
-        )
-    return plt
 
 
 @dataclass
@@ -483,63 +469,33 @@ def load_report_data(vfs_db: Path, emulate_db: Path, bench_filter: set[str]) -> 
     )
 
 
-def figure_to_data_url(fig) -> str:
-    buffer = io.BytesIO()
-    fig.tight_layout()
-    fig.savefig(buffer, format="png", dpi=150, bbox_inches="tight")
-    encoded = base64.b64encode(buffer.getvalue()).decode("ascii")
-    fig.clf()
-    return f"data:image/png;base64,{encoded}"
-
-
-def make_placeholder_figure(title: str, message: str) -> str:
-    plt = require_matplotlib()
-    fig, ax = plt.subplots(figsize=(8, 2.8))
-    ax.axis("off")
-    ax.set_title(title, loc="left")
-    ax.text(0.01, 0.5, message, va="center", ha="left", transform=ax.transAxes, fontsize=11)
-    data_url = figure_to_data_url(fig)
-    plt.close(fig)
-    return data_url
-
-
-def render_coverage_summary(data: ReportData) -> str:
-    plt = require_matplotlib()
-    fig, axes = plt.subplots(1, 2, figsize=(13, 4.5))
-
-    reason_counts: Counter[str] = Counter()
+def build_coverage_data(data: ReportData) -> dict:
+    emulate_success_benches = {bench for bench, _ in data.emulate_aggregates}
+    candidate_benches = set(data.candidate_counts.keys())
+    vplan_failure_by_bench: dict[str, str] = {}
     for failure in data.vplan_failures:
-        reason_counts[f"vplan:{failure.failure}"] += 1
-    for reason, count in data.emulate_failure_counts.items():
-        reason_counts[f"emulate:{reason}"] += count
+        vplan_failure_by_bench.setdefault(failure.bench, failure.failure)
 
-    ax = axes[0]
-    if reason_counts:
-        labels = list(reason_counts.keys())
-        values = [reason_counts[label] for label in labels]
-        ax.barh(labels, values, color="#B85C38")
-        ax.set_title("Failure Counts", loc="left")
-        ax.set_xlabel("Rows")
-    else:
-        ax.axis("off")
-        ax.text(0.02, 0.5, "No failures recorded.", transform=ax.transAxes, va="center")
+    outcome: Counter[str] = Counter()
+    for bench in data.benches:
+        if bench in emulate_success_benches:
+            outcome["Success"] += 1
+        elif bench in candidate_benches:
+            outcome["Emulate failed"] += 1
+        elif bench in vplan_failure_by_bench:
+            outcome[f"vplan: {vplan_failure_by_bench[bench]}"] += 1
+        else:
+            outcome["Unknown"] += 1
 
-    ax = axes[1]
+    candidate_dist: dict[str, int] = {}
     if data.candidate_counts:
         dist = Counter(data.candidate_counts.values())
-        labels = sorted(dist)
-        values = [dist[label] for label in labels]
-        ax.bar(labels, values, color="#3A86FF")
-        ax.set_title("VF Candidate Count Per Bench", loc="left")
-        ax.set_xlabel("Candidate count")
-        ax.set_ylabel("Bench count")
-    else:
-        ax.axis("off")
-        ax.text(0.02, 0.5, "No candidate rows available.", transform=ax.transAxes, va="center")
+        candidate_dist = {str(k): dist[k] for k in sorted(dist)}
 
-    data_url = figure_to_data_url(fig)
-    plt.close(fig)
-    return data_url
+    return {
+        "outcome": dict(outcome),
+        "candidate_distribution": candidate_dist,
+    }
 
 
 def rankable_points(summary: BenchMetricSummary) -> list[MetricPoint]:
@@ -619,12 +575,9 @@ def list_plottable_benches(data: ReportData) -> list[str]:
     return benches
 
 
-def render_scatter_interactive(
+def build_scatter_data(
     summaries: list[BenchMetricSummary],
-    *,
-    title: str,
-    chart_id: str,
-) -> str:
+) -> dict:
     point_data: list[dict] = []
     for summary in summaries:
         for point in summary.points:
@@ -647,81 +600,27 @@ def render_scatter_interactive(
             )
 
     all_vfs = sorted({p["vf"] for p in point_data}, key=parse_vf_key)
+    return {"points": point_data, "allVFs": all_vfs}
 
-    if not point_data:
-        return (
-            "<section class='plot-section'>"
-            f"<h2>{escape(title)}</h2>"
-            "<p class='caption'>No rows with both cost and latency are available.</p>"
-            "</section>"
+
+def build_ranking_data(metric_summaries: dict[str, list[BenchMetricSummary]]) -> dict:
+    metric_names = ["kernel_cycles", "total_cycles"]
+    spearman: dict[str, list[dict]] = {}
+    for name in metric_names:
+        spearman[name] = [
+            {"bench": summary.bench, "value": summary.spearman}
+            for summary in metric_summaries[name]
+            if summary.spearman is not None
+        ]
+
+    overlap: dict[str, list[dict]] = {}
+    for name in metric_names:
+        ns, distributions, eligible_counts = build_top_n_overlap_distributions(
+            metric_summaries[name]
         )
-
-    cid = escape(chart_id)
-    data_json = json.dumps(point_data, separators=(",", ":"))
-    vfs_json = json.dumps(all_vfs)
-
-    return (
-        f"<section class='plot-section scatter-section' id='scatter-{cid}'>"
-        f"<h2>{escape(title)}</h2>"
-        "<p class='caption'>x = VPlan compare, y = median latency. "
-        "Gray = scalar (VF 1), blue gradient = vectorized (darker = higher VF). "
-        "Circle = fixed, diamond = scalable.</p>"
-        f"<div class='vf-toggle-row' id='vf-toggles-{cid}'></div>"
-        f"<canvas id='scatter-canvas-{cid}' width='1200' height='750'></canvas>"
-        f"<p class='scatter-stats' id='scatter-stats-{cid}'></p>"
-        f"<script>renderScatterChart('{cid}',{data_json},{vfs_json});</script>"
-        "</section>"
-    )
-
-
-def render_ranking_quality(metric_summaries: dict[str, list[BenchMetricSummary]]) -> str:
-    plt = require_matplotlib()
-    fig, axes = plt.subplots(1, 2, figsize=(13, 4.8))
-    metric_defs = [
-        ("kernel_cycles", "kernel_cycles", "#FB5607"),
-        ("total_cycles", "total_cycles", "#3A86FF"),
-    ]
-
-    ax = axes[0]
-    spearman_values = [
-        [summary.spearman for summary in metric_summaries[metric_name] if summary.spearman is not None]
-        for metric_name, _, _ in metric_defs
-    ]
-    if any(values for values in spearman_values):
-        labels = [label for _, label, _ in metric_defs]
-        boxplot = ax.boxplot(
-            [values if values else [math.nan] for values in spearman_values],
-            tick_labels=labels,
-            patch_artist=True,
-        )
-        for patch, (_, _, color) in zip(boxplot["boxes"], metric_defs):
-            patch.set_facecolor(color)
-            patch.set_alpha(0.25)
-        for idx, ((_, _, color), values) in enumerate(zip(metric_defs, spearman_values), start=1):
-            for offset, value in enumerate(values):
-                jitter = ((offset % 7) - 3) * 0.025
-                ax.scatter(idx + jitter, value, color=color, s=28, alpha=0.85)
-        ax.axhline(0.0, color="#999999", linewidth=1, linestyle=":")
-        ax.set_ylim(-1.05, 1.05)
-        ax.set_ylabel("Spearman rank correlation")
-        ax.set_title("Per-bench Spearman distribution", loc="left")
-        ax.grid(axis="y", color="#E6E6E6", linewidth=0.8)
-    else:
-        ax.axis("off")
-        ax.text(0.02, 0.5, "No rankable benches available.", transform=ax.transAxes, va="center")
-
-    ax = axes[1]
-    has_overlap = False
-    cmap = plt.get_cmap("RdYlGn")
-    bar_width = 0.32
-    metric_offsets = [-0.18, 0.18]
-    metric_hatches = ["", "//"]
-    for metric_index, (metric_name, _, color) in enumerate(metric_defs):
-        ns, distributions, eligible_counts = build_top_n_overlap_distributions(metric_summaries[metric_name])
+        buckets: list[dict] = []
         for n, ratios, count in zip(ns, distributions, eligible_counts):
-            has_overlap = True
-            position = n + metric_offsets[metric_index]
-            bottom = 0.0
+            segments: list[dict] = []
             for overlap_count in range(0, n + 1):
                 ratio_value = overlap_count / n
                 bucket_count = sum(
@@ -729,129 +628,36 @@ def render_ranking_quality(metric_summaries: dict[str, list[BenchMetricSummary]]
                     for ratio in ratios
                     if math.isclose(ratio, ratio_value, rel_tol=1e-9, abs_tol=1e-9)
                 )
-                if bucket_count == 0:
-                    continue
-                height = bucket_count / count
-                fill_color = cmap(overlap_count / max(1, n))
-                ax.bar(
-                    position,
-                    height,
-                    width=bar_width,
-                    bottom=bottom,
-                    color=fill_color,
-                    edgecolor=color,
-                    linewidth=1.1,
-                    hatch=metric_hatches[metric_index],
-                    alpha=0.88,
-                )
-                if height >= 0.11:
-                    ax.text(
-                        position,
-                        bottom + height / 2,
-                        f"{overlap_count}/{n}",
-                        ha="center",
-                        va="center",
-                        fontsize=8,
-                        color="#222222",
+                if bucket_count > 0:
+                    segments.append(
+                        {"overlap": overlap_count, "n": n, "share": bucket_count / count}
                     )
-                bottom += height
-            ax.text(position, 1.02, f"n={count}", ha="center", va="bottom", fontsize=8, color=color)
-    if has_overlap:
-        ax.set_title("Top-N overlap distribution (Top-1~4)", loc="left")
-        ax.set_xlabel("Top-N")
-        ax.set_ylabel("Bench share")
-        ax.set_ylim(0.0, 1.05)
-        ax.set_xticks([1, 2, 3, 4])
-        ax.set_xticklabels(["Top-1", "Top-2", "Top-3", "Top-4"])
-        ax.grid(axis="y", color="#E6E6E6", linewidth=0.8)
-        handles = [
-            plt.Rectangle((0, 0), 1, 1, facecolor="#DDDDDD", edgecolor=color, hatch=hatch, linewidth=1.1)
-            for (_, _, color), hatch in zip(metric_defs, metric_hatches)
-        ]
-        ax.legend(handles, [label for _, label, _ in metric_defs], loc="lower right")
-    else:
-        ax.axis("off")
-        ax.text(0.02, 0.5, "No rankable benches available.", transform=ax.transAxes, va="center")
+            buckets.append({"n": n, "eligible": count, "segments": segments})
+        overlap[name] = buckets
 
-    data_url = figure_to_data_url(fig)
-    plt.close(fig)
-    return data_url
+    return {"spearman": spearman, "overlap": overlap}
 
 
-def render_metric_detail_axis(ax, summary: BenchMetricSummary | None, *, title: str) -> None:
+def build_bench_detail_data(
+    summary: BenchMetricSummary | None,
+) -> list[dict]:
     if summary is None or not summary.points:
-        ax.axis("off")
-        ax.set_title(title, loc="left")
-        ax.text(0.02, 0.5, "No successful emulate samples for this metric.", transform=ax.transAxes, va="center")
-        return
-
-    ordered_points = sorted(
+        return []
+    ordered = sorted(
         summary.points,
         key=lambda point: (point.median_value, parse_vf_key(point.use_vf)),
     )
-    x_positions = list(range(len(ordered_points)))
-    max_latency = max(point.median_value for point in ordered_points)
-    for x_index, point in enumerate(ordered_points):
-        color = "#FB5607" if point.selected else "#3A86FF"
-        ax.bar(x_index, point.median_value, width=0.72, color=color, alpha=0.78)
-        inside_threshold = max_latency * 0.18
-        if point.median_value >= inside_threshold:
-            label_y = point.median_value - max_latency * 0.05
-            label_va = "top"
-            label_color = "white"
-        else:
-            label_y = point.median_value + max_latency * 0.02
-            label_va = "bottom"
-            label_color = "#222222"
-        ax.text(
-            x_index,
-            label_y,
-            f"{point.median_value:.0f}",
-            ha="center",
-            va=label_va,
-            fontsize=8,
-            color=label_color,
-            fontweight="bold",
-        )
-
-    ax.set_title(title, loc="left")
-    ax.set_xticks(x_positions)
-    ax.set_xticklabels([point.use_vf for point in ordered_points], rotation=45, ha="right")
-    ax.set_ylabel("Median latency (cycles)")
-    ax.grid(axis="y", color="#E6E6E6", linewidth=0.8)
-
-    compare_points = [
-        (x_index, point.compare) for x_index, point in enumerate(ordered_points) if point.compare is not None
+    return [
+        {
+            "vf": point.use_vf,
+            "median": point.median_value,
+            "min": point.min_value,
+            "max": point.max_value,
+            "compare": point.compare,
+            "selected": point.selected,
+        }
+        for point in ordered
     ]
-    ax2 = ax.twinx()
-    if compare_points:
-        ax2.scatter(
-            [x_index for x_index, _ in compare_points],
-            [float(compare) for _, compare in compare_points],
-            color="#222222",
-            marker="o",
-            s=42,
-            alpha=0.9,
-        )
-        ax2.set_ylabel("VPlan compare")
-    else:
-        ax2.set_yticks([])
-        ax2.set_ylabel("VPlan compare unavailable")
-
-
-def render_bench_detail(
-    bench: str,
-    kernel_summary: BenchMetricSummary | None,
-    total_summary: BenchMetricSummary | None,
-) -> str:
-    plt = require_matplotlib()
-    fig, axes = plt.subplots(2, 1, figsize=(11, 8), sharex=False)
-    render_metric_detail_axis(axes[0], kernel_summary, title=f"{bench}: kernel_cycles detail")
-    render_metric_detail_axis(axes[1], total_summary, title=f"{bench}: total_cycles detail")
-    axes[1].set_xlabel("VF")
-    data_url = figure_to_data_url(fig)
-    plt.close(fig)
-    return data_url
 
 
 def metric_label(metric_name: str) -> str:
@@ -883,9 +689,6 @@ def build_summary_cards(data: ReportData) -> list[tuple[str, str]]:
     kernel_suspect_outliers = count_suspect_compare_outliers(kernel_summaries)
     outlier_suffix = "" if kernel_suspect_outliers == 1 else "s"
     return [
-        ("VFS DB", str(data.vfs_db)),
-        ("Emulate DB", str(data.emulate_db)),
-        ("Generated", datetime.now().isoformat(timespec="seconds")),
         ("Benchmarks", str(len(data.benches))),
         ("Kernel comparable benches", str(len(comparable))),
         ("VPlan failures", str(len(data.vplan_failures))),
@@ -895,29 +698,6 @@ def build_summary_cards(data: ReportData) -> list[tuple[str, str]]:
         ("Kernel top-1 overlap", format_float(top1_overlap, digits=2)),
         ("Kernel scatter fit exclusions", f"{kernel_suspect_outliers} suspect compare outlier{outlier_suffix}"),
     ]
-
-
-def render_cards(cards: list[tuple[str, str]]) -> str:
-    items = []
-    for title, value in cards:
-        items.append(
-            "<div class='card'>"
-            f"<div class='card-title'>{escape(title)}</div>"
-            f"<div class='card-value'>{escape(value)}</div>"
-            "</div>"
-        )
-    return "<div class='cards'>" + "".join(items) + "</div>"
-
-
-def render_image_section(title: str, data_url: str, caption: str = "") -> str:
-    caption_html = f"<p class='caption'>{escape(caption)}</p>" if caption else ""
-    return (
-        "<section class='plot-section'>"
-        f"<h2>{escape(title)}</h2>"
-        f"{caption_html}"
-        f"<img src='{data_url}' alt='{escape(title)}' />"
-        "</section>"
-    )
 
 
 def build_detail_summary_text(summary: BenchMetricSummary | None, metric_name: str) -> str:
@@ -931,53 +711,307 @@ def build_detail_summary_text(summary: BenchMetricSummary | None, metric_name: s
     )
 
 
-def render_bench_picker(benches: Sequence[str]) -> str:
-    if not benches:
-        return (
-            "<section class='plot-section'>"
-            "<h2>Bench detail</h2>"
-            "<p class='empty'>No benches with plottable detail are available.</p>"
-            "</section>"
-        )
-    options = ["<option value=''>-- Select a bench --</option>"]
-    for bench in benches:
-        options.append(f"<option value='{escape(bench)}'>{escape(bench)}</option>")
-    return (
-        "<section class='plot-section'>"
-        "<h2>Bench detail</h2>"
-        f"<p>Search benches, then select one to reveal kernel/total detail with latency-sorted VF order. ({len(benches)} plottable benches)</p>"
-        "<div class='bench-picker'>"
-        "<input id='bench-search' type='search' placeholder='Search bench...' autocomplete='off' />"
-        f"<select id='bench-select' size='12'>{''.join(options)}</select>"
-        "</div>"
-        "<p id='bench-empty' class='empty'>Select a bench to show detail.</p>"
-        "</section>"
-    )
+_CSS = """
+:root {
+  color-scheme: light;
+  --bg: #faf9f6;
+  --bg-subtle: #f3f1ec;
+  --card: #ffffff;
+  --ink: #1c1c1e;
+  --muted: #6b7280;
+  --line: #e5e3de;
+  --accent: #2563eb;
+  --accent-2: #dc2626;
+  --accent-3: #059669;
+  --shadow: 0 1px 3px rgba(0,0,0,0.06), 0 1px 2px rgba(0,0,0,0.04);
+}
+*, *::before, *::after { box-sizing: border-box; }
+body {
+  margin: 0;
+  padding: 0;
+  background: var(--bg);
+  color: var(--ink);
+  font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+  font-size: 14px;
+  line-height: 1.6;
+}
+.top-nav {
+  position: sticky;
+  top: 0;
+  z-index: 100;
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  padding: 0 24px;
+  height: 48px;
+  background: var(--card);
+  border-bottom: 1px solid var(--line);
+  box-shadow: var(--shadow);
+}
+.nav-title {
+  font-weight: 600;
+  font-size: 15px;
+  white-space: nowrap;
+}
+.nav-links {
+  display: flex;
+  gap: 4px;
+  overflow-x: auto;
+}
+.nav-link {
+  padding: 4px 12px;
+  border-radius: 6px;
+  font-size: 13px;
+  color: var(--muted);
+  text-decoration: none;
+  white-space: nowrap;
+  transition: background 0.15s, color 0.15s;
+}
+.nav-link:hover {
+  background: var(--bg-subtle);
+  color: var(--ink);
+}
+main {
+  max-width: 1280px;
+  margin: 0 auto;
+  padding: 24px;
+}
+h1 {
+  margin: 0 0 4px 0;
+  font-size: 28px;
+  font-weight: 600;
+}
+h2 {
+  margin: 0 0 8px 0;
+  font-size: 20px;
+  font-weight: 600;
+}
+h3 {
+  margin: 16px 0 6px 0;
+  font-size: 17px;
+  font-weight: 600;
+}
+.subtitle {
+  margin: 0 0 16px 0;
+  color: var(--muted);
+}
+p { color: var(--muted); }
+.cards {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+  gap: 10px;
+  margin: 16px 0 24px 0;
+}
+.card {
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 12px 14px;
+  box-shadow: var(--shadow);
+}
+.card-title {
+  font-size: 11px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--muted);
+  margin-bottom: 4px;
+}
+.card-value {
+  font-size: 15px;
+  font-weight: 600;
+  word-break: break-word;
+}
+.section {
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  padding: 20px;
+  margin-bottom: 18px;
+  box-shadow: var(--shadow);
+  overflow: hidden;
+}
+.section-accent { border-top: 2px solid var(--muted); }
+.section-accent-kernel { border-top: 2px solid var(--accent); }
+.section-accent-total { border-top: 2px solid var(--accent-2); }
+.caption {
+  margin-top: -2px;
+  margin-bottom: 12px;
+  font-size: 13px;
+}
+.chart-row {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 16px;
+}
+.chart-row > div {
+  min-height: 320px;
+}
+.bench-picker {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 10px;
+  margin-bottom: 16px;
+}
+#bench-search {
+  width: 100%;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 10px 14px;
+  font: inherit;
+  font-size: 15px;
+  background: #fff;
+  color: var(--ink);
+}
+.bench-grid {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.bench-btn {
+  display: inline-block;
+  padding: 6px 14px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #fff;
+  color: var(--ink);
+  font: inherit;
+  font-size: 14px;
+  cursor: pointer;
+  transition: background 0.12s, border-color 0.12s;
+}
+.bench-btn:hover { background: var(--bg-subtle); }
+.bench-btn.active {
+  background: var(--accent);
+  color: #fff;
+  border-color: var(--accent);
+}
+.bench-btn.hidden-btn { display: none; }
+.hidden { display: none; }
+.empty { padding: 12px 0 0 0; }
+.bench-detail {
+  background: var(--bg-subtle);
+  border-radius: 10px;
+  padding: 16px;
+  margin-top: 14px;
+}
+.vf-toggle-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 8px 0 12px 0;
+  align-items: center;
+}
+.vf-toggle-btn, .vf-group-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--card);
+  cursor: pointer;
+  font-size: 13px;
+  font-family: inherit;
+  transition: opacity 0.12s;
+  user-select: none;
+}
+.vf-toggle-btn { opacity: 0.35; }
+.vf-toggle-btn.active { opacity: 1; font-weight: 600; }
+.vf-group-btn { background: var(--bg-subtle); font-size: 12px; }
+.vf-group-btn:hover { background: var(--line); }
+.vf-sep { width: 1px; height: 22px; background: var(--line); margin: 0 4px; }
+.vf-swatch {
+  display: inline-block;
+  width: 10px;
+  height: 10px;
+  border-radius: 2px;
+  flex-shrink: 0;
+}
+.scatter-stats {
+  font-size: 13px;
+  color: var(--muted);
+  margin-top: 6px;
+}
+@media (max-width: 720px) {
+  main { padding: 14px; }
+  .section { padding: 14px; }
+  .chart-row { grid-template-columns: 1fr; }
+  .bench-picker { grid-template-columns: 1fr; }
+  .top-nav { padding: 0 14px; }
+}
+"""
 
+_APP_JS = r"""
+(function() {
+  'use strict';
+  var D = JSON.parse(document.getElementById('report-data').textContent);
+  var BASE = {
+    paper_bgcolor: 'rgba(0,0,0,0)',
+    plot_bgcolor: '#ffffff',
+    font: {family: 'system-ui, -apple-system, sans-serif', size: 14, color: '#1c1c1e'},
+    xaxis: {gridcolor: '#f0eeea', linecolor: '#e5e3de', tickfont: {size: 13, color: '#6b7280'}},
+    yaxis: {gridcolor: '#f0eeea', linecolor: '#e5e3de', tickfont: {size: 13, color: '#6b7280'}},
+    hoverlabel: {bgcolor: '#fff', bordercolor: '#e5e3de', font: {size: 14}},
+    margin: {t: 36, r: 20, b: 50, l: 60}
+  };
+  var CFG = {responsive: true, displayModeBar: false};
 
-_SCATTER_JS = r"""
-function renderScatterChart(chartId, data, allVFs) {
-  var SUSPECT_ABS = 1e6;
-  var M = {top: 44, right: 28, bottom: 52, left: 72};
-  var canvas = document.getElementById('scatter-canvas-' + chartId);
-  var ctx = canvas.getContext('2d');
-  var dpr = window.devicePixelRatio || 1;
-  var W = canvas.width, H = canvas.height;
-  canvas.style.width = (W / dpr) + 'px';
-  canvas.style.maxWidth = '100%';
-  canvas.style.height = 'auto';
-  canvas.width = W * dpr; canvas.height = H * dpr;
-  ctx.scale(dpr, dpr);
+  // -- Coverage pie charts --
+  (function() {
+    var outcome = D.coverage.outcome;
+    var labels = Object.keys(outcome);
+    var values = labels.map(function(k){return outcome[k];});
+    var palette = ['#059669','#b45309','#dc2626','#9333ea','#c2410c','#be185d','#6d28d9','#0369a1'];
+    var colors = labels.map(function(l, i){return i === 0 ? '#059669' : palette[1 + ((i-1) % (palette.length-1))];});
+    var total = values.reduce(function(a,b){return a+b;}, 0);
+    if (total === 0) {
+      document.getElementById('chart-outcome').innerHTML = '<p style="color:#6b7280;padding:40px">No data.</p>';
+    } else {
+      Plotly.newPlot('chart-outcome', [{
+        type: 'pie',
+        labels: labels, values: values,
+        marker: {colors: colors},
+        textinfo: 'label+value+percent',
+        textfont: {size: 14},
+        hovertemplate: '%{label}: %{value} (%{percent})<extra></extra>',
+        hole: 0.35,
+        sort: false
+      }], Object.assign({}, BASE, {
+        title: {text: 'Pipeline outcomes (vplan + emulate)', x: 0, font: {size: 16}},
+        legend: {font: {size: 13}},
+        margin: {t: 48, r: 20, b: 20, l: 20}
+      }), CFG);
+    }
+  })();
+  (function() {
+    var dist = D.coverage.candidate_distribution;
+    var counts = Object.keys(dist);
+    if (!counts.length) {
+      document.getElementById('chart-vf-distribution').innerHTML = '<p style="color:#6b7280;padding:40px">No candidate rows available.</p>';
+      return;
+    }
+    var labels = counts.map(function(c){return c + ' VFs';});
+    var values = counts.map(function(c){return dist[c];});
+    Plotly.newPlot('chart-vf-distribution', [{
+      type: 'pie',
+      labels: labels, values: values,
+      textinfo: 'label+value+percent',
+      textfont: {size: 14},
+      hovertemplate: '%{label}: %{value} benches (%{percent})<extra></extra>',
+      hole: 0.35,
+      sort: false
+    }], Object.assign({}, BASE, {
+      title: {text: 'VF candidates per bench', x: 0, font: {size: 16}},
+      legend: {font: {size: 13}},
+      margin: {t: 48, r: 20, b: 20, l: 20}
+    }), CFG);
+  })();
 
-  var enabledVFs = {};
-  allVFs.forEach(function(v){ enabledVFs[v] = true; });
-  var hoveredIdx = -1;
-
-  function vfColor(vf, factor) {
+  // -- Scatter charts --
+  function vfColor(factor, allVFs) {
     if (factor === 1) return '#999999';
-    var maxLog = Math.log2(Math.max.apply(null, allVFs.map(function(v){
-      var f = parseInt(v.split(':')[1]); return f > 1 ? f : 2;
-    })));
+    var factors = allVFs.map(function(v){var f=parseInt(v.split(':')[1]);return f>1?f:2;});
+    var maxLog = Math.log2(Math.max.apply(null, factors));
     var minLog = 1;
     var t = maxLog > minLog ? (Math.log2(factor) - minLog) / (maxLog - minLog) : 0.5;
     t = Math.max(0, Math.min(1, t));
@@ -987,245 +1021,389 @@ function renderScatterChart(chartId, data, allVFs) {
     return 'rgb(' + r + ',' + g + ',' + b + ')';
   }
 
-  function visible() {
-    return data.filter(function(p){ return enabledVFs[p.vf]; });
-  }
-  function fitPoints(pts) {
-    var c = pts.filter(function(p){ return !p.suspect; });
-    return c.length > 0 ? c : pts;
-  }
-  function bounds(pts) {
-    if (!pts.length) return {xMin:0,xMax:1,yMin:0,yMax:1};
-    var nonSuspect = pts.filter(function(p){ return !p.suspect; });
-    var src = nonSuspect.length > 0 ? nonSuspect : pts;
-    var xMin=Infinity,xMax=-Infinity,yMin=Infinity,yMax=-Infinity;
-    src.forEach(function(p){
-      if(p.x<xMin)xMin=p.x; if(p.x>xMax)xMax=p.x;
-      if(p.y<yMin)yMin=p.y; if(p.y>yMax)yMax=p.y;
-    });
-    if(xMin===xMax){xMin-=1;xMax+=1;}
-    if(yMin===yMax){yMin-=1;yMax+=1;}
-    var xPad=(xMax-xMin)*0.06, yPad=(yMax-yMin)*0.06;
-    return {xMin:xMin-xPad,xMax:xMax+xPad,yMin:yMin-yPad,yMax:yMax+yPad};
-  }
-  function tx(x,b){return M.left+(x-b.xMin)/(b.xMax-b.xMin)*(W-M.left-M.right);}
-  function ty(y,b){return M.top+(b.yMax-y)/(b.yMax-b.yMin)*(H-M.top-M.bottom);}
-
-  function niceSteps(min,max,target){
-    var range=max-min; if(range<=0) return [min];
-    var raw=range/target;
-    var mag=Math.pow(10,Math.floor(Math.log10(raw)));
-    var norm=raw/mag;
-    var step; if(norm<1.5)step=mag; else if(norm<3.5)step=2*mag; else if(norm<7.5)step=5*mag; else step=10*mag;
-    var ticks=[]; var v=Math.ceil(min/step)*step;
-    while(v<=max+step*0.001){ticks.push(v);v+=step;}
-    return ticks;
-  }
-
-  function linReg(pts){
-    if(pts.length<2)return null;
-    var xM=0,yM=0;pts.forEach(function(p){xM+=p.x;yM+=p.y;});
-    xM/=pts.length;yM/=pts.length;
-    var num=0,den=0;
+  function linReg(pts) {
+    if (pts.length < 2) return null;
+    var xM = 0, yM = 0;
+    pts.forEach(function(p){xM+=p.x;yM+=p.y;});
+    xM /= pts.length; yM /= pts.length;
+    var num = 0, den = 0;
     pts.forEach(function(p){den+=(p.x-xM)*(p.x-xM);num+=(p.x-xM)*(p.y-yM);});
-    if(den===0)return null;
-    var slope=num/den,intercept=yM-slope*xM;
-    var totVar=0,resVar=0;
-    pts.forEach(function(p){totVar+=(p.y-yM)*(p.y-yM);resVar+=(p.y-(slope*p.x+intercept))*(p.y-(slope*p.x+intercept));});
-    var r2=totVar===0?null:Math.max(0,1-resVar/totVar);
-    return {slope:slope,intercept:intercept,r2:r2};
+    if (den === 0) return null;
+    var slope = num / den, intercept = yM - slope * xM;
+    var totVar = 0, resVar = 0;
+    pts.forEach(function(p){
+      totVar += (p.y-yM)*(p.y-yM);
+      resVar += (p.y-(slope*p.x+intercept))*(p.y-(slope*p.x+intercept));
+    });
+    var r2 = totVar === 0 ? null : Math.max(0, 1 - resVar / totVar);
+    return {slope: slope, intercept: intercept, r2: r2};
   }
 
-  function fmt(v){
-    if(Math.abs(v)>=1e6) return v.toExponential(1);
-    if(Math.abs(v)>=1000) return v.toLocaleString('en-US',{maximumFractionDigits:0});
-    if(Math.abs(v)>=1) return v.toFixed(1);
-    return v.toPrecision(3);
-  }
-
-  function drawShape(cx,cy,type,r,color){
-    ctx.fillStyle=color; ctx.strokeStyle='rgba(0,0,0,0.25)'; ctx.lineWidth=0.8;
-    if(type==='scalable'){
-      ctx.beginPath();ctx.moveTo(cx,cy-r);ctx.lineTo(cx+r,cy);ctx.lineTo(cx,cy+r);ctx.lineTo(cx-r,cy);ctx.closePath();
-    } else {
-      ctx.beginPath();ctx.arc(cx,cy,r*0.8,0,2*Math.PI);
-    }
-    ctx.fill();ctx.stroke();
-  }
-
-  function render(){
-    ctx.clearRect(0,0,W,H);
-    ctx.fillStyle='#fff';ctx.fillRect(0,0,W,H);
-    var vis=visible();
-    if(!vis.length){
-      ctx.fillStyle='#5d6470';ctx.font='14px sans-serif';ctx.textAlign='center';
-      ctx.fillText('No data for selected VFs.',W/2,H/2);
-      document.getElementById('scatter-stats-'+chartId).textContent='';
+  function renderScatter(metricKey, containerId) {
+    var sd = D.scatter[metricKey];
+    var data = sd.points;
+    var allVFs = sd.allVFs;
+    if (!data.length) {
+      document.getElementById(containerId).innerHTML = '<p style="color:#6b7280;padding:40px">No rows with both cost and latency.</p>';
       return;
     }
-    var b=bounds(vis);
-    var fp=fitPoints(vis);
-    var excl=vis.length-fp.length;
+    var enabledVFs = {};
+    allVFs.forEach(function(v){enabledVFs[v]=true;});
 
-    // grid + axes
-    ctx.strokeStyle='#E6E6E6';ctx.lineWidth=0.8;
-    var xTicks=niceSteps(b.xMin,b.xMax,6);
-    var yTicks=niceSteps(b.yMin,b.yMax,5);
-    xTicks.forEach(function(v){var x=tx(v,b);ctx.beginPath();ctx.moveTo(x,M.top);ctx.lineTo(x,H-M.bottom);ctx.stroke();});
-    yTicks.forEach(function(v){var y=ty(v,b);ctx.beginPath();ctx.moveTo(M.left,y);ctx.lineTo(W-M.right,y);ctx.stroke();});
-
-    // tick labels
-    ctx.fillStyle='#5d6470';ctx.font='11px sans-serif';ctx.textAlign='center';ctx.textBaseline='top';
-    xTicks.forEach(function(v){ctx.fillText(fmt(v),tx(v,b),H-M.bottom+6);});
-    ctx.textAlign='right';ctx.textBaseline='middle';
-    yTicks.forEach(function(v){ctx.fillText(fmt(v),M.left-8,ty(v,b));});
-
-    // axis labels
-    ctx.fillStyle='#1e1f24';ctx.font='13px sans-serif';ctx.textAlign='center';ctx.textBaseline='top';
-    ctx.fillText('VPlan compare',W/2,H-16);
-    ctx.save();ctx.translate(16,H/2);ctx.rotate(-Math.PI/2);ctx.textBaseline='bottom';
-    ctx.fillText('Median latency (cycles)',0,0);ctx.restore();
-
-    // regression line
-    var reg=linReg(fp);
-    if(reg){
-      ctx.strokeStyle='#222';ctx.lineWidth=2;ctx.setLineDash([8,5]);
-      var x1=tx(b.xMin,b),x2=tx(b.xMax,b);
-      var y1=ty(reg.slope*b.xMin+reg.intercept,b);
-      var y2=ty(reg.slope*b.xMax+reg.intercept,b);
-      ctx.beginPath();ctx.moveTo(x1,y1);ctx.lineTo(x2,y2);ctx.stroke();
-      ctx.setLineDash([]);
-    }
-
-    // points (draw scalar first, then vectorized so vectorized is on top)
-    var scalarPts=vis.filter(function(p){return p.isScalar;});
-    var vecPts=vis.filter(function(p){return !p.isScalar;});
-    vecPts.sort(function(a,b_){return a.vfFactor-b_.vfFactor;});
-    scalarPts.concat(vecPts).forEach(function(p,i){
-      var cx=tx(p.x,b),cy=ty(p.y,b);
-      if(cx<M.left||cx>W-M.right||cy<M.top||cy>H-M.bottom) return;
-      drawShape(cx,cy,p.vfType,5.5,vfColor(p.vf,p.vfFactor));
-    });
-
-    // hover tooltip
-    if(hoveredIdx>=0 && hoveredIdx<vis.length){
-      var p=vis[hoveredIdx];
-      var cx=tx(p.x,b),cy=ty(p.y,b);
-      // highlight
-      ctx.strokeStyle='#1e1f24';ctx.lineWidth=2;
-      ctx.beginPath();ctx.arc(cx,cy,10,0,2*Math.PI);ctx.stroke();
-      // tooltip box
-      var lines=[p.bench,'VF: '+p.vf,'compare: '+fmt(p.x),'median: '+fmt(p.y)];
-      if(p.selected) lines.push('(LLVM selected)');
-      ctx.font='12px monospace';
-      var tw=Math.max.apply(null,lines.map(function(l){return ctx.measureText(l).width;}))+16;
-      var th=lines.length*18+12;
-      var bx=cx+14,by=cy-th/2;
-      if(bx+tw>W-4)bx=cx-14-tw;
-      if(by<4)by=4; if(by+th>H-4)by=H-4-th;
-      ctx.fillStyle='rgba(255,255,255,0.95)';ctx.strokeStyle='#d8d8d4';ctx.lineWidth=1;
-      ctx.beginPath();ctx.roundRect(bx,by,tw,th,6);ctx.fill();ctx.stroke();
-      ctx.fillStyle='#1e1f24';ctx.textAlign='left';ctx.textBaseline='top';
-      lines.forEach(function(l,i){ctx.fillText(l,bx+8,by+6+i*18);});
-    }
-
-    // legend
-    var legendItems=[];
-    var seenVFs={};
-    allVFs.forEach(function(vf){
-      if(!enabledVFs[vf]) return;
-      if(seenVFs[vf]) return; seenVFs[vf]=true;
-      var factor=parseInt(vf.split(':')[1]);
-      var type=vf.split(':')[0];
-      legendItems.push({vf:vf,factor:factor,type:type,color:vfColor(vf,factor)});
-    });
-    if(legendItems.length>0){
-      var lx=M.left+10,ly=M.top+6;
-      legendItems.forEach(function(it,i){
-        var y=ly+i*20;
-        drawShape(lx+6,y+6,it.type,5,it.color);
-        ctx.fillStyle='#1e1f24';ctx.font='11px sans-serif';ctx.textAlign='left';ctx.textBaseline='middle';
-        ctx.fillText(it.vf,lx+16,y+6);
+    function buildResult() {
+      var traces = [];
+      var byVF = {};
+      data.forEach(function(p){
+        if (!enabledVFs[p.vf]) return;
+        if (!byVF[p.vf]) byVF[p.vf] = [];
+        byVF[p.vf].push(p);
       });
-      if(reg){
-        var y=ly+legendItems.length*20;
-        ctx.strokeStyle='#222';ctx.lineWidth=2;ctx.setLineDash([6,4]);
-        ctx.beginPath();ctx.moveTo(lx,y+6);ctx.lineTo(lx+12,y+6);ctx.stroke();
-        ctx.setLineDash([]);
-        var label='fit';
-        if(reg.r2!==null) label+=' R\u00b2='+reg.r2.toFixed(2);
-        ctx.fillStyle='#1e1f24';ctx.font='11px sans-serif';
-        ctx.fillText(label,lx+16,y+6);
+      allVFs.forEach(function(vf){
+        var pts = byVF[vf];
+        if (!pts) return;
+        var factor = parseInt(vf.split(':')[1]);
+        var type = vf.split(':')[0];
+        traces.push({
+          type: 'scattergl', mode: 'markers', name: vf,
+          x: pts.map(function(p){return p.x;}),
+          y: pts.map(function(p){return p.y;}),
+          text: pts.map(function(p){
+            var t = p.bench + '<br>VF: ' + p.vf + '<br>compare: ' + p.x.toLocaleString() + '<br>median: ' + p.y.toLocaleString();
+            if (p.selected) t += '<br><b>(LLVM selected)</b>';
+            if (p.suspect) t += '<br><i>suspect outlier</i>';
+            return t;
+          }),
+          hoverinfo: 'text',
+          marker: {
+            size: 10,
+            color: vfColor(factor, allVFs),
+            symbol: type === 'scalable' ? 'diamond' : 'circle',
+            line: {width: pts.map(function(p){return p.suspect?2:0.5;}), color: pts.map(function(p){return p.suspect?'#dc2626':'rgba(0,0,0,0.2)';})}
+          }
+        });
+      });
+
+      // axis range from non-suspect points only
+      var visible = data.filter(function(p){return enabledVFs[p.vf];});
+      var nonSuspect = visible.filter(function(p){return !p.suspect;});
+      var rangeSrc = nonSuspect.length > 0 ? nonSuspect : visible;
+      var xVals = rangeSrc.map(function(p){return p.x;});
+      var yVals = rangeSrc.map(function(p){return p.y;});
+      var xMin = Math.min.apply(null, xVals), xMax = Math.max.apply(null, xVals);
+      var yMin = Math.min.apply(null, yVals), yMax = Math.max.apply(null, yVals);
+      var xPad = (xMax - xMin) * 0.06 || 1, yPad = (yMax - yMin) * 0.06 || 1;
+      var axisRange = {
+        xRange: [xMin - xPad, xMax + xPad],
+        yRange: [yMin - yPad, yMax + yPad]
+      };
+
+      // regression line
+      var fitPts = nonSuspect.length > 0 ? nonSuspect : visible;
+      var reg = linReg(fitPts);
+      var excluded = visible.length - (nonSuspect.length > 0 ? nonSuspect.length : 0);
+      if (reg) {
+        var fxMin = Math.min.apply(null, fitPts.map(function(p){return p.x;}));
+        var fxMax = Math.max.apply(null, fitPts.map(function(p){return p.x;}));
+        var label = 'fit';
+        if (reg.r2 !== null) label += ' R\u00b2=' + reg.r2.toFixed(2);
+        traces.push({
+          type: 'scattergl', mode: 'lines', name: label,
+          x: [fxMin, fxMax],
+          y: [reg.slope * fxMin + reg.intercept, reg.slope * fxMax + reg.intercept],
+          line: {color: '#888', width: 2, dash: 'dash'},
+          hoverinfo: 'skip'
+        });
+      }
+
+      // stats
+      var statsEl = document.getElementById('scatter-stats-' + metricKey);
+      var parts = [visible.length + ' points'];
+      if (reg && reg.r2 !== null) parts.push('R\u00b2=' + reg.r2.toFixed(3));
+      if (excluded > 0) parts.push(excluded + ' suspect outlier' + (excluded===1?'':'s') + ' excluded from fit');
+      statsEl.textContent = parts.join(' \u00b7 ');
+
+      return {traces: traces, axisRange: axisRange};
+    }
+
+    var layout = Object.assign({}, BASE, {
+      height: 600,
+      showlegend: true,
+      legend: {font: {size: 13}, bgcolor: 'rgba(255,255,255,0.85)', bordercolor: '#e5e3de', borderwidth: 1, xanchor: 'right', x: 1, yanchor: 'top', y: 1},
+      xaxis: Object.assign({}, BASE.xaxis, {title: {text: 'VPlan compare'}}),
+      yaxis: Object.assign({}, BASE.yaxis, {title: {text: 'Median latency (cycles)'}})
+    });
+
+    function applyResult(r) {
+      layout.xaxis.range = r.axisRange.xRange;
+      layout.xaxis.autorange = false;
+      layout.yaxis.range = r.axisRange.yRange;
+      layout.yaxis.autorange = false;
+    }
+    var initial = buildResult();
+    applyResult(initial);
+    Plotly.newPlot(containerId, initial.traces, layout, CFG);
+
+    // VF toggle buttons
+    var row = document.getElementById('vf-toggles-' + metricKey);
+    function mkBtn(text, cls, onClick) {
+      var b = document.createElement('button');
+      b.textContent = text; b.className = cls;
+      b.addEventListener('click', onClick);
+      row.appendChild(b);
+      return b;
+    }
+    function refresh() {
+      syncBtns();
+      var r = buildResult();
+      applyResult(r);
+      Plotly.react(containerId, r.traces, layout, CFG);
+    }
+    mkBtn('All', 'vf-group-btn', function(){allVFs.forEach(function(v){enabledVFs[v]=true;});refresh();});
+    mkBtn('Scalar', 'vf-group-btn', function(){allVFs.forEach(function(v){enabledVFs[v]=(v==='fixed:1');});refresh();});
+    mkBtn('Vectorized', 'vf-group-btn', function(){allVFs.forEach(function(v){enabledVFs[v]=(parseInt(v.split(':')[1])>1);});refresh();});
+    var sep = document.createElement('div'); sep.className = 'vf-sep'; row.appendChild(sep);
+
+    var vfBtns = {};
+    allVFs.forEach(function(vf){
+      var factor = parseInt(vf.split(':')[1]);
+      var type = vf.split(':')[0];
+      var btn = document.createElement('button');
+      btn.className = 'vf-toggle-btn active';
+      var sw = document.createElement('span'); sw.className = 'vf-swatch';
+      sw.style.background = vfColor(factor, allVFs);
+      if (type === 'scalable') {sw.style.borderRadius='0';sw.style.transform='rotate(45deg)';}
+      btn.appendChild(sw);
+      btn.appendChild(document.createTextNode(' ' + vf));
+      btn.addEventListener('click', function(){enabledVFs[vf]=!enabledVFs[vf];refresh();});
+      row.appendChild(btn);
+      vfBtns[vf] = btn;
+    });
+    function syncBtns() {
+      allVFs.forEach(function(vf){
+        if(enabledVFs[vf]) vfBtns[vf].classList.add('active');
+        else vfBtns[vf].classList.remove('active');
+      });
+    }
+  }
+  renderScatter('kernel_cycles', 'chart-scatter-kernel_cycles');
+  renderScatter('total_cycles', 'chart-scatter-total_cycles');
+
+  // -- Ranking charts --
+  (function() {
+    var rank = D.ranking;
+    var metrics = ['kernel_cycles', 'total_cycles'];
+    var colors = {kernel_cycles: '#dc2626', total_cycles: '#2563eb'};
+
+    // Spearman box + jitter
+    var spearmanTraces = [];
+    metrics.forEach(function(m) {
+      var entries = rank.spearman[m];
+      if (!entries.length) return;
+      spearmanTraces.push({
+        type: 'box', name: m,
+        y: entries.map(function(e){return e.value;}),
+        text: entries.map(function(e){return e.bench;}),
+        boxpoints: 'all', jitter: 0.4, pointpos: 0,
+        hovertemplate: '%{text}<br>Spearman: %{y:.3f}<extra>%{fullData.name}</extra>',
+        marker: {color: colors[m], size: 6, opacity: 0.7},
+        line: {color: colors[m]},
+        fillcolor: colors[m] + '30'
+      });
+    });
+    if (spearmanTraces.length) {
+      Plotly.newPlot('chart-spearman', spearmanTraces, Object.assign({}, BASE, {
+        title: {text: 'Per-bench Spearman distribution', x: 0, font: {size: 16}},
+        yaxis: Object.assign({}, BASE.yaxis, {title: {text: 'Spearman rank correlation'}, autorange: true}),
+        showlegend: false,
+        shapes: [{type: 'line', x0: -0.5, x1: metrics.length - 0.5, y0: 0, y1: 0, line: {color: '#999', width: 1, dash: 'dot'}}]
+      }), CFG);
+    } else {
+      document.getElementById('chart-spearman').innerHTML = '<p style="color:#6b7280;padding:40px">No rankable benches available.</p>';
+    }
+
+    // Top-N overlap stacked bar (drawn as shapes for exact positioning)
+    var rdYlGn = ['#d73027','#f46d43','#fdae61','#fee08b','#d9ef8b','#a6d96a','#66bd63','#1a9850'];
+    function overlapColor(overlap, n) {
+      var t = n > 0 ? overlap / n : 0;
+      var idx = Math.round(t * (rdYlGn.length - 1));
+      return rdYlGn[Math.max(0, Math.min(rdYlGn.length - 1, idx))];
+    }
+    var shapes = [];
+    var hasOverlap = false;
+    var annotations = [];
+    var halfW = 0.16;
+    metrics.forEach(function(m, mi) {
+      var buckets = rank.overlap[m];
+      var offset = mi === 0 ? -0.18 : 0.18;
+      buckets.forEach(function(b) {
+        hasOverlap = true;
+        var cx = b.n + offset;
+        var bottom = 0;
+        b.segments.forEach(function(seg) {
+          shapes.push({
+            type: 'rect', xref: 'x', yref: 'y',
+            x0: cx - halfW, x1: cx + halfW,
+            y0: bottom, y1: bottom + seg.share,
+            fillcolor: overlapColor(seg.overlap, seg.n),
+            line: {color: colors[m], width: 1.1}
+          });
+          if (seg.share >= 0.11) {
+            annotations.push({
+              x: cx, y: bottom + seg.share / 2,
+              text: seg.overlap + '/' + seg.n,
+              showarrow: false, font: {size: 14, color: '#222'}
+            });
+          }
+          bottom += seg.share;
+        });
+        annotations.push({
+          x: cx, y: 1.02,
+          text: 'n=' + b.eligible,
+          showarrow: false, font: {size: 14, color: colors[m]}
+        });
+      });
+    });
+    if (hasOverlap) {
+      // legend entries for the two metrics
+      var legendTraces = metrics.map(function(m) {
+        return {
+          type: 'scatter', mode: 'markers', name: m,
+          x: [null], y: [null],
+          marker: {size: 12, color: '#ddd', line: {color: colors[m], width: 2}, symbol: 'square'}
+        };
+      });
+      Plotly.newPlot('chart-topn', legendTraces, Object.assign({}, BASE, {
+        title: {text: 'Top-N overlap distribution (Top-1~4)', x: 0, font: {size: 16}},
+        xaxis: Object.assign({}, BASE.xaxis, {
+          title: {text: 'Top-N'},
+          tickvals: [1,2,3,4], ticktext: ['Top-1','Top-2','Top-3','Top-4'],
+          range: [0.5, 4.5]
+        }),
+        yaxis: Object.assign({}, BASE.yaxis, {title: {text: 'Bench share'}, range: [0, 1.08]}),
+        shapes: shapes,
+        annotations: annotations,
+        legend: {font: {size: 13}}
+      }), CFG);
+    } else {
+      document.getElementById('chart-topn').innerHTML = '<p style="color:#6b7280;padding:40px">No rankable benches available.</p>';
+    }
+  })();
+
+  // -- Bench detail --
+  (function() {
+    var searchInput = document.getElementById('bench-search');
+    var grid = document.getElementById('bench-grid');
+    if (!searchInput || !grid) return;
+    var btns = Array.from(grid.querySelectorAll('.bench-btn'));
+    var sections = Array.from(document.querySelectorAll('.bench-detail'));
+    var renderedBenches = {};
+    var activeBtn = null;
+
+    function hideAll() {
+      sections.forEach(function(s){s.classList.add('hidden');});
+    }
+
+    function renderDetail(bench) {
+      if (renderedBenches[bench]) return;
+      renderedBenches[bench] = true;
+      var bd = D.benchDetails[bench];
+      if (!bd) return;
+
+      ['kernel_cycles', 'total_cycles'].forEach(function(metric) {
+        var prefix = metric === 'kernel_cycles' ? 'kernel' : 'total';
+        var containerId = 'detail-' + prefix + '-' + bench;
+        var el = document.getElementById(containerId);
+        if (!el) return;
+        var pts = bd[metric];
+        if (!pts || !pts.length) {
+          el.innerHTML = '<p style="color:#6b7280;padding:20px">No data for ' + metric + '.</p>';
+          return;
+        }
+        var vfs = pts.map(function(p){return p.vf;});
+        var medians = pts.map(function(p){return p.median;});
+        var compares = pts.map(function(p){return p.compare;});
+        var barColors = pts.map(function(p){return p.selected ? '#dc2626' : '#2563eb';});
+        var barTrace = {
+          type: 'bar', name: 'median latency', x: vfs, y: medians,
+          marker: {color: barColors, opacity: 0.78},
+          text: medians.map(function(v){return Math.round(v).toString();}),
+          textposition: 'auto',
+          textfont: {size: 12, color: '#fff'},
+          hovertemplate: '%{x}<br>median: %{y:,.0f}<extra></extra>'
+        };
+        var traces = [barTrace];
+        var layout = Object.assign({}, BASE, {
+          title: {text: bench + ': ' + metric + ' detail', x: 0, font: {size: 16}},
+          xaxis: Object.assign({}, BASE.xaxis, {title: {text: 'VF'}}),
+          yaxis: Object.assign({}, BASE.yaxis, {title: {text: 'Median latency (cycles)'}}),
+          showlegend: true,
+          legend: {font: {size: 13}}
+        });
+        var hasCompare = compares.some(function(c){return c !== null;});
+        if (hasCompare) {
+          var cVfs = [], cVals = [];
+          pts.forEach(function(p){if(p.compare!==null){cVfs.push(p.vf);cVals.push(p.compare);}});
+          traces.push({
+            type: 'scatter', mode: 'markers', name: 'VPlan compare',
+            x: cVfs, y: cVals, yaxis: 'y2',
+            marker: {color: '#1c1c1e', size: 10, symbol: 'circle'},
+            hovertemplate: '%{x}<br>compare: %{y:,.0f}<extra></extra>'
+          });
+          layout.yaxis2 = {
+            title: {text: 'VPlan compare'},
+            overlaying: 'y', side: 'right',
+            gridcolor: 'rgba(0,0,0,0)',
+            tickfont: {size: 13, color: '#6b7280'}
+          };
+        }
+        Plotly.newPlot(containerId, traces, layout, CFG);
+      });
+    }
+
+    function selectBench(bench) {
+      if (activeBtn) activeBtn.classList.remove('active');
+      hideAll();
+      var btn = grid.querySelector('.bench-btn[data-bench="' + CSS.escape(bench) + '"]');
+      if (btn) { btn.classList.add('active'); activeBtn = btn; }
+      var target = document.querySelector('.bench-detail[data-bench="' + CSS.escape(bench) + '"]');
+      if (target) {
+        target.classList.remove('hidden');
+        renderDetail(bench);
+        target.scrollIntoView({behavior: 'smooth', block: 'start'});
       }
     }
 
-    // stats text
-    var statsEl=document.getElementById('scatter-stats-'+chartId);
-    var parts=[vis.length+' points'];
-    if(reg && reg.r2!==null) parts.push('R\u00b2='+reg.r2.toFixed(3));
-    if(excl>0) parts.push(excl+' suspect outlier'+(excl===1?'':'s')+' excluded from fit');
-    statsEl.textContent=parts.join(' \u00b7 ');
-  }
-
-  // hover interaction
-  canvas.addEventListener('mousemove',function(e){
-    var rect=canvas.getBoundingClientRect();
-    var scaleX=W/rect.width, scaleY=H/rect.height;
-    var mx=(e.clientX-rect.left)*scaleX, my=(e.clientY-rect.top)*scaleY;
-    var vis=visible(); var best=-1,bestD=Infinity;
-    var b=bounds(vis);
-    vis.forEach(function(p,i){
-      var dx=tx(p.x,b)-mx,dy=ty(p.y,b)-my;
-      var d=dx*dx+dy*dy;
-      if(d<bestD && d<400){bestD=d;best=i;}
+    btns.forEach(function(btn) {
+      btn.addEventListener('click', function() { selectBench(btn.dataset.bench); });
     });
-    if(best!==hoveredIdx){hoveredIdx=best;render();}
-  });
-  canvas.addEventListener('mouseleave',function(){
-    if(hoveredIdx>=0){hoveredIdx=-1;render();}
-  });
 
-  // build toggle buttons
-  var row=document.getElementById('vf-toggles-'+chartId);
-  function mkBtn(text,cls,onClick){
-    var b=document.createElement('button');b.textContent=text;b.className=cls;
-    b.addEventListener('click',onClick);row.appendChild(b);return b;
-  }
-  mkBtn('All','vf-group-btn',function(){allVFs.forEach(function(v){enabledVFs[v]=true;});syncBtns();render();});
-  mkBtn('Scalar','vf-group-btn',function(){allVFs.forEach(function(v){enabledVFs[v]=(parseInt(v.split(':')[1])===1);});syncBtns();render();});
-  mkBtn('Vectorized','vf-group-btn',function(){allVFs.forEach(function(v){enabledVFs[v]=(parseInt(v.split(':')[1])>1);});syncBtns();render();});
-  var sep=document.createElement('div');sep.className='vf-sep';row.appendChild(sep);
-
-  var vfBtns={};
-  allVFs.forEach(function(vf){
-    var factor=parseInt(vf.split(':')[1]);
-    var type=vf.split(':')[0];
-    var btn=document.createElement('button');
-    btn.className='vf-toggle-btn active';
-    var sw=document.createElement('span');sw.className='vf-swatch';
-    sw.style.background=vfColor(vf,factor);
-    if(type==='scalable'){sw.style.borderRadius='0';sw.style.transform='rotate(45deg)';}
-    btn.appendChild(sw);
-    btn.appendChild(document.createTextNode(' '+vf));
-    btn.addEventListener('click',function(){enabledVFs[vf]=!enabledVFs[vf];syncBtns();render();});
-    row.appendChild(btn);
-    vfBtns[vf]=btn;
-  });
-
-  function syncBtns(){
-    allVFs.forEach(function(vf){
-      if(enabledVFs[vf])vfBtns[vf].classList.add('active');
-      else vfBtns[vf].classList.remove('active');
+    searchInput.addEventListener('input', function() {
+      var term = searchInput.value.trim().toLowerCase();
+      btns.forEach(function(btn) {
+        var match = !term || btn.dataset.bench.toLowerCase().includes(term);
+        btn.classList.toggle('hidden-btn', !match);
+      });
     });
-  }
 
-  render();
-}
+    hideAll();
+  })();
+
+  // -- Smooth scroll for nav --
+  document.querySelectorAll('.nav-link').forEach(function(a) {
+    a.addEventListener('click', function(e) {
+      var target = document.querySelector(a.getAttribute('href'));
+      if (target) {
+        e.preventDefault();
+        target.scrollIntoView({behavior: 'smooth', block: 'start'});
+      }
+    });
+  });
+})();
 """
 
 
-def render_html(data: ReportData, plots: dict[str, str]) -> str:
-    cards_html = render_cards(build_summary_cards(data))
+def render_html(data: ReportData, plots: dict) -> str:
+    cards = build_summary_cards(data)
     plottable_benches = list_plottable_benches(data)
 
     kernel_map = {summary.bench: summary for summary in data.metric_summaries["kernel_cycles"]}
@@ -1234,7 +1412,7 @@ def render_html(data: ReportData, plots: dict[str, str]) -> str:
     for failure in data.vplan_failures:
         vplan_failure_map[failure.bench].append(failure)
 
-    detail_sections = []
+    bench_captions: dict[str, str] = {}
     for bench in plottable_benches:
         kernel_summary = kernel_map.get(bench)
         total_summary = total_map.get(bench)
@@ -1243,20 +1421,49 @@ def render_html(data: ReportData, plots: dict[str, str]) -> str:
             failure_text = " | vplan failures: " + ", ".join(
                 sorted({failure.failure for failure in vplan_failure_map[bench]})
             )
-        caption = (
+        bench_captions[bench] = (
             f"Candidates={data.candidate_counts.get(bench, 0)}"
             f". {build_detail_summary_text(kernel_summary, 'kernel_cycles')}"
             f". {build_detail_summary_text(total_summary, 'total_cycles')}"
             f"{failure_text}"
         )
-        detail_sections.append(
-            "<section class='plot-section bench-detail hidden' "
-            f"id='detail-{escape(bench)}' data-bench='{escape(bench)}'>"
-            f"<h2>Bench detail: {escape(bench)}</h2>"
-            f"<p class='caption'>{escape(caption)}</p>"
-            f"<img src='{plots[f'detail:{bench}']}' alt='{escape(f'Bench detail: {bench}')}' />"
-            "</section>"
+
+    report_data = {
+        "coverage": plots["coverage"],
+        "scatter": {
+            "kernel_cycles": plots["scatter:kernel_cycles"],
+            "total_cycles": plots["scatter:total_cycles"],
+        },
+        "ranking": plots["ranking"],
+        "benchDetails": {
+            bench: {
+                "kernel_cycles": plots.get(f"detail:{bench}:kernel_cycles", []),
+                "total_cycles": plots.get(f"detail:{bench}:total_cycles", []),
+            }
+            for bench in plottable_benches
+        },
+    }
+    report_json = json.dumps(report_data, separators=(",", ":"))
+
+    cards_html = []
+    for title, value in cards:
+        cards_html.append(
+            f"<div class='card'><div class='card-title'>{escape(title)}</div>"
+            f"<div class='card-value'>{escape(value)}</div></div>"
         )
+
+    nav_items = [
+        ("summary", "Summary"),
+        ("coverage", "Coverage"),
+        ("kernel-scatter", "Kernel"),
+        ("total-scatter", "Total"),
+        ("ranking", "Ranking"),
+        ("bench-detail", "Bench Detail"),
+    ]
+    nav_html = " ".join(
+        f"<a href='#{anchor}' class='nav-link'>{label}</a>"
+        for anchor, label in nav_items
+    )
 
     html_parts = [
         "<!DOCTYPE html>",
@@ -1265,241 +1472,81 @@ def render_html(data: ReportData, plots: dict[str, str]) -> str:
         "<meta charset='utf-8' />",
         "<meta name='viewport' content='width=device-width, initial-scale=1' />",
         "<title>VPlan Compare vs Emulate Report</title>",
+        "<script src='https://cdn.plot.ly/plotly-2.35.2.min.js'></script>",
         "<style>",
-        """
-        :root {
-          color-scheme: light;
-          --bg: #f7f7f5;
-          --card: #ffffff;
-          --ink: #1e1f24;
-          --muted: #5d6470;
-          --line: #d8d8d4;
-          --accent: #3a86ff;
-          --accent-2: #fb5607;
-        }
-        body {
-          margin: 0;
-          padding: 24px;
-          background: linear-gradient(180deg, #f7f7f5 0%, #f1efe9 100%);
-          color: var(--ink);
-          font-family: "Helvetica Neue", Helvetica, Arial, sans-serif;
-        }
-        main {
-          max-width: 1440px;
-          margin: 0 auto;
-        }
-        h1, h2 {
-          margin: 0 0 12px 0;
-        }
-        p {
-          color: var(--muted);
-          line-height: 1.5;
-        }
-        .cards {
-          display: grid;
-          grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
-          gap: 12px;
-          margin: 20px 0 28px 0;
-        }
-        .card {
-          background: var(--card);
-          border: 1px solid var(--line);
-          border-radius: 14px;
-          padding: 14px 16px;
-          box-shadow: 0 6px 16px rgba(0, 0, 0, 0.04);
-        }
-        .card-title {
-          font-size: 12px;
-          letter-spacing: 0.08em;
-          text-transform: uppercase;
-          color: var(--muted);
-          margin-bottom: 6px;
-        }
-        .card-value {
-          font-size: 16px;
-          font-weight: 600;
-          word-break: break-word;
-        }
-        .plot-section {
-          background: var(--card);
-          border: 1px solid var(--line);
-          border-radius: 16px;
-          padding: 18px;
-          margin-bottom: 22px;
-          box-shadow: 0 6px 16px rgba(0, 0, 0, 0.04);
-        }
-        .plot-section img {
-          width: 100%;
-          height: auto;
-          display: block;
-          border-radius: 10px;
-          background: #fff;
-        }
-        .caption {
-          margin-top: -2px;
-          margin-bottom: 14px;
-        }
-        .bench-picker {
-          display: grid;
-          grid-template-columns: minmax(220px, 360px);
-          gap: 12px;
-        }
-        #bench-search,
-        #bench-select {
-          width: 100%;
-          border: 1px solid var(--line);
-          border-radius: 10px;
-          padding: 10px 12px;
-          box-sizing: border-box;
-          font: inherit;
-          background: #fff;
-          color: var(--ink);
-        }
-        #bench-select {
-          min-height: 280px;
-        }
-        .hidden {
-          display: none;
-        }
-        .empty {
-          padding: 12px 0 0 0;
-        }
-        .scatter-section canvas {
-          width: 100%;
-          height: auto;
-          display: block;
-          border-radius: 10px;
-          background: #fff;
-          cursor: crosshair;
-        }
-        .vf-toggle-row {
-          display: flex;
-          flex-wrap: wrap;
-          gap: 6px;
-          margin: 8px 0 12px 0;
-          align-items: center;
-        }
-        .vf-toggle-btn, .vf-group-btn {
-          display: inline-flex;
-          align-items: center;
-          gap: 4px;
-          padding: 4px 10px;
-          border: 1px solid var(--line);
-          border-radius: 8px;
-          background: var(--card);
-          cursor: pointer;
-          font-size: 13px;
-          font-family: inherit;
-          transition: opacity 0.12s;
-          user-select: none;
-        }
-        .vf-toggle-btn { opacity: 0.35; }
-        .vf-toggle-btn.active { opacity: 1; font-weight: 600; }
-        .vf-group-btn { background: #f0f0ee; font-size: 12px; }
-        .vf-group-btn:hover { background: #e4e4e0; }
-        .vf-sep { width: 1px; height: 22px; background: var(--line); margin: 0 4px; }
-        .vf-swatch {
-          display: inline-block;
-          width: 10px;
-          height: 10px;
-          border-radius: 2px;
-          flex-shrink: 0;
-        }
-        .scatter-stats {
-          font-size: 13px;
-          color: var(--muted);
-          margin-top: 6px;
-        }
-        @media (max-width: 720px) {
-          body {
-            padding: 14px;
-          }
-          .plot-section {
-            padding: 12px;
-          }
-          .bench-picker {
-            grid-template-columns: 1fr;
-          }
-        }
-        """,
+        _CSS,
         "</style>",
-        "<script>",
-        _SCATTER_JS,
-        "</script>",
         "</head>",
         "<body>",
+        f"<nav class='top-nav'><span class='nav-title'>VPlan Report</span><div class='nav-links'>{nav_html}</div></nav>",
         "<main>",
+        "<header id='summary'>",
         "<h1>VPlan Compare vs Emulate Latency</h1>",
-        "<p>Single-file HTML report with base64-embedded plot images.</p>",
-        cards_html,
-        render_image_section(
-            "Coverage summary",
-            plots["coverage"],
-            "Failures and candidate coverage before reading compare-vs-latency plots.",
-        ),
-        plots["scatter:kernel_cycles"],
-        plots["scatter:total_cycles"],
-        render_image_section(
-            "Ranking quality overview",
-            plots["ranking_quality"],
-            "Left: per-bench Spearman distribution. Right: 100% stacked bars showing the share of benches at each overlap level for Top-1~Top-4.",
-        ),
-        render_bench_picker(plottable_benches),
-        *detail_sections,
+        "<p class='subtitle'>Interactive report comparing VPlan cost predictions against emulated cycle measurements.</p>",
+        f"<div class='cards'>{''.join(cards_html)}</div>",
+        "</header>",
+        "<section class='section section-accent' id='coverage'>",
+        "<h2>Coverage summary</h2>",
+        "<p class='caption'>VPlan explain and emulation outcome breakdown including successes and failure reasons.</p>",
+        "<div class='chart-row'><div id='chart-outcome'></div><div id='chart-vf-distribution'></div></div>",
+        "</section>",
+        "<section class='section section-accent-kernel' id='kernel-scatter'>",
+        "<h2>VPlan compare vs latency (kernel_cycles)</h2>",
+        "<p class='caption'>x = VPlan compare, y = median latency. "
+        "Gray = scalar (VF 1), blue gradient = vectorized (darker = higher VF). "
+        "Circle = fixed, diamond = scalable.</p>",
+        "<div class='vf-toggle-row' id='vf-toggles-kernel_cycles'></div>",
+        "<div id='chart-scatter-kernel_cycles'></div>",
+        "<p class='scatter-stats' id='scatter-stats-kernel_cycles'></p>",
+        "</section>",
+        "<section class='section section-accent-total' id='total-scatter'>",
+        "<h2>VPlan compare vs latency (total_cycles)</h2>",
+        "<p class='caption'>x = VPlan compare, y = median latency. "
+        "Gray = scalar (VF 1), blue gradient = vectorized (darker = higher VF). "
+        "Circle = fixed, diamond = scalable.</p>",
+        "<div class='vf-toggle-row' id='vf-toggles-total_cycles'></div>",
+        "<div id='chart-scatter-total_cycles'></div>",
+        "<p class='scatter-stats' id='scatter-stats-total_cycles'></p>",
+        "</section>",
+        "<section class='section section-accent' id='ranking'>",
+        "<h2>Ranking quality overview</h2>",
+        "<p class='caption'>Left: per-bench Spearman distribution. Right: 100%% stacked bars showing the share of benches at each overlap level for Top-1~Top-4.</p>",
+        "<div id='chart-spearman'></div><div id='chart-topn'></div>",
+        "</section>",
+        "<section class='section' id='bench-detail'>",
+        "<h2>Bench detail</h2>",
+    ]
+    if plottable_benches:
+        bench_btns = "".join(
+            f"<button class='bench-btn' data-bench='{escape(b)}'>{escape(b)}</button>"
+            for b in plottable_benches
+        )
+        html_parts.append(
+            f"<p>Select a benchmark to reveal kernel/total detail. "
+            f"({len(plottable_benches)} plottable benches)</p>"
+            "<div class='bench-picker'>"
+            "<input id='bench-search' type='search' placeholder='Filter benchmarks...' autocomplete='off' />"
+            f"<div class='bench-grid' id='bench-grid'>{bench_btns}</div>"
+            "</div>"
+        )
+        for bench in plottable_benches:
+            html_parts.append(
+                f"<div class='bench-detail hidden' data-bench='{escape(bench)}'>"
+                f"<h3>Bench detail: {escape(bench)}</h3>"
+                f"<p class='caption'>{escape(bench_captions[bench])}</p>"
+                f"<div id='detail-kernel-{escape(bench)}'></div>"
+                f"<div id='detail-total-{escape(bench)}'></div>"
+                f"</div>"
+            )
+    else:
+        html_parts.append("<p class='empty'>No benches with plottable detail are available.</p>")
+
+    html_parts += [
+        "</section>",
         "</main>",
+        f"<script type='application/json' id='report-data'>{report_json}</script>",
         "<script>",
-        """
-        (() => {
-          const searchInput = document.getElementById('bench-search');
-          const select = document.getElementById('bench-select');
-          const empty = document.getElementById('bench-empty');
-          const sections = Array.from(document.querySelectorAll('.bench-detail'));
-
-          function hideAll() {
-            sections.forEach((section) => section.classList.add('hidden'));
-          }
-
-          function showSelected() {
-            const value = select.value;
-            hideAll();
-            if (!value) {
-              empty.classList.remove('hidden');
-              return;
-            }
-            empty.classList.add('hidden');
-            const target = document.querySelector(`.bench-detail[data-bench="${CSS.escape(value)}"]`);
-            if (target) {
-              target.classList.remove('hidden');
-              target.scrollIntoView({ behavior: 'smooth', block: 'start' });
-            }
-          }
-
-          function applyFilter() {
-            const term = searchInput.value.trim().toLowerCase();
-            const currentValue = select.value;
-            let hasVisibleSelected = false;
-            Array.from(select.options).forEach((option, index) => {
-              if (index === 0) {
-                option.hidden = false;
-                return;
-              }
-              const visible = !term || option.value.toLowerCase().includes(term);
-              option.hidden = !visible;
-              if (visible && option.value === currentValue) {
-                hasVisibleSelected = true;
-              }
-            });
-            if (!hasVisibleSelected) {
-              select.value = '';
-            }
-            showSelected();
-          }
-
-          searchInput.addEventListener('input', applyFilter);
-          select.addEventListener('change', showSelected);
-          hideAll();
-        })();
-        """,
+        _APP_JS,
         "</script>",
         "</body>",
         "</html>",
@@ -1507,27 +1554,19 @@ def render_html(data: ReportData, plots: dict[str, str]) -> str:
     return "".join(html_parts)
 
 
-def generate_plots(data: ReportData) -> dict[str, str]:
-    plots = {
-        "coverage": render_coverage_summary(data),
-        "ranking_quality": render_ranking_quality(data.metric_summaries),
+def generate_plots(data: ReportData) -> dict:
+    plots: dict = {
+        "coverage": build_coverage_data(data),
+        "ranking": build_ranking_data(data.metric_summaries),
     }
     for metric_name, summaries in data.metric_summaries.items():
-        label = metric_label(metric_name)
-        plots[f"scatter:{metric_name}"] = render_scatter_interactive(
-            summaries,
-            title=f"VPlan compare vs latency ({label})",
-            chart_id=metric_name,
-        )
+        plots[f"scatter:{metric_name}"] = build_scatter_data(summaries)
 
     kernel_map = {summary.bench: summary for summary in data.metric_summaries["kernel_cycles"]}
     total_map = {summary.bench: summary for summary in data.metric_summaries["total_cycles"]}
     for bench in list_plottable_benches(data):
-        plots[f"detail:{bench}"] = render_bench_detail(
-            bench,
-            kernel_map.get(bench),
-            total_map.get(bench),
-        )
+        plots[f"detail:{bench}:kernel_cycles"] = build_bench_detail_data(kernel_map.get(bench))
+        plots[f"detail:{bench}:total_cycles"] = build_bench_detail_data(total_map.get(bench))
     return plots
 
 

@@ -91,7 +91,7 @@ vplan-explain-all: FORCE
 		--db-path "$(VFS_DB)"
 
 plot-results:
-	@$(UV) run --with matplotlib python scripts/plot_results.py --vfs-db "$(VFS_DB)" $(if $(strip $(EMULATE_DB)),--emulate-db "$(EMULATE_DB)",) $(if $(strip $(PLOT_OUTPUT_HTML)),--output-html "$(PLOT_OUTPUT_HTML)",)
+	@$(UV) run python scripts/plot_results.py --vfs-db "$(VFS_DB)" $(if $(strip $(EMULATE_DB)),--emulate-db "$(EMULATE_DB)",) $(if $(strip $(PLOT_OUTPUT_HTML)),--output-html "$(PLOT_OUTPUT_HTML)",)
 
 s%:
 	@:

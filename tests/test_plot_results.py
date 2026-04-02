@@ -10,14 +10,15 @@ from scripts.plot_results import (
     ReportData,
     VFCandidate,
     build_metric_summaries,
+    build_scatter_data,
     build_top_n_overlap_distributions,
     count_suspect_compare_outliers,
+    generate_plots,
     is_suspect_compare_outlier,
     load_emulate_data,
     load_vfs_data,
     parse_effective_cost,
     parse_vf_factor,
-    render_scatter_interactive,
     render_html,
 )
 
@@ -153,7 +154,7 @@ class PlotResultsTest(unittest.TestCase):
         self.assertTrue(is_suspect_compare_outlier(suspect))
         self.assertFalse(is_suspect_compare_outlier(normal))
 
-    def test_render_scatter_interactive_flags_suspect_outliers_in_data(self):
+    def test_build_scatter_data_flags_suspect_outliers(self):
         summary = BenchMetricSummary(
             bench="bench",
             metric_name="kernel_cycles",
@@ -206,14 +207,18 @@ class PlotResultsTest(unittest.TestCase):
             spearman=1.0,
         )
 
-        html = render_scatter_interactive([summary], title="scatter", chart_id="test")
+        result = build_scatter_data([summary])
 
-        self.assertIn("<canvas", html)
-        self.assertIn('"suspect":true', html)
-        self.assertIn('"suspect":false', html)
-        self.assertIn('"isScalar":true', html)
-        self.assertIn('"isScalar":false', html)
-        self.assertIn("vf-toggles-test", html)
+        self.assertIn("points", result)
+        self.assertIn("allVFs", result)
+        suspects = [p for p in result["points"] if p["suspect"]]
+        normals = [p for p in result["points"] if not p["suspect"]]
+        self.assertTrue(len(suspects) > 0)
+        self.assertTrue(len(normals) > 0)
+        scalars = [p for p in result["points"] if p["isScalar"]]
+        vecs = [p for p in result["points"] if not p["isScalar"]]
+        self.assertTrue(len(scalars) > 0)
+        self.assertTrue(len(vecs) > 0)
 
     def test_count_suspect_compare_outliers_counts_kernel_summary_points(self):
         summaries = [
@@ -298,22 +303,15 @@ class PlotResultsTest(unittest.TestCase):
             emulate_failure_counts={},
             metric_summaries={"kernel_cycles": [summary], "total_cycles": []},
         )
-        plots = {
-            "coverage": "coverage.png",
-            "scatter:kernel_cycles": "<section class='plot-section scatter-section'>scatter-kernel</section>",
-            "scatter:total_cycles": "<section class='plot-section scatter-section'>scatter-total</section>",
-            "ranking_quality": "ranking-quality.png",
-            "detail:s000": "detail-s000.png",
-        }
+        plots = generate_plots(data)
 
         html = render_html(data, plots)
 
         self.assertIn("Ranking quality overview", html)
         self.assertIn("bench-search", html)
-        self.assertIn("bench-select", html)
+        self.assertIn("bench-grid", html)
         self.assertIn("Bench detail: s000", html)
         self.assertNotIn("Bench detail: s001", html)
-        self.assertNotIn("<option value='s001'>", html)
         self.assertNotIn("Best ratio heatmap", html)
         self.assertNotIn("Rank delta heatmap", html)
         self.assertNotIn("Top mismatch benches", html)
@@ -372,13 +370,7 @@ class PlotResultsTest(unittest.TestCase):
             emulate_failure_counts={},
             metric_summaries={"kernel_cycles": [summary], "total_cycles": []},
         )
-        plots = {
-            "coverage": "coverage.png",
-            "scatter:kernel_cycles": "<section class='plot-section scatter-section'>scatter-kernel</section>",
-            "scatter:total_cycles": "<section class='plot-section scatter-section'>scatter-total</section>",
-            "ranking_quality": "ranking-quality.png",
-            "detail:s175": "detail-s175.png",
-        }
+        plots = generate_plots(data)
 
         html = render_html(data, plots)
 
