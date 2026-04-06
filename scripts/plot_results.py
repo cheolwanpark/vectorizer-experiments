@@ -15,11 +15,15 @@ from pathlib import Path
 from typing import Iterable, Sequence
 
 
-DEFAULT_VFS_DB = "artifacts/vfs.db"
 DEFAULT_OUTPUT_ROOT = "artifacts/plots"
+_TARGET_TO_VFS_SUFFIX = {
+    "x86_native": "intel",
+}
+_DEFAULT_VFS_SUFFIX = "rvv"
 DEFAULT_TOP_MISMATCH_BENCHES = 8
 SUSPECT_COMPARE_ABS_THRESHOLD = 1_000_000.0
 SUSPECT_COMPARE_RATIO_THRESHOLD = 100_000.0
+LATENCY_OUTLIER_IQR_FACTOR = 3.0
 
 
 def fail(message: str, exit_code: int = 2) -> "NoReturn":
@@ -35,7 +39,7 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Generate a single-file HTML report from vplan and emulate SQLite outputs."
     )
-    parser.add_argument("--vfs-db", default=DEFAULT_VFS_DB, help="Path to artifacts/vfs.db")
+    parser.add_argument("--vfs-db", default="", help="Path to vfs DB (auto-resolved from result DB target when omitted)")
     parser.add_argument(
         "--result-db",
         required=True,
@@ -563,6 +567,19 @@ def is_suspect_compare_outlier(point: MetricPoint) -> bool:
     return (point.compare / effective_cost) >= SUSPECT_COMPARE_RATIO_THRESHOLD
 
 
+def compute_latency_outlier_fence(values: Sequence[float]) -> float | None:
+    if len(values) < 4:
+        return None
+    sorted_vals = sorted(values)
+    n = len(sorted_vals)
+    q1 = sorted_vals[n // 4]
+    q3 = sorted_vals[(3 * n) // 4]
+    iqr = q3 - q1
+    if iqr <= 0:
+        return None
+    return q3 + LATENCY_OUTLIER_IQR_FACTOR * iqr
+
+
 def count_suspect_compare_outliers(summaries: Iterable[BenchMetricSummary]) -> int:
     return sum(
         1
@@ -587,26 +604,37 @@ def list_plottable_benches(data: ReportData) -> list[str]:
 def build_scatter_data(
     summaries: list[BenchMetricSummary],
 ) -> dict:
-    point_data: list[dict] = []
+    scatter_points: list[tuple[MetricPoint, int, str]] = []
     for summary in summaries:
         for point in summary.points:
             if point.compare is None:
                 continue
             vf_factor = parse_vf_factor(point.use_vf)
             vf_type = "fixed" if point.use_vf.startswith("fixed:") else "scalable"
-            point_data.append(
-                {
-                    "x": point.compare,
-                    "y": point.median_value,
-                    "bench": point.bench,
-                    "vf": point.use_vf,
-                    "vfFactor": vf_factor,
-                    "vfType": vf_type,
-                    "isScalar": vf_factor == 1,
-                    "selected": point.selected,
-                    "suspect": is_suspect_compare_outlier(point),
-                }
-            )
+            scatter_points.append((point, vf_factor, vf_type))
+
+    latency_fence = compute_latency_outlier_fence(
+        [p.median_value for p, _, _ in scatter_points]
+    )
+
+    point_data: list[dict] = []
+    for point, vf_factor, vf_type in scatter_points:
+        suspect = is_suspect_compare_outlier(point)
+        if not suspect and latency_fence is not None:
+            suspect = point.median_value > latency_fence
+        point_data.append(
+            {
+                "x": point.compare,
+                "y": point.median_value,
+                "bench": point.bench,
+                "vf": point.use_vf,
+                "vfFactor": vf_factor,
+                "vfType": vf_type,
+                "isScalar": vf_factor == 1,
+                "selected": point.selected,
+                "suspect": suspect,
+            }
+        )
 
     all_vfs = sorted({p["vf"] for p in point_data}, key=parse_vf_key)
     return {"points": point_data, "allVFs": all_vfs}
@@ -728,7 +756,8 @@ def build_summary_cards(data: ReportData) -> list[tuple[str, str]]:
     avg_spearman = sum(kernel_spearmans) / len(kernel_spearmans) if kernel_spearmans else None
     top1_ns, top1_distributions, _ = build_top_n_overlap_distributions(kernel_summaries, max_n=1)
     top1_overlap = (sum(top1_distributions[0]) / len(top1_distributions[0])) if top1_ns and top1_distributions else None
-    kernel_suspect_outliers = count_suspect_compare_outliers(kernel_summaries)
+    kernel_scatter = build_scatter_data(kernel_summaries)
+    kernel_suspect_outliers = sum(1 for p in kernel_scatter["points"] if p["suspect"])
     outlier_suffix = "" if kernel_suspect_outliers == 1 else "s"
     speedup_ratios: list[float] = []
     for summary in kernel_summaries:
@@ -757,7 +786,7 @@ def build_summary_cards(data: ReportData) -> list[tuple[str, str]]:
         ("Mean kernel Spearman", format_float(avg_spearman, digits=2)),
         ("Kernel top-1 overlap", format_float(top1_overlap, digits=2)),
         ("Median kernel speedup", median_speedup),
-        ("Kernel scatter fit exclusions", f"{kernel_suspect_outliers} suspect compare outlier{outlier_suffix}"),
+        ("Kernel scatter fit exclusions", f"{kernel_suspect_outliers} suspect outlier{outlier_suffix}"),
     ]
 
 
@@ -992,6 +1021,33 @@ p { color: var(--muted); }
   font-size: 13px;
   color: var(--muted);
   margin-top: 6px;
+}
+.outlier-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+  margin-top: 10px;
+}
+.outlier-table th, .outlier-table td {
+  padding: 6px 12px;
+  text-align: left;
+  border-bottom: 1px solid var(--line);
+}
+.outlier-table th {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--muted);
+  font-weight: 600;
+}
+.outlier-table td { font-variant-numeric: tabular-nums; }
+.outlier-table tr:last-child td { border-bottom: none; }
+.outlier-label {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--muted);
+  margin-top: 14px;
+  margin-bottom: 2px;
 }
 @media (max-width: 720px) {
   main { padding: 14px; }
@@ -1248,6 +1304,24 @@ _APP_JS = r"""
   }
   renderScatter('kernel_cycles', 'chart-scatter-kernel_cycles');
   renderScatter('total_cycles', 'chart-scatter-total_cycles');
+
+  // -- Outlier tables --
+  function renderOutlierTable(metricKey) {
+    var data = D.scatter[metricKey].points;
+    var outliers = data.filter(function(p){return p.suspect;});
+    var el = document.getElementById('outlier-table-' + metricKey);
+    if (!outliers.length) { el.innerHTML = ''; return; }
+    outliers.sort(function(a,b){return b.y - a.y;});
+    var fmt = function(v){return v == null ? '-' : v.toLocaleString();};
+    var rows = outliers.map(function(p){
+      return '<tr><td>'+p.bench+'</td><td>'+p.vf+'</td><td>'+fmt(p.y)+'</td><td>'+fmt(p.x)+'</td></tr>';
+    }).join('');
+    el.innerHTML = '<p class="outlier-label">Excluded outliers (' + outliers.length + ')</p>'
+      + '<table class="outlier-table"><thead><tr><th>Bench</th><th>VF</th><th>Median latency</th><th>Compare</th></tr></thead>'
+      + '<tbody>' + rows + '</tbody></table>';
+  }
+  renderOutlierTable('kernel_cycles');
+  renderOutlierTable('total_cycles');
 
   // -- Ranking charts --
   (function() {
@@ -1598,6 +1672,7 @@ def render_html(data: ReportData, plots: dict) -> str:
         "<div class='vf-toggle-row' id='vf-toggles-kernel_cycles'></div>",
         "<div id='chart-scatter-kernel_cycles'></div>",
         "<p class='scatter-stats' id='scatter-stats-kernel_cycles'></p>",
+        "<div id='outlier-table-kernel_cycles'></div>",
         "</section>",
         "<section class='section section-accent-total' id='total-scatter'>",
         "<h2>VPlan compare vs latency (total_cycles)</h2>",
@@ -1607,6 +1682,7 @@ def render_html(data: ReportData, plots: dict) -> str:
         "<div class='vf-toggle-row' id='vf-toggles-total_cycles'></div>",
         "<div id='chart-scatter-total_cycles'></div>",
         "<p class='scatter-stats' id='scatter-stats-total_cycles'></p>",
+        "<div id='outlier-table-total_cycles'></div>",
         "</section>",
         "<section class='section section-accent' id='ranking'>",
         "<h2>Ranking quality overview</h2>",
@@ -1682,8 +1758,13 @@ def main() -> None:
 
     root = repo_root()
     bench_filter = {bench.strip() for bench in args.bench if bench.strip()}
-    vfs_db = resolve_input_path(root, args.vfs_db)
     result_db = resolve_input_path(root, args.result_db)
+    if args.vfs_db:
+        vfs_db = resolve_input_path(root, args.vfs_db)
+    else:
+        _, target = load_result_metadata(result_db)
+        suffix = _TARGET_TO_VFS_SUFFIX.get(target, _DEFAULT_VFS_SUFFIX)
+        vfs_db = resolve_input_path(root, f"artifacts/vfs-{suffix}.db")
     output_html = resolve_output_html(root, args.output_html, result_db)
 
     data = load_report_data(vfs_db, result_db, bench_filter)
