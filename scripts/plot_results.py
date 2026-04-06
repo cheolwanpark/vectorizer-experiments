@@ -16,7 +16,6 @@ from typing import Iterable, Sequence
 
 
 DEFAULT_VFS_DB = "artifacts/vfs.db"
-DEFAULT_EMULATE_GLOB = "artifacts/emulate-result-*.sqlite"
 DEFAULT_OUTPUT_ROOT = "artifacts/plots"
 DEFAULT_TOP_MISMATCH_BENCHES = 8
 SUSPECT_COMPARE_ABS_THRESHOLD = 1_000_000.0
@@ -38,14 +37,14 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--vfs-db", default=DEFAULT_VFS_DB, help="Path to artifacts/vfs.db")
     parser.add_argument(
-        "--emulate-db",
-        default="",
-        help="Path to emulate-result-*.sqlite (defaults to latest matching file)",
+        "--result-db",
+        required=True,
+        help="Path to emulate-result-*.sqlite or profile-result-*.sqlite",
     )
     parser.add_argument(
         "--output-html",
         default="",
-        help="Output HTML path (defaults to artifacts/plots/<emulate-db-stem>.html)",
+        help="Output HTML path (defaults to artifacts/plots/<result-db-stem>.html)",
     )
     parser.add_argument(
         "--bench",
@@ -71,25 +70,13 @@ def resolve_input_path(root: Path, value: str) -> Path:
     return path
 
 
-def resolve_latest_emulate_db(root: Path, explicit_path: str) -> Path:
-    if explicit_path:
-        return resolve_input_path(root, explicit_path)
-    candidates = sorted((root / "artifacts").glob("emulate-result-*.sqlite"))
-    if not candidates:
-        fail(
-            "no emulate-result-*.sqlite file found under artifacts/\n"
-            "Run `make emulate-all` first or pass --emulate-db."
-        )
-    return candidates[-1].resolve()
-
-
-def resolve_output_html(root: Path, explicit_path: str, emulate_db: Path) -> Path:
+def resolve_output_html(root: Path, explicit_path: str, result_db: Path) -> Path:
     if explicit_path:
         out_path = Path(explicit_path)
         if not out_path.is_absolute():
             out_path = (root / explicit_path).resolve()
     else:
-        out_path = (root / DEFAULT_OUTPUT_ROOT / f"{emulate_db.stem}.html").resolve()
+        out_path = (root / DEFAULT_OUTPUT_ROOT / f"{result_db.stem}.html").resolve()
     out_path.parent.mkdir(parents=True, exist_ok=True)
     return out_path
 
@@ -259,7 +246,9 @@ class BenchMetricSummary:
 @dataclass
 class ReportData:
     vfs_db: Path
-    emulate_db: Path
+    result_db: Path
+    result_stage: str
+    result_target: str
     benches: list[str]
     candidates: dict[tuple[str, str], VFCandidate]
     candidate_counts: dict[str, int]
@@ -323,6 +312,23 @@ def load_vfs_data(
     return candidates, dict(candidate_counts), failures
 
 
+_RESULT_STAGES = {"emulate", "profile"}
+
+
+def load_result_metadata(db_path: Path) -> tuple[str, str]:
+    """Return (stage, simulator_target) from the first non-vplan result row."""
+    conn = sqlite3.connect(db_path)
+    conn.row_factory = sqlite3.Row
+    row = conn.execute(
+        "SELECT stage, simulator_target FROM emulate_results "
+        "WHERE stage IN ('emulate', 'profile') LIMIT 1"
+    ).fetchone()
+    conn.close()
+    if row is None:
+        return ("unknown", "unknown")
+    return (str(row["stage"] or "unknown"), str(row["simulator_target"] or "unknown"))
+
+
 def load_emulate_data(
     db_path: Path, bench_filter: set[str]
 ) -> tuple[dict[tuple[str, str], EmulateAggregate], Counter[str]]:
@@ -340,7 +346,7 @@ def load_emulate_data(
     aggregates: dict[tuple[str, str], EmulateAggregate] = {}
     failure_counts: Counter[str] = Counter()
     for row in rows:
-        if str(row["stage"] or "") != "emulate":
+        if str(row["stage"] or "") not in _RESULT_STAGES:
             continue
         bench = str(row["bench"] or "")
         if bench_filter and bench not in bench_filter:
@@ -442,9 +448,10 @@ def build_metric_summaries(
     return summaries
 
 
-def load_report_data(vfs_db: Path, emulate_db: Path, bench_filter: set[str]) -> ReportData:
+def load_report_data(vfs_db: Path, result_db: Path, bench_filter: set[str]) -> ReportData:
     candidates, candidate_counts, vplan_failures = load_vfs_data(vfs_db, bench_filter)
-    aggregates, emulate_failure_counts = load_emulate_data(emulate_db, bench_filter)
+    result_stage, result_target = load_result_metadata(result_db)
+    aggregates, emulate_failure_counts = load_emulate_data(result_db, bench_filter)
     metric_summaries = {
         "kernel_cycles": build_metric_summaries("kernel_cycles", candidates, aggregates),
         "total_cycles": build_metric_summaries("total_cycles", candidates, aggregates),
@@ -458,7 +465,9 @@ def load_report_data(vfs_db: Path, emulate_db: Path, bench_filter: set[str]) -> 
     )
     return ReportData(
         vfs_db=vfs_db,
-        emulate_db=emulate_db,
+        result_db=result_db,
+        result_stage=result_stage,
+        result_target=result_target,
         benches=benches,
         candidates=candidates,
         candidate_counts=candidate_counts,
@@ -481,7 +490,7 @@ def build_coverage_data(data: ReportData) -> dict:
         if bench in emulate_success_benches:
             outcome["Success"] += 1
         elif bench in candidate_benches:
-            outcome["Emulate failed"] += 1
+            outcome[f"{data.result_stage.capitalize()} failed"] += 1
         elif bench in vplan_failure_by_bench:
             outcome[f"vplan: {vplan_failure_by_bench[bench]}"] += 1
         else:
@@ -736,11 +745,14 @@ def build_summary_cards(data: ReportData) -> list[tuple[str, str]]:
     median_speedup = format_float(
         statistics.median(speedup_ratios) if speedup_ratios else None, digits=2
     )
+    stage_label = data.result_stage.capitalize()
     return [
+        ("Stage", data.result_stage),
+        ("Target", data.result_target),
         ("Benchmarks", str(len(data.benches))),
         ("Kernel comparable benches", str(len(comparable))),
         ("VPlan failures", str(len(data.vplan_failures))),
-        ("Emulate failures", str(sum(data.emulate_failure_counts.values()))),
+        (f"{stage_label} failures", str(sum(data.emulate_failure_counts.values()))),
         ("Selected VF matches actual best", f"{len(selected_matches)}/{len(comparable) or 0}"),
         ("Mean kernel Spearman", format_float(avg_spearman, digits=2)),
         ("Kernel top-1 overlap", format_float(top1_overlap, digits=2)),
@@ -751,7 +763,7 @@ def build_summary_cards(data: ReportData) -> list[tuple[str, str]]:
 
 def build_detail_summary_text(summary: BenchMetricSummary | None, metric_name: str) -> str:
     if summary is None:
-        return f"{metric_name}: no successful emulate rows"
+        return f"{metric_name}: no successful result rows"
     return (
         f"{metric_name}: selected={display_vf(summary.selected_vf) if summary.selected_vf is not None else '-'}, "
         f"compare-best={display_vf(summary.compare_best_vf) if summary.compare_best_vf is not None else '-'}, "
@@ -1026,7 +1038,7 @@ _APP_JS = r"""
         hole: 0.35,
         sort: false
       }], Object.assign({}, BASE, {
-        title: {text: 'Pipeline outcomes (vplan + emulate)', x: 0, font: {size: 16}},
+        title: {text: 'Pipeline outcomes', x: 0, font: {size: 16}},
         legend: {font: {size: 13}},
         margin: {t: 48, r: 20, b: 20, l: 20}
       }), CFG);
@@ -1557,7 +1569,7 @@ def render_html(data: ReportData, plots: dict) -> str:
         "<head>",
         "<meta charset='utf-8' />",
         "<meta name='viewport' content='width=device-width, initial-scale=1' />",
-        "<title>VPlan Compare vs Emulate Report</title>",
+        f"<title>VPlan Cost Report ({escape(data.result_stage)} / {escape(data.result_target)})</title>",
         "<script src='https://cdn.plot.ly/plotly-2.35.2.min.js'></script>",
         "<style>",
         _CSS,
@@ -1567,13 +1579,15 @@ def render_html(data: ReportData, plots: dict) -> str:
         f"<nav class='top-nav'><span class='nav-title'>VPlan Report</span><div class='nav-links'>{nav_html}</div></nav>",
         "<main>",
         "<header id='summary'>",
-        "<h1>VPlan Compare vs Emulate Latency</h1>",
-        "<p class='subtitle'>Interactive report comparing VPlan cost predictions against emulated cycle measurements.</p>",
+        f"<h1>VPlan Cost vs Measured Latency</h1>",
+        f"<p class='subtitle'>Interactive report comparing VPlan cost predictions against measured cycle counts."
+        f" Stage: <strong>{escape(data.result_stage)}</strong>"
+        f" &middot; Target: <strong>{escape(data.result_target)}</strong></p>",
         f"<div class='cards'>{''.join(cards_html)}</div>",
         "</header>",
         "<section class='section section-accent' id='coverage'>",
         "<h2>Coverage summary</h2>",
-        "<p class='caption'>VPlan explain and emulation outcome breakdown including successes and failure reasons.</p>",
+        "<p class='caption'>VPlan explain and measurement outcome breakdown including successes and failure reasons.</p>",
         "<div class='chart-row'><div id='chart-outcome'></div><div id='chart-vf-distribution'></div></div>",
         "</section>",
         "<section class='section section-accent-kernel' id='kernel-scatter'>",
@@ -1669,10 +1683,10 @@ def main() -> None:
     root = repo_root()
     bench_filter = {bench.strip() for bench in args.bench if bench.strip()}
     vfs_db = resolve_input_path(root, args.vfs_db)
-    emulate_db = resolve_latest_emulate_db(root, args.emulate_db)
-    output_html = resolve_output_html(root, args.output_html, emulate_db)
+    result_db = resolve_input_path(root, args.result_db)
+    output_html = resolve_output_html(root, args.output_html, result_db)
 
-    data = load_report_data(vfs_db, emulate_db, bench_filter)
+    data = load_report_data(vfs_db, result_db, bench_filter)
     plots = generate_plots(data)
     report_html = render_html(data, plots)
     output_html.write_text(report_html, encoding="utf-8")

@@ -17,7 +17,7 @@ VERBOSE ?= 0
 CONCURRENCY ?= 5
 _VFS_DB_SUFFIX := $(if $(filter INTEL,$(ARCH)),intel,$(if $(filter RVV,$(ARCH)),rvv,$(shell echo '$(ARCH)' | tr A-Z a-z)))
 VFS_DB ?= artifacts/vfs-$(_VFS_DB_SUFFIX).db
-EMULATE_DB ?=
+RESULT_DB ?=
 PLOT_OUTPUT_HTML ?=
 X86_MARCH ?= skylake-avx512
 PROFILE_LOG_ROOT ?= artifacts/profile
@@ -37,7 +37,7 @@ help:
 	@echo "  make vplan-explain-all [IMAGE=...] [PLATFORM=linux/amd64] [ARCH=RVV|MAC|INTEL] [LEN=4096] [LMUL=1] [VLEN=128] [LLVM_CUSTOM=...] [X86_MARCH=skylake-avx512] [VPLAN_LOG_ROOT=artifacts/vplan-explain] [VFS_DB=artifacts/vfs-{rvv,intel}.db]"
 	@echo "  make profile sXXX [LEN=4096] [LMUL=1] [USE_VF='fixed:4'] [LLVM_CUSTOM=...] [X86_MARCH=skylake-avx512] [PROFILE_WARMUP=3] [PROFILE_REPEAT=10] [PROFILE_LOG_ROOT=artifacts/profile]"
 	@echo "  make profile-all [LEN=4096] [LMUL=1] [LLVM_CUSTOM=...] [X86_MARCH=skylake-avx512] [PROFILE_WARMUP=3] [PROFILE_REPEAT=10] [CONCURRENCY=5] [VFS_DB=artifacts/vfs-{rvv,intel}.db]"
-	@echo "  make plot-results [VFS_DB=artifacts/vfs-{rvv,intel}.db] [EMULATE_DB=artifacts/emulate-result-YYYYMMDDHHMM.sqlite] [PLOT_OUTPUT_HTML=artifacts/plots/report.html]"
+	@echo "  make plot-results RESULT_DB=artifacts/{emulate,profile}-result-YYYYMMDDHHMM.sqlite [VFS_DB=artifacts/vfs-{rvv,intel}.db] [PLOT_OUTPUT_HTML=artifacts/plots/report.html]"
 
 emulate:
 	@if [ -z "$(BENCH)" ]; then \
@@ -137,7 +137,11 @@ profile-all: $(VFS_DB)
 		--vfs-db "$(VFS_DB)"
 
 plot-results:
-	@$(UV) run python scripts/plot_results.py --vfs-db "$(VFS_DB)" $(if $(strip $(EMULATE_DB)),--emulate-db "$(EMULATE_DB)",) $(if $(strip $(PLOT_OUTPUT_HTML)),--output-html "$(PLOT_OUTPUT_HTML)",)
+	@if [ -z "$(RESULT_DB)" ]; then \
+		echo "usage: make plot-results RESULT_DB=artifacts/{emulate,profile}-result-YYYYMMDDHHMM.sqlite [VFS_DB=...] [PLOT_OUTPUT_HTML=...]" >&2; \
+		exit 2; \
+	fi
+	@$(UV) run python scripts/plot_results.py --vfs-db "$(VFS_DB)" --result-db "$(RESULT_DB)" $(if $(strip $(PLOT_OUTPUT_HTML)),--output-html "$(PLOT_OUTPUT_HTML)",)
 
 s%:
 	@:
