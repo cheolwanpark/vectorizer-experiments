@@ -76,7 +76,7 @@ def parse_args() -> argparse.Namespace:
         default=vplan_explain.DEFAULT_OUTPUT_ROOT,
         help="Host output root for vplan-explain artifacts",
     )
-    parser.add_argument("--arch", default="RVV", choices=["RVV", "MAC"], help="Target architecture")
+    parser.add_argument("--arch", default="RVV", choices=["RVV", "MAC", "INTEL"], help="Target architecture")
     parser.add_argument("--vlen", type=int, default=128, help="RVV vector length in bits")
     parser.add_argument("--llvm-custom", default="", help="Optional host LLVM build/bin directory")
     parser.add_argument("--concurrency", type=int, default=DEFAULT_CONCURRENCY, help="Parallel emulate job count")
@@ -279,10 +279,10 @@ def make_vplan_failure_row(
             "failure": failure,
             "failure_message": message,
             "benchmark": bench,
-            "image": args.image,
+            "image": getattr(args, "image", ""),
             "len_1d": args.len_1d,
             "lmul": args.lmul,
-            "timeout_s": args.timeout,
+            "timeout_s": getattr(args, "timeout", None),
             "status": "SKIP",
             "source": vplan_result.get("source"),
             "vplan_log_path": vplan_result.get("vplan_log"),

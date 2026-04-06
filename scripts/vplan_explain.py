@@ -44,7 +44,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--bench", required=True, help="Benchmark name, for example s000")
     parser.add_argument("--image", default=DEFAULT_IMAGE, help="Docker image tag")
     parser.add_argument("--platform", default=DEFAULT_PLATFORM, help="Docker platform")
-    parser.add_argument("--arch", default="RVV", choices=["RVV", "MAC"], help="Target architecture")
+    parser.add_argument("--arch", default="RVV", choices=["RVV", "MAC", "INTEL"], help="Target architecture")
+    parser.add_argument("--x86-march", default=llvm_pipeline.DEFAULT_INTEL_TARGET_MARCH, help="x86 -march value (for ARCH=INTEL)")
     parser.add_argument("--vlen", type=int, default=128, help="RVV vector length in bits")
     parser.add_argument("--len", dest="len_1d", type=int, default=llvm_pipeline.DEFAULT_LEN_1D, help="LEN_1D value")
     parser.add_argument("--lmul", type=int, default=llvm_pipeline.DEFAULT_LMUL, help="LMUL value")
@@ -210,6 +211,7 @@ def run_vplan_explain(
     output_root: str = DEFAULT_OUTPUT_ROOT,
     ensure_image: bool = True,
     echo_output: bool = False,
+    x86_march: str = llvm_pipeline.DEFAULT_INTEL_TARGET_MARCH,
 ) -> dict[str, object]:
     args = argparse.Namespace(
         bench=bench,
@@ -281,6 +283,7 @@ def run_vplan_explain(
         arch=arch,
         len_1d=len_1d,
         lmul=lmul,
+        x86_march=x86_march,
     )
     compile_flag_args = " ".join(
         f"--compile-flag={shlex.quote(flag)}" for flag in compile_flags
@@ -376,6 +379,7 @@ def main() -> None:
         vf_use=args.vf_use,
         output_root=args.output_root,
         echo_output=args.verbose,
+        x86_march=args.x86_march,
     )
     if int(result["exit_code"]) != 0:
         container_log = str(result.get("container_log") or "").strip()

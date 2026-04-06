@@ -17,6 +17,8 @@ DEFAULT_LMUL = 1
 DEFAULT_RVV_TARGET_ARCH = "rv64gcv"
 DEFAULT_RVV_TARGET_ABI = "lp64d"
 DEFAULT_RVV_TARGET_CC_FLAG = "--target=riscv64-unknown-elf"
+DEFAULT_INTEL_TARGET_MARCH = "skylake-avx512"
+DEFAULT_INTEL_TARGET_TRIPLE = "x86_64-unknown-linux-gnu"
 
 
 def run_checked(
@@ -208,11 +210,9 @@ def build_vplan_compile_flags(
     arch: str = "RVV",
     len_1d: int = DEFAULT_LEN_1D,
     lmul: int = DEFAULT_LMUL,
+    x86_march: str = DEFAULT_INTEL_TARGET_MARCH,
 ) -> list[str]:
-    flags = [
-        "-mcmodel=medany",
-        "-static",
-        "-nostdlib",
+    common = [
         "-fno-builtin",
         "-fno-common",
         f"-DLMUL={lmul}",
@@ -221,17 +221,26 @@ def build_vplan_compile_flags(
         str(run_common_include),
     ]
     if tsvc_include is not None:
-        flags.extend(["-I", str(tsvc_include)])
+        common.extend(["-I", str(tsvc_include)])
     if arch == "RVV":
         return [
             f"-march={DEFAULT_RVV_TARGET_ARCH}",
             f"-mabi={DEFAULT_RVV_TARGET_ABI}",
             DEFAULT_RVV_TARGET_CC_FLAG,
-            *flags,
+            "-mcmodel=medany",
+            "-static",
+            "-nostdlib",
+            *common,
             "-mllvm",
             f"-riscv-v-register-bit-width-lmul={lmul}",
         ]
-    return flags
+    if arch == "INTEL":
+        return [
+            f"--target={DEFAULT_INTEL_TARGET_TRIPLE}",
+            f"-march={x86_march}",
+            *common,
+        ]
+    return common
 
 
 def parse_args() -> argparse.Namespace:
