@@ -137,7 +137,7 @@ class EmulateAllTest(unittest.TestCase):
         emulate_result = {
             "summary": {"status": "PASS", "kernel_cycles": 10, "total_cycles": 20},
             "container_log_text": "container",
-            "run_log_text": "run",
+            "run_detail": "run",
             "opt_ll_text": "opt",
             "asm_text": "asm",
             "failed": False,
@@ -313,7 +313,7 @@ class EmulateAllTest(unittest.TestCase):
             fake_emulate_result = {
                 "summary": {"status": "PASS", "kernel_cycles": 10, "total_cycles": 20},
                 "container_log_text": "container",
-                "run_log_text": "run",
+                "run_detail": "run",
                 "opt_ll_text": "opt",
                 "asm_text": "asm",
                 "failed": False,

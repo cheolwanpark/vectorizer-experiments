@@ -95,7 +95,7 @@ def make_profile_row(
     row["bench"] = bench
     row["use_vf"] = use_vf
     row["container_log_text"] = profile_result.get("container_log_text", "")
-    row["run_log_text"] = profile_result.get("run_log_text", "")
+    row["run_detail"] = profile_result.get("run_detail", "")
     row["opt_ll_text"] = str(profile_result.get("opt_ll_text", "") or "")
     row["asm_text"] = str(profile_result.get("asm_text", "") or "")
     return row

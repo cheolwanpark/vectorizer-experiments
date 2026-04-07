@@ -94,6 +94,8 @@ RUN --mount=type=cache,id=apt-cache,target=/var/cache/apt,sharing=locked \
         python3-dev \
         python3-pip \
         python3-venv \
+        linux-tools-common \
+        linux-tools-generic \
         time \
         verilator \
         zlib1g-dev \

@@ -44,7 +44,7 @@ TABLE_COLUMNS = [
     "sim_speed_khz",
     "artifact_dir",
     "container_log",
-    "run_log",
+    "run_detail_path",
     "trace_file",
     "report_file",
     "docker_command",
@@ -52,7 +52,7 @@ TABLE_COLUMNS = [
     "vplan_log_path",
     "vplan_log_text",
     "container_log_text",
-    "run_log_text",
+    "run_detail",
     "opt_ll_text",
     "asm_text",
 ]
@@ -220,7 +220,7 @@ def create_table(conn: sqlite3.Connection) -> None:
             sim_speed_khz REAL,
             artifact_dir TEXT,
             container_log TEXT,
-            run_log TEXT,
+            run_detail_path TEXT,
             trace_file TEXT,
             report_file TEXT,
             docker_command TEXT,
@@ -228,7 +228,7 @@ def create_table(conn: sqlite3.Connection) -> None:
             vplan_log_path TEXT,
             vplan_log_text TEXT,
             container_log_text TEXT,
-            run_log_text TEXT,
+            run_detail TEXT,
             opt_ll_text VARCHAR,
             asm_text VARCHAR,
             PRIMARY KEY (bench, use_vf)
@@ -328,7 +328,7 @@ def make_emulate_row(
     row["bench"] = bench
     row["use_vf"] = use_vf
     row["container_log_text"] = emulate_result.get("container_log_text", "")
-    row["run_log_text"] = emulate_result.get("run_log_text", "")
+    row["run_detail"] = emulate_result.get("run_detail", "")
     for column in emulate.BUILD_ARTIFACT_SUFFIXES:
         row[column] = str(emulate_result.get(column, "") or "")
     return row

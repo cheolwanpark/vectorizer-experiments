@@ -135,7 +135,7 @@ def parse_run_sim_output(text: str) -> dict[str, object]:
         "kernel_cycles": (r"^Kernel:\s+([\d,]+)\s+cycles$", parse_int),
         "total_cycles": (r"^Total sim:\s+([\d,]+)\s+cycles$", parse_int),
         "sim_speed_khz": (r"^Sim speed:\s+([0-9.]+)\s+kHz$", parse_float),
-        "run_log": (r"^Log file:\s+(.+)$", str),
+        "run_detail_path": (r"^Log file:\s+(.+)$", str),
         "trace_file": (r"^Trace:\s+(.+)$", str),
         "built_workload": (r"^Built:\s+(.+)$", str),
     }
@@ -194,7 +194,7 @@ def build_markdown_report(summary: dict[str, object]) -> str:
         "",
         f"- Artifacts: `{summary['artifact_dir']}`",
         f"- Container log: `{summary['container_log']}`",
-        f"- Run log: `{summary.get('run_log', 'n/a')}`",
+        f"- Run detail: `{summary.get('run_detail_path', 'n/a')}`",
         f"- Trace: `{trace_file}`",
         "",
         "## Command",
@@ -358,9 +358,9 @@ def run_emulate(
     container_log.write_text(combined_output, encoding="utf-8")
 
     parsed = parse_run_sim_output(combined_output)
-    run_log = (
-        map_container_output_path(str(parsed["run_log"]), out_dir)
-        if "run_log" in parsed
+    run_detail_path = (
+        map_container_output_path(str(parsed["run_detail_path"]), out_dir)
+        if "run_detail_path" in parsed
         else None
     )
     trace_file = (
@@ -368,7 +368,7 @@ def run_emulate(
         if "trace_file" in parsed
         else None
     )
-    run_log_text = run_log.read_text(encoding="utf-8") if run_log and run_log.exists() else ""
+    run_detail = run_detail_path.read_text(encoding="utf-8") if run_detail_path and run_detail_path.exists() else ""
     artifact_texts = load_build_artifact_texts(out_dir, str(parsed.get("built_workload") or ""))
 
     summary: dict[str, object] = {
@@ -389,7 +389,7 @@ def run_emulate(
         "sim_speed_khz": parsed.get("sim_speed_khz"),
         "artifact_dir": str(out_dir),
         "container_log": str(container_log),
-        "run_log": str(run_log) if run_log else None,
+        "run_detail_path": str(run_detail_path) if run_detail_path else None,
         "trace_file": str(trace_file) if trace_file else None,
         "report_file": str(report_file),
         "docker_command": docker_command,
@@ -408,7 +408,7 @@ def run_emulate(
         "summary_file": str(summary_file),
         "report_text": report_text,
         "container_log_text": combined_output,
-        "run_log_text": run_log_text,
+        "run_detail": run_detail,
         **artifact_texts,
         "failed": failed,
     }

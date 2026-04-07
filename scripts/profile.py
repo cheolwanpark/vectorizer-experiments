@@ -113,6 +113,14 @@ def build_inner_script(
         )
         link_objs += f" {build}/tsvc_runtime.o"
 
+    perf_events = ",".join([
+        "cycles", "instructions",
+        "cache-references", "cache-misses",
+        "branch-instructions", "branch-misses",
+        "L1-dcache-loads", "L1-dcache-load-misses",
+        "LLC-loads", "LLC-load-misses",
+    ])
+
     lines.extend([
         "",
         "# 3. Link",
@@ -120,6 +128,15 @@ def build_inner_script(
         "",
         "# 4. Run",
         f"{build}/bench --warmup={warmup} --repeat={repeat}",
+        "",
+        "# 5. Collect run detail",
+        f"{{ echo '=== CPU ==='; lscpu | head -20; echo '';",
+        f"  echo '=== COMPILER ==='; \"$CLANG\" --version | head -3; echo '';",
+        f"  echo '=== PERF STAT ===';",
+        f"  perf stat -e {perf_events} "
+        f"{build}/bench --warmup=0 --repeat=1 2>&1 "
+        f"|| echo 'perf stat failed'; "
+        f"}} > {build}/run_detail.txt 2>&1",
     ])
 
     return "\n".join(lines)
@@ -189,6 +206,8 @@ def run_profile(
     docker_cmd = [
         "docker", "run", "--rm",
         "--platform", DEFAULT_PLATFORM,
+        "--cap-add", "SYS_ADMIN",
+        "--security-opt", "seccomp=unconfined",
         "-v", f"{root}:{CONTAINER_PROJECT_ROOT}:ro",
         "-v", f"{out_dir}:{CONTAINER_OUTPUT_ROOT}",
     ]
@@ -215,6 +234,8 @@ def run_profile(
     asm_path = build_dir / "kernel.s"
     opt_ll_text = opt_ll_path.read_text(encoding="utf-8") if opt_ll_path.exists() else ""
     asm_text = asm_path.read_text(encoding="utf-8") if asm_path.exists() else ""
+    run_detail_path = build_dir / "run_detail.txt"
+    run_detail = run_detail_path.read_text(encoding="utf-8") if run_detail_path.exists() else ""
 
     status = "PASS" if result.returncode == 0 and kernel_cycles is not None else f"EXIT:{result.returncode}"
 
@@ -236,7 +257,7 @@ def run_profile(
         "sim_speed_khz": None,
         "artifact_dir": str(out_dir),
         "container_log": str(container_log),
-        "run_log": "",
+        "run_detail_path": str(run_detail_path),
         "trace_file": None,
         "report_file": str(out_dir / "report.md"),
         "docker_command": docker_command,
@@ -255,7 +276,7 @@ def run_profile(
         "summary_file": str(summary_file),
         "report_text": report_text,
         "container_log_text": combined,
-        "run_log_text": "",
+        "run_detail": run_detail,
         "opt_ll_text": opt_ll_text,
         "asm_text": asm_text,
         "failed": failed,
