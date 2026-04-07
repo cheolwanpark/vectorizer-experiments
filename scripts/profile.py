@@ -126,16 +126,32 @@ def build_inner_script(
         "# 3. Link",
         f'"$CLANG" {link_objs} -lm -o {build}/bench',
         "",
-        "# 4. Run",
+        "# 4. Run (pure RDTSC, no perf overhead)",
         f"{build}/bench --warmup={warmup} --repeat={repeat}",
         "",
-        "# 5. Collect run detail",
-        f"{{ echo '=== CPU ==='; lscpu | head -20; echo '';",
-        f"  echo '=== COMPILER ==='; \"$CLANG\" --version | head -3; echo '';",
-        f"  echo '=== PERF STAT ===';",
+        f"# 5. Collect run detail (best of {repeat} perf stat runs)",
+        "_BEST_KC=999999999999999",
+        "_BEST_RUN=1",
+        f"for _i in $(seq 1 {repeat}); do",
         f"  perf stat -e {perf_events} "
-        f"{build}/bench --warmup=0 --repeat=1 2>&1 "
-        f"|| echo 'perf stat failed'; "
+        f"{build}/bench --warmup={warmup} --repeat=1 "
+        f"> /tmp/perf_run_$_i.txt 2>&1 || true",
+        "  _KC=$(grep -m1 '^KC=' /tmp/perf_run_$_i.txt 2>/dev/null"
+        " | cut -d= -f2) || true",
+        '  if [ -n "$_KC" ] && [ "$_KC" -lt "$_BEST_KC" ] 2>/dev/null; then',
+        "    _BEST_KC=$_KC",
+        "    _BEST_RUN=$_i",
+        "  fi",
+        "done",
+        "{",
+        "  echo '=== CPU ==='",
+        "  lscpu | head -20",
+        "  echo ''",
+        "  echo '=== COMPILER ==='",
+        '  "$CLANG" --version | head -3',
+        "  echo ''",
+        f"  echo '=== PERF STAT (best of {repeat}," " KC='$_BEST_KC') ==='",
+        "  cat /tmp/perf_run_$_BEST_RUN.txt",
         f"}} > {build}/run_detail.txt 2>&1",
     ])
 
