@@ -19,7 +19,7 @@ except ModuleNotFoundError:
 
 
 DEFAULT_DB_DIR = "artifacts"
-DEFAULT_CONCURRENCY = 5
+DEFAULT_CONCURRENCY = 1
 DEFAULT_VFS_DB = "artifacts/vfs.db"
 
 
