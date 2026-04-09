@@ -14,31 +14,38 @@ VF_USE ?=
 LLVM_CUSTOM ?=
 VPLAN_LOG_ROOT ?= artifacts/vplan-explain
 VERBOSE ?= 0
-CONCURRENCY ?= 5
+CONCURRENCY ?= 1
 _VFS_DB_SUFFIX := $(if $(filter INTEL,$(ARCH)),intel,$(if $(filter RVV,$(ARCH)),rvv,$(shell echo '$(ARCH)' | tr A-Z a-z)))
 VFS_DB ?= artifacts/vfs-$(_VFS_DB_SUFFIX).db
 RESULT_DB ?=
 PLOT_VFS_DB ?=
 PLOT_OUTPUT_HTML ?=
-X86_MARCH ?= skylake-avx512
+X86_MARCH ?= sapphirerapids
 PROFILE_LOG_ROOT ?= artifacts/profile
 PROFILE_WARMUP ?= 3
 PROFILE_REPEAT ?= 10
+PLOT_CMP_EMULATE_DB ?= $(lastword $(sort $(wildcard artifacts/emulate-result-*.sqlite)))
+PLOT_CMP_PROFILE_DB ?= $(lastword $(sort $(wildcard artifacts/profile-result-*.sqlite)))
+PLOT_CMP_EMULATE_VFS_DB ?=
+PLOT_CMP_PROFILE_VFS_DB ?=
+PLOT_CMP_OUTPUT_DIR ?= artifacts/plots
+PLOT_CMP_PREFIX ?= rvv-intel-kernel
 
 BENCH := $(firstword $(filter s%,$(MAKECMDGOALS)))
 
 .PHONY: help emulate emulate-all vplan-explain
-.PHONY: vplan-explain-all plot-results profile profile-all FORCE
+.PHONY: vplan-explain-all plot-results plot-results-cmp profile profile-all FORCE
 
 help:
 	@echo "Targets:"
 	@echo "  make emulate sXXX [IMAGE=...] [LEN=4096] [LMUL=1] [USE_VF='fixed:4'] [TIMEOUT=120] [LOG_ROOT=artifacts/emulate]   # XiangShan"
-	@echo "  make emulate-all [IMAGE=...] [LEN=4096] [LMUL=1] [TIMEOUT=120] [ARCH=RVV|MAC|INTEL] [VLEN=128] [LLVM_CUSTOM=...] [CONCURRENCY=5] [VFS_DB=artifacts/vfs-{rvv,intel}.db]"
-	@echo "  make vplan-explain sXXX [IMAGE=...] [PLATFORM=linux/amd64] [ARCH=RVV|MAC|INTEL] [LEN=4096] [LMUL=1] [VLEN=128] [LLVM_CUSTOM=...] [X86_MARCH=skylake-avx512] [VF_USE='fixed:2'] [VPLAN_LOG_ROOT=artifacts/vplan-explain] [VERBOSE=1]"
-	@echo "  make vplan-explain-all [IMAGE=...] [PLATFORM=linux/amd64] [ARCH=RVV|MAC|INTEL] [LEN=4096] [LMUL=1] [VLEN=128] [LLVM_CUSTOM=...] [X86_MARCH=skylake-avx512] [VPLAN_LOG_ROOT=artifacts/vplan-explain] [VFS_DB=artifacts/vfs-{rvv,intel}.db]"
-	@echo "  make profile sXXX [LEN=4096] [LMUL=1] [USE_VF='fixed:4'] [LLVM_CUSTOM=...] [X86_MARCH=skylake-avx512] [PROFILE_WARMUP=3] [PROFILE_REPEAT=10] [PROFILE_LOG_ROOT=artifacts/profile]"
-	@echo "  make profile-all [LEN=4096] [LMUL=1] [LLVM_CUSTOM=...] [X86_MARCH=skylake-avx512] [PROFILE_WARMUP=3] [PROFILE_REPEAT=10] [CONCURRENCY=5] [VFS_DB=artifacts/vfs-{rvv,intel}.db]"
+	@echo "  make emulate-all [IMAGE=...] [LEN=4096] [LMUL=1] [TIMEOUT=120] [ARCH=RVV|MAC|INTEL] [VLEN=128] [LLVM_CUSTOM=...] [CONCURRENCY=1] [VFS_DB=artifacts/vfs-{rvv,intel}.db]"
+	@echo "  make vplan-explain sXXX [IMAGE=...] [PLATFORM=linux/amd64] [ARCH=RVV|MAC|INTEL] [LEN=4096] [LMUL=1] [VLEN=128] [LLVM_CUSTOM=...] [X86_MARCH=sapphirerapids] [VF_USE='fixed:2'] [VPLAN_LOG_ROOT=artifacts/vplan-explain] [VERBOSE=1]"
+	@echo "  make vplan-explain-all [IMAGE=...] [PLATFORM=linux/amd64] [ARCH=RVV|MAC|INTEL] [LEN=4096] [LMUL=1] [VLEN=128] [LLVM_CUSTOM=...] [X86_MARCH=sapphirerapids] [VPLAN_LOG_ROOT=artifacts/vplan-explain] [VFS_DB=artifacts/vfs-{rvv,intel}.db]"
+	@echo "  make profile sXXX [LEN=4096] [LMUL=1] [USE_VF='fixed:4'] [LLVM_CUSTOM=...] [X86_MARCH=sapphirerapids] [PROFILE_WARMUP=3] [PROFILE_REPEAT=10] [PROFILE_LOG_ROOT=artifacts/profile]"
+	@echo "  make profile-all [LEN=4096] [LMUL=1] [LLVM_CUSTOM=...] [X86_MARCH=sapphirerapids] [PROFILE_WARMUP=3] [PROFILE_REPEAT=10] [CONCURRENCY=1] [VFS_DB=artifacts/vfs-{rvv,intel}.db]"
 	@echo "  make plot-results RESULT_DB=artifacts/{emulate,profile}-result-YYYYMMDDHHMM.sqlite [PLOT_VFS_DB=artifacts/vfs-{rvv,intel}.db (auto)] [PLOT_OUTPUT_HTML=artifacts/plots/report.html]"
+	@echo "  make plot-results-cmp [PLOT_CMP_EMULATE_DB=artifacts/emulate-result-*.sqlite(latest)] [PLOT_CMP_PROFILE_DB=artifacts/profile-result-*.sqlite(latest)] [PLOT_CMP_{EMULATE,PROFILE}_VFS_DB=...] [PLOT_CMP_OUTPUT_DIR=artifacts/plots] [PLOT_CMP_PREFIX=rvv-intel-kernel]"
 
 emulate:
 	@if [ -z "$(BENCH)" ]; then \
@@ -109,7 +116,7 @@ vplan-explain-all: FORCE
 
 profile:
 	@if [ -z "$(BENCH)" ]; then \
-		echo "usage: make profile sXXX [LEN=4096] [LMUL=1] [USE_VF='fixed:4'] [LLVM_CUSTOM=...] [X86_MARCH=skylake-avx512]" >&2; \
+		echo "usage: make profile sXXX [LEN=4096] [LMUL=1] [USE_VF='fixed:4'] [LLVM_CUSTOM=...] [X86_MARCH=sapphirerapids]" >&2; \
 		exit 2; \
 	fi
 	@$(PYTHON) scripts/profile.py \
@@ -143,6 +150,19 @@ plot-results:
 		exit 2; \
 	fi
 	@$(UV) run python scripts/plot_results.py --result-db "$(RESULT_DB)" $(if $(strip $(PLOT_VFS_DB)),--vfs-db "$(PLOT_VFS_DB)",) $(if $(strip $(PLOT_OUTPUT_HTML)),--output-html "$(PLOT_OUTPUT_HTML)",)
+
+plot-results-cmp:
+	@if [ -z "$(PLOT_CMP_EMULATE_DB)" ] || [ -z "$(PLOT_CMP_PROFILE_DB)" ]; then \
+		echo "usage: make plot-results-cmp [PLOT_CMP_EMULATE_DB=artifacts/emulate-result-*.sqlite(latest)] [PLOT_CMP_PROFILE_DB=artifacts/profile-result-*.sqlite(latest)] [PLOT_CMP_{EMULATE,PROFILE}_VFS_DB=...] [PLOT_CMP_OUTPUT_DIR=artifacts/plots] [PLOT_CMP_PREFIX=rvv-intel-kernel]" >&2; \
+		exit 2; \
+	fi
+	@$(PYTHON) scripts/plot_results_cmp.py \
+		--emulate-db "$(PLOT_CMP_EMULATE_DB)" \
+		--profile-db "$(PLOT_CMP_PROFILE_DB)" \
+		$(if $(strip $(PLOT_CMP_EMULATE_VFS_DB)),--emulate-vfs-db "$(PLOT_CMP_EMULATE_VFS_DB)",) \
+		$(if $(strip $(PLOT_CMP_PROFILE_VFS_DB)),--profile-vfs-db "$(PLOT_CMP_PROFILE_VFS_DB)",) \
+		--output-dir "$(PLOT_CMP_OUTPUT_DIR)" \
+		--prefix "$(PLOT_CMP_PREFIX)"
 
 s%:
 	@:
