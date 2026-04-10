@@ -20,7 +20,7 @@ VFS_DB ?= artifacts/vfs-$(_VFS_DB_SUFFIX).db
 RESULT_DB ?=
 PLOT_VFS_DB ?=
 PLOT_OUTPUT_HTML ?=
-X86_MARCH ?= sapphirerapids
+X86_MARCH ?= emeraldrapids
 PROFILE_LOG_ROOT ?= artifacts/profile
 PROFILE_WARMUP ?= 3
 PROFILE_REPEAT ?= 10
@@ -40,10 +40,10 @@ help:
 	@echo "Targets:"
 	@echo "  make emulate sXXX [IMAGE=...] [LEN=4096] [LMUL=1] [USE_VF='fixed:4'] [TIMEOUT=120] [LOG_ROOT=artifacts/emulate]   # XiangShan"
 	@echo "  make emulate-all [IMAGE=...] [LEN=4096] [LMUL=1] [TIMEOUT=120] [ARCH=RVV|MAC|INTEL] [VLEN=128] [LLVM_CUSTOM=...] [CONCURRENCY=1] [VFS_DB=artifacts/vfs-{rvv,intel}.db]"
-	@echo "  make vplan-explain sXXX [IMAGE=...] [PLATFORM=linux/amd64] [ARCH=RVV|MAC|INTEL] [LEN=4096] [LMUL=1] [VLEN=128] [LLVM_CUSTOM=...] [X86_MARCH=sapphirerapids] [VF_USE='fixed:2'] [VPLAN_LOG_ROOT=artifacts/vplan-explain] [VERBOSE=1]"
-	@echo "  make vplan-explain-all [IMAGE=...] [PLATFORM=linux/amd64] [ARCH=RVV|MAC|INTEL] [LEN=4096] [LMUL=1] [VLEN=128] [LLVM_CUSTOM=...] [X86_MARCH=sapphirerapids] [VPLAN_LOG_ROOT=artifacts/vplan-explain] [VFS_DB=artifacts/vfs-{rvv,intel}.db]"
-	@echo "  make profile sXXX [LEN=4096] [LMUL=1] [USE_VF='fixed:4'] [LLVM_CUSTOM=...] [X86_MARCH=sapphirerapids] [PROFILE_WARMUP=3] [PROFILE_REPEAT=10] [PROFILE_LOG_ROOT=artifacts/profile]"
-	@echo "  make profile-all [LEN=4096] [LMUL=1] [LLVM_CUSTOM=...] [X86_MARCH=sapphirerapids] [PROFILE_WARMUP=3] [PROFILE_REPEAT=10] [CONCURRENCY=1] [VFS_DB=artifacts/vfs-{rvv,intel}.db]"
+	@echo "  make vplan-explain sXXX [IMAGE=...] [PLATFORM=linux/amd64] [ARCH=RVV|MAC|INTEL] [LEN=4096] [LMUL=1] [VLEN=128] [LLVM_CUSTOM=...] [X86_MARCH=emeraldrapids] [VF_USE='fixed:2'] [VPLAN_LOG_ROOT=artifacts/vplan-explain] [VERBOSE=1]"
+	@echo "  make vplan-explain-all [IMAGE=...] [PLATFORM=linux/amd64] [ARCH=RVV|MAC|INTEL] [LEN=4096] [LMUL=1] [VLEN=128] [LLVM_CUSTOM=...] [X86_MARCH=emeraldrapids] [VPLAN_LOG_ROOT=artifacts/vplan-explain] [VFS_DB=artifacts/vfs-{rvv,intel}.db]"
+	@echo "  make profile sXXX [LEN=4096] [LMUL=1] [USE_VF='fixed:4'] [LLVM_CUSTOM=...] [X86_MARCH=emeraldrapids] [PROFILE_WARMUP=3] [PROFILE_REPEAT=10] [PROFILE_LOG_ROOT=artifacts/profile]"
+	@echo "  make profile-all [LEN=4096] [LMUL=1] [LLVM_CUSTOM=...] [X86_MARCH=emeraldrapids] [PROFILE_WARMUP=3] [PROFILE_REPEAT=10] [CONCURRENCY=1] [VFS_DB=artifacts/vfs-{rvv,intel}.db]"
 	@echo "  make plot-results RESULT_DB=artifacts/{emulate,profile}-result-YYYYMMDDHHMM.sqlite [PLOT_VFS_DB=artifacts/vfs-{rvv,intel}.db (auto)] [PLOT_OUTPUT_HTML=artifacts/plots/report.html]"
 	@echo "  make plot-results-cmp [PLOT_CMP_EMULATE_DB=artifacts/emulate-result-*.sqlite(latest)] [PLOT_CMP_PROFILE_DB=artifacts/profile-result-*.sqlite(latest)] [PLOT_CMP_{EMULATE,PROFILE}_VFS_DB=...] [PLOT_CMP_OUTPUT_DIR=artifacts/plots] [PLOT_CMP_PREFIX=rvv-intel-kernel]"
 
@@ -116,7 +116,7 @@ vplan-explain-all: FORCE
 
 profile:
 	@if [ -z "$(BENCH)" ]; then \
-		echo "usage: make profile sXXX [LEN=4096] [LMUL=1] [USE_VF='fixed:4'] [LLVM_CUSTOM=...] [X86_MARCH=sapphirerapids]" >&2; \
+		echo "usage: make profile sXXX [LEN=4096] [LMUL=1] [USE_VF='fixed:4'] [LLVM_CUSTOM=...] [X86_MARCH=emeraldrapids]" >&2; \
 		exit 2; \
 	fi
 	@$(PYTHON) scripts/profile.py \
