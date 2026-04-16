@@ -69,6 +69,11 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Stream full vplan-explain output to stdout while still writing logs",
     )
+    parser.add_argument(
+        "--extra-cflags",
+        default="",
+        help="Extra flags passed to clang (e.g. '-mllvm -riscv-v-precise-mem-cost')",
+    )
     return parser.parse_args()
 
 
@@ -212,6 +217,7 @@ def run_vplan_explain(
     ensure_image: bool = True,
     echo_output: bool = False,
     x86_march: str = llvm_pipeline.DEFAULT_INTEL_TARGET_MARCH,
+    extra_cflags: str = "",
 ) -> dict[str, object]:
     args = argparse.Namespace(
         bench=bench,
@@ -284,6 +290,7 @@ def run_vplan_explain(
         len_1d=len_1d,
         lmul=lmul,
         x86_march=x86_march,
+        extra_cflags=extra_cflags,
     )
     compile_flag_args = " ".join(
         f"--compile-flag={shlex.quote(flag)}" for flag in compile_flags
@@ -380,6 +387,7 @@ def main() -> None:
         output_root=args.output_root,
         echo_output=args.verbose,
         x86_march=args.x86_march,
+        extra_cflags=args.extra_cflags,
     )
     if int(result["exit_code"]) != 0:
         container_log = str(result.get("container_log") or "").strip()

@@ -38,6 +38,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--concurrency", type=int, default=DEFAULT_CONCURRENCY, help="Parallel job count")
     parser.add_argument("--db-dir", default=DEFAULT_DB_DIR, help="Directory for profile-result-*.sqlite")
     parser.add_argument("--vfs-db", default=DEFAULT_VFS_DB, help="Path to vfs.db from vplan-explain-all")
+    parser.add_argument("--extra-cflags", default="", help="Extra flags passed to clang")
     return parser.parse_args()
 
 
@@ -59,6 +60,7 @@ def run_profile_job(
         repeat=args.repeat,
         log_root=args.log_root,
         ensure_image=False,
+        extra_cflags=args.extra_cflags,
     )
 
 

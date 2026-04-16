@@ -53,6 +53,7 @@ def parse_args() -> argparse.Namespace:
         default=DEFAULT_LOG_ROOT,
         help="Host output root for reports and raw artifacts",
     )
+    parser.add_argument("--extra-cflags", default="", help="Extra flags passed to clang via --cflags")
     return parser.parse_args()
 
 
@@ -252,6 +253,7 @@ def build_emulate_docker_command(
     lmul: int,
     use_vf: str,
     effective_timeout: int,
+    extra_cflags: str = "",
 ) -> list[str]:
     docker_cmd = [
         "docker",
@@ -294,6 +296,7 @@ def build_emulate_docker_command(
                 f"--timeout={effective_timeout} "
                 f"--log-dir={shlex.quote(str(CONTAINER_OUTPUT_ROOT / 'logs'))} "
                 f"--build-out-dir={shlex.quote(str(CONTAINER_BUILD_OUTPUT_ROOT))}"
+                f"{f' --cflags={shlex.quote(extra_cflags)}' if extra_cflags else ''}"
             ),
         ]
     )
@@ -310,6 +313,7 @@ def run_emulate(
     timeout_s: int = 120,
     log_root: str = DEFAULT_LOG_ROOT,
     ensure_image: bool = True,
+    extra_cflags: str = "",
 ) -> dict[str, object]:
     validate_positive_int("len", len_1d)
     validate_positive_int("lmul", lmul)
@@ -343,6 +347,7 @@ def run_emulate(
         lmul=lmul,
         use_vf=use_vf,
         effective_timeout=effective_timeout,
+        extra_cflags=extra_cflags,
     )
 
     docker_command = shlex.join(docker_cmd)
@@ -425,6 +430,7 @@ def main() -> None:
             use_vf=args.use_vf,
             timeout_s=args.timeout,
             log_root=args.log_root,
+            extra_cflags=args.extra_cflags,
         )
     except RuntimeError as exc:
         fail(str(exc))

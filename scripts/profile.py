@@ -50,6 +50,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--warmup", type=int, default=DEFAULT_WARMUP, help="Warmup iterations")
     parser.add_argument("--repeat", type=int, default=DEFAULT_REPEAT, help="Timed iterations")
     parser.add_argument("--log-root", default=DEFAULT_LOG_ROOT, help="Host output root")
+    parser.add_argument("--extra-cflags", default="", help="Extra flags passed to clang")
     return parser.parse_args()
 
 
@@ -171,6 +172,7 @@ def run_profile(
     repeat: int = DEFAULT_REPEAT,
     log_root: str = DEFAULT_LOG_ROOT,
     ensure_image: bool = True,
+    extra_cflags: str = "",
 ) -> dict[str, object]:
     emulate.validate_positive_int("len", len_1d)
     emulate.validate_positive_int("lmul", lmul)
@@ -202,6 +204,7 @@ def run_profile(
         len_1d=len_1d,
         lmul=lmul,
         x86_march=x86_march,
+        extra_cflags=extra_cflags,
     )
     compile_flag_args = " ".join(
         f"--compile-flag={shlex.quote(flag)}" for flag in compile_flags
@@ -346,6 +349,7 @@ def main() -> None:
             warmup=args.warmup,
             repeat=args.repeat,
             log_root=args.log_root,
+            extra_cflags=args.extra_cflags,
         )
     except RuntimeError as exc:
         emulate.fail(str(exc))

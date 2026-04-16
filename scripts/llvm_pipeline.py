@@ -211,6 +211,7 @@ def build_vplan_compile_flags(
     len_1d: int = DEFAULT_LEN_1D,
     lmul: int = DEFAULT_LMUL,
     x86_march: str = DEFAULT_INTEL_TARGET_MARCH,
+    extra_cflags: str = "",
 ) -> list[str]:
     common = [
         "-fno-builtin",
@@ -222,6 +223,7 @@ def build_vplan_compile_flags(
     ]
     if tsvc_include is not None:
         common.extend(["-I", str(tsvc_include)])
+    extra = extra_cflags.split() if extra_cflags else []
     if arch == "RVV":
         return [
             f"-march={DEFAULT_RVV_TARGET_ARCH}",
@@ -233,14 +235,16 @@ def build_vplan_compile_flags(
             *common,
             "-mllvm",
             f"-riscv-v-register-bit-width-lmul={lmul}",
+            *extra,
         ]
     if arch == "INTEL":
         return [
             f"--target={DEFAULT_INTEL_TARGET_TRIPLE}",
             f"-march={x86_march}",
             *common,
+            *extra,
         ]
-    return common
+    return [*common, *extra]
 
 
 def parse_args() -> argparse.Namespace:

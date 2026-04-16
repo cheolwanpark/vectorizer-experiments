@@ -31,28 +31,102 @@ PLOT_CMP_PROFILE_VFS_DB ?=
 PLOT_CMP_OUTPUT_DIR ?= artifacts/plots
 PLOT_CMP_PREFIX ?= rvv-intel-kernel
 
+# --- RVV precise cost model flags (RISCV TTI) ---
+PRECISE_MEM_COST ?=
+GATHER_SCATTER_OVERHEAD ?=
+STRIDED_MEM_OVERHEAD ?=
+
+# Build -mllvm flags string from the above variables
+_MLLVM_FLAGS :=
+ifneq ($(PRECISE_MEM_COST),)
+_MLLVM_FLAGS += -mllvm -precise-mem-cost
+endif
+ifneq ($(GATHER_SCATTER_OVERHEAD),)
+_MLLVM_FLAGS += -mllvm -gather-scatter-overhead=$(GATHER_SCATTER_OVERHEAD)
+endif
+ifneq ($(STRIDED_MEM_OVERHEAD),)
+_MLLVM_FLAGS += -mllvm -strided-mem-overhead=$(STRIDED_MEM_OVERHEAD)
+endif
+_EXTRA_CFLAGS_ARG = $(if $(strip $(_MLLVM_FLAGS)),--extra-cflags '$(strip $(_MLLVM_FLAGS))',)
+
 BENCH := $(firstword $(filter s%,$(MAKECMDGOALS)))
 
 .PHONY: help emulate emulate-all vplan-explain
 .PHONY: vplan-explain-all plot-results plot-results-cmp profile profile-all FORCE
 
 help:
-	@echo "Targets:"
-	@echo "  make emulate sXXX [IMAGE=...] [LEN=4096] [LMUL=1] [USE_VF='fixed:4'] [TIMEOUT=120] [LOG_ROOT=artifacts/emulate]   # XiangShan"
-	@echo "  make emulate-all [IMAGE=...] [LEN=4096] [LMUL=1] [TIMEOUT=120] [ARCH=RVV|MAC|INTEL] [VLEN=128] [LLVM_CUSTOM=...] [CONCURRENCY=1] [VFS_DB=artifacts/vfs-{rvv,intel}.db]"
-	@echo "  make vplan-explain sXXX [IMAGE=...] [PLATFORM=linux/amd64] [ARCH=RVV|MAC|INTEL] [LEN=4096] [LMUL=1] [VLEN=128] [LLVM_CUSTOM=...] [X86_MARCH=emeraldrapids] [VF_USE='fixed:2'] [VPLAN_LOG_ROOT=artifacts/vplan-explain] [VERBOSE=1]"
-	@echo "  make vplan-explain-all [IMAGE=...] [PLATFORM=linux/amd64] [ARCH=RVV|MAC|INTEL] [LEN=4096] [LMUL=1] [VLEN=128] [LLVM_CUSTOM=...] [X86_MARCH=emeraldrapids] [VPLAN_LOG_ROOT=artifacts/vplan-explain] [VFS_DB=artifacts/vfs-{rvv,intel}.db]"
-	@echo "  make profile sXXX [LEN=4096] [LMUL=1] [USE_VF='fixed:4'] [LLVM_CUSTOM=...] [X86_MARCH=emeraldrapids] [PROFILE_WARMUP=3] [PROFILE_REPEAT=10] [PROFILE_LOG_ROOT=artifacts/profile]"
-	@echo "  make profile-all [LEN=4096] [LMUL=1] [LLVM_CUSTOM=...] [X86_MARCH=emeraldrapids] [PROFILE_WARMUP=3] [PROFILE_REPEAT=10] [CONCURRENCY=1] [VFS_DB=artifacts/vfs-{rvv,intel}.db]"
-	@echo "  make plot-results RESULT_DB=artifacts/{emulate,profile}-result-YYYYMMDDHHMM.sqlite [PLOT_VFS_DB=artifacts/vfs-{rvv,intel}.db (auto)] [PLOT_OUTPUT_HTML=artifacts/plots/report.html]"
-	@echo "  make plot-results-cmp [PLOT_CMP_EMULATE_DB=artifacts/emulate-result-*.sqlite(latest)] [PLOT_CMP_PROFILE_DB=artifacts/profile-result-*.sqlite(latest)] [PLOT_CMP_{EMULATE,PROFILE}_VFS_DB=...] [PLOT_CMP_OUTPUT_DIR=artifacts/plots] [PLOT_CMP_PREFIX=rvv-intel-kernel]"
+	@echo ""
+	@echo "=== VPlan Cost Measure ==="
+	@echo ""
+	@echo "TARGETS:"
+	@echo ""
+	@echo "  emulate sXXX          Run one kernel on XiangShan emulator"
+	@echo "  emulate-all           Run all kernels on emulator (uses VFS_DB)"
+	@echo "  vplan-explain sXXX    Generate VPlan cost explanation for one kernel"
+	@echo "  vplan-explain-all     Generate VPlan explanations for all kernels"
+	@echo "  profile sXXX          Profile one kernel natively on x86"
+	@echo "  profile-all           Profile all kernels on x86 (uses VFS_DB)"
+	@echo "  plot-results          Plot results from a single result DB"
+	@echo "  plot-results-cmp      Compare emulate vs profile results"
+	@echo ""
+	@echo "COMMON OPTIONS:"
+	@echo ""
+	@echo "  LEN=4096              Array length (LEN_1D)"
+	@echo "  LMUL=1                RISC-V LMUL value"
+	@echo "  ARCH=RVV|MAC|INTEL    Target architecture"
+	@echo "  VLEN=128              RVV vector length in bits"
+	@echo "  IMAGE=...             Docker image tag"
+	@echo "  LLVM_CUSTOM=...       Path to custom LLVM build/bin directory"
+	@echo "  X86_MARCH=emeraldrapids  x86 -march value"
+	@echo "  CONCURRENCY=1         Parallel job count (*-all targets)"
+	@echo "  VERBOSE=1             Enable verbose output (vplan-explain)"
+	@echo ""
+	@echo "RVV COST MODEL OPTIONS (require LLVM_CUSTOM with patched LLVM):"
+	@echo ""
+	@echo "  PRECISE_MEM_COST=1    Enable detailed gather/scatter/strided cost model"
+	@echo "                        Passes: -mllvm -precise-mem-cost"
+	@echo "  GATHER_SCATTER_OVERHEAD=N"
+	@echo "                        Override gather/scatter overhead multiplier (default: 2)"
+	@echo "                        Passes: -mllvm -gather-scatter-overhead=N"
+	@echo "  STRIDED_MEM_OVERHEAD=N"
+	@echo "                        Override strided memory overhead multiplier (default: 1)"
+	@echo "                        Passes: -mllvm -strided-mem-overhead=N"
+	@echo ""
+	@echo "EMULATE OPTIONS:"
+	@echo ""
+	@echo "  USE_VF='fixed:4'      Force vectorization factor"
+	@echo "  TIMEOUT=120           Simulation timeout in seconds"
+	@echo "  LOG_ROOT=artifacts/emulate  Output directory"
+	@echo ""
+	@echo "PROFILE OPTIONS:"
+	@echo ""
+	@echo "  PROFILE_WARMUP=3      Warmup iterations"
+	@echo "  PROFILE_REPEAT=10     Timed iterations"
+	@echo "  PROFILE_LOG_ROOT=artifacts/profile  Output directory"
+	@echo ""
+	@echo "PLOT OPTIONS:"
+	@echo ""
+	@echo "  RESULT_DB=...         Path to result sqlite (plot-results)"
+	@echo "  PLOT_VFS_DB=...       VFS DB for annotations"
+	@echo "  PLOT_OUTPUT_HTML=...  Output HTML path"
+	@echo "  PLOT_CMP_EMULATE_DB=... / PLOT_CMP_PROFILE_DB=...  (plot-results-cmp)"
+	@echo "  PLOT_CMP_OUTPUT_DIR=artifacts/plots"
+	@echo "  PLOT_CMP_PREFIX=rvv-intel-kernel"
+	@echo ""
+	@echo "EXAMPLES:"
+	@echo ""
+	@echo "  make emulate s2101 LMUL=2"
+	@echo "  make emulate-all LLVM_CUSTOM=llvm-project/build/bin PRECISE_MEM_COST=1"
+	@echo "  make vplan-explain s4112 ARCH=RVV PRECISE_MEM_COST=1 GATHER_SCATTER_OVERHEAD=3"
+	@echo "  make profile-all CONCURRENCY=4 X86_MARCH=sapphirerapids"
+	@echo ""
 
 emulate:
 	@if [ -z "$(BENCH)" ]; then \
 		echo "usage: make emulate sXXX [IMAGE=...] [LEN=4096] [LMUL=1] [USE_VF='fixed:4'] [TIMEOUT=120] [LOG_ROOT=artifacts/emulate]   # XiangShan" >&2; \
 		exit 2; \
 	fi
-	@$(PYTHON) scripts/emulate.py --bench "$(BENCH)" --image "$(IMAGE)" --len "$(LEN)" --lmul "$(LMUL)" $(if $(strip $(USE_VF)),--use-vf "$(USE_VF)",) --timeout "$(TIMEOUT)" --log-root "$(LOG_ROOT)"
+	@$(PYTHON) scripts/emulate.py --bench "$(BENCH)" --image "$(IMAGE)" --len "$(LEN)" --lmul "$(LMUL)" $(if $(strip $(USE_VF)),--use-vf "$(USE_VF)",) --timeout "$(TIMEOUT)" --log-root "$(LOG_ROOT)" $(_EXTRA_CFLAGS_ARG)
 
 emulate-all: $(VFS_DB)
 	@$(PYTHON) scripts/emulate_all.py \
@@ -65,7 +139,8 @@ emulate-all: $(VFS_DB)
 		--vlen "$(VLEN)" \
 		$(if $(strip $(LLVM_CUSTOM)),--llvm-custom "$(LLVM_CUSTOM)",) \
 		--concurrency "$(CONCURRENCY)" \
-		--vfs-db "$(VFS_DB)"
+		--vfs-db "$(VFS_DB)" \
+		$(_EXTRA_CFLAGS_ARG)
 
 vplan-explain:
 	@if [ -z "$(BENCH)" ]; then \
@@ -84,7 +159,8 @@ vplan-explain:
 		$(if $(strip $(LLVM_CUSTOM)),--llvm-custom "$(LLVM_CUSTOM)",) \
 		$(if $(strip $(VF_USE)),--vf-use "$(VF_USE)",) \
 		$(if $(filter 1 true TRUE yes YES,$(VERBOSE)),--verbose,) \
-		--output-root "$(VPLAN_LOG_ROOT)"
+		--output-root "$(VPLAN_LOG_ROOT)" \
+		$(_EXTRA_CFLAGS_ARG)
 
 $(VFS_DB):
 	@$(PYTHON) scripts/vplan_explain_all.py \
@@ -97,7 +173,8 @@ $(VFS_DB):
 		--x86-march "$(X86_MARCH)" \
 		$(if $(strip $(LLVM_CUSTOM)),--llvm-custom "$(LLVM_CUSTOM)",) \
 		--output-root "$(VPLAN_LOG_ROOT)" \
-		--db-path "$(VFS_DB)"
+		--db-path "$(VFS_DB)" \
+		$(_EXTRA_CFLAGS_ARG)
 
 FORCE:
 
@@ -112,7 +189,8 @@ vplan-explain-all: FORCE
 		--x86-march "$(X86_MARCH)" \
 		$(if $(strip $(LLVM_CUSTOM)),--llvm-custom "$(LLVM_CUSTOM)",) \
 		--output-root "$(VPLAN_LOG_ROOT)" \
-		--db-path "$(VFS_DB)"
+		--db-path "$(VFS_DB)" \
+		$(_EXTRA_CFLAGS_ARG)
 
 profile:
 	@if [ -z "$(BENCH)" ]; then \
@@ -129,7 +207,8 @@ profile:
 		--x86-march "$(X86_MARCH)" \
 		--warmup "$(PROFILE_WARMUP)" \
 		--repeat "$(PROFILE_REPEAT)" \
-		--log-root "$(PROFILE_LOG_ROOT)"
+		--log-root "$(PROFILE_LOG_ROOT)" \
+		$(_EXTRA_CFLAGS_ARG)
 
 profile-all: $(VFS_DB)
 	@$(PYTHON) scripts/profile_all.py \
@@ -142,7 +221,8 @@ profile-all: $(VFS_DB)
 		--repeat "$(PROFILE_REPEAT)" \
 		--log-root "$(PROFILE_LOG_ROOT)" \
 		--concurrency "$(CONCURRENCY)" \
-		--vfs-db "$(VFS_DB)"
+		--vfs-db "$(VFS_DB)" \
+		$(_EXTRA_CFLAGS_ARG)
 
 plot-results:
 	@if [ -z "$(RESULT_DB)" ]; then \
