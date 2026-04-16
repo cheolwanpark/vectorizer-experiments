@@ -51,6 +51,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--repeat", type=int, default=DEFAULT_REPEAT, help="Timed iterations")
     parser.add_argument("--log-root", default=DEFAULT_LOG_ROOT, help="Host output root")
     parser.add_argument("--extra-cflags", default="", help="Extra flags passed to clang")
+    parser.add_argument("--extra-opt-flags", default="", help="Extra flags passed to opt")
     return parser.parse_args()
 
 
@@ -65,6 +66,7 @@ def build_inner_script(
     repeat: int,
     is_generated: bool,
     llvm_custom_dir: Path | None,
+    extra_opt_flags: str = "",
 ) -> str:
     if llvm_custom_dir is not None:
         clang_cmd = shlex.quote(str(CONTAINER_LLVM_CUSTOM_ROOT / "clang"))
@@ -79,6 +81,9 @@ def build_inner_script(
     build = str(CONTAINER_BUILD_DIR)
     use_vf_arg = f"--use-vf={shlex.quote(use_vf)}" if use_vf else ""
     opt_log_arg = f"--opt-log={build}/opt.log" if use_vf else ""
+    opt_flag_args = " ".join(
+        f"--opt-flag={shlex.quote(flag)}" for flag in extra_opt_flags.split()
+    )
 
     lines = [
         "set -eu",
@@ -97,6 +102,7 @@ def build_inner_script(
         f'--opt-bin "$OPT" '
         f'--llc-bin "$LLC" '
         f"{compile_flag_args} "
+        f"{opt_flag_args} "
         f"{use_vf_arg} {opt_log_arg}".strip(),
         "",
         "# 2. Compile support files",
@@ -173,6 +179,7 @@ def run_profile(
     log_root: str = DEFAULT_LOG_ROOT,
     ensure_image: bool = True,
     extra_cflags: str = "",
+    extra_opt_flags: str = "",
 ) -> dict[str, object]:
     emulate.validate_positive_int("len", len_1d)
     emulate.validate_positive_int("lmul", lmul)
@@ -220,6 +227,7 @@ def run_profile(
         repeat=repeat,
         is_generated=benchmark.source_kind == "generated",
         llvm_custom_dir=llvm_custom_dir,
+        extra_opt_flags=extra_opt_flags,
     )
 
     docker_cmd = [
@@ -350,6 +358,7 @@ def main() -> None:
             repeat=args.repeat,
             log_root=args.log_root,
             extra_cflags=args.extra_cflags,
+            extra_opt_flags=args.extra_opt_flags,
         )
     except RuntimeError as exc:
         emulate.fail(str(exc))

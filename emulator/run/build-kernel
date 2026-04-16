@@ -21,6 +21,7 @@ usage() {
     echo "  --asm          Generate assembly output"
     echo "  --llvm=FLAGS   Additional LLVM flags"
     echo "  --cflags=FLAGS Additional C flags"
+    echo "  --optflags=FLAGS Additional opt flags"
     echo ""
     echo "To run simulations, use run-sim.sh:"
     echo "  ./run-sim.sh <target> <source.c or elf> [--lmul=N] [--len=N] [--use-vf=fixed:4]"
@@ -243,6 +244,7 @@ USE_VF=""
 ASM=0
 LLVM_FLAGS=""
 EXTRA_CFLAGS=""
+EXTRA_OPT_FLAGS=""
 OUTPUT=""
 
 while [[ $# -gt 0 ]]; do
@@ -254,6 +256,7 @@ while [[ $# -gt 0 ]]; do
         --asm) ASM=1 ;;
         --llvm=*) LLVM_FLAGS="${1#*=}" ;;
         --cflags=*) EXTRA_CFLAGS="${1#*=}" ;;
+        --optflags=*) EXTRA_OPT_FLAGS="${1#*=}" ;;
         *) echo "Unknown option: $1"; usage ;;
     esac
     shift
@@ -319,6 +322,8 @@ if [[ "${TARGET_VLEN:-128}" -gt 0 ]]; then
 fi
 append_split_flags "$LLVM_FLAGS" COMMON_FLAGS
 append_split_flags "$EXTRA_CFLAGS" COMMON_FLAGS
+OPT_FLAGS=()
+append_split_flags "$EXTRA_OPT_FLAGS" OPT_FLAGS
 
 LINK_FLAGS=("${COMMON_FLAGS[@]}" -fuse-ld=lld)
 LINK_ARGS=()
@@ -419,6 +424,9 @@ PIPELINE_CMD=(
 )
 for flag in "${COMPILE_FLAGS[@]}"; do
     PIPELINE_CMD+=("--compile-flag=$flag")
+done
+for flag in "${OPT_FLAGS[@]}"; do
+    PIPELINE_CMD+=("--opt-flag=$flag")
 done
 if [[ -n "$USE_VF" ]]; then
     PIPELINE_CMD+=(--use-vf "$USE_VF" --opt-log "$OPT_LOG")

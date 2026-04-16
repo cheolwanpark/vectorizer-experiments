@@ -74,6 +74,11 @@ def parse_args() -> argparse.Namespace:
         default="",
         help="Extra flags passed to clang (e.g. '-mllvm -riscv-v-precise-mem-cost')",
     )
+    parser.add_argument(
+        "--extra-opt-flags",
+        default="",
+        help="Extra flags passed to opt (e.g. '-precise-mem-cost')",
+    )
     return parser.parse_args()
 
 
@@ -218,6 +223,7 @@ def run_vplan_explain(
     echo_output: bool = False,
     x86_march: str = llvm_pipeline.DEFAULT_INTEL_TARGET_MARCH,
     extra_cflags: str = "",
+    extra_opt_flags: str = "",
 ) -> dict[str, object]:
     args = argparse.Namespace(
         bench=bench,
@@ -295,6 +301,9 @@ def run_vplan_explain(
     compile_flag_args = " ".join(
         f"--compile-flag={shlex.quote(flag)}" for flag in compile_flags
     )
+    opt_flag_args = " ".join(
+        shlex.quote(flag) for flag in extra_opt_flags.split()
+    )
     if llvm_custom_dir is not None:
         clang_cmd = shlex.quote(str(CONTAINER_LLVM_CUSTOM_ROOT / "clang"))
         opt_cmd = shlex.quote(str(CONTAINER_LLVM_CUSTOM_ROOT / "opt"))
@@ -315,7 +324,7 @@ def run_vplan_explain(
             f'--opt-bin "$OPT_BIN" '
             f'--prevec-passes {shlex.quote(llvm_pipeline.PREVEC_PASSES)} '
             f'{compile_flag_args}',
-            f'"$OPT_BIN" {VPLAN_EXPLAIN_ARGS} {forced_vf_arg} "$PREVEC_LL" 2>&1 | tee {shlex.quote(str(container_vplan_log))}',
+            f'"$OPT_BIN" {opt_flag_args} {VPLAN_EXPLAIN_ARGS} {forced_vf_arg} "$PREVEC_LL" 2>&1 | tee {shlex.quote(str(container_vplan_log))}',
             'rm -f "$PREVEC_LL"',
         ]
     )
@@ -388,6 +397,7 @@ def main() -> None:
         echo_output=args.verbose,
         x86_march=args.x86_march,
         extra_cflags=args.extra_cflags,
+        extra_opt_flags=args.extra_opt_flags,
     )
     if int(result["exit_code"]) != 0:
         container_log = str(result.get("container_log") or "").strip()

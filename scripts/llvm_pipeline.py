@@ -87,11 +87,13 @@ def optimize_ir(
     input_ll: Path,
     output_ll: Path,
     opt_passes: str = DEFAULT_OPT_PASSES,
+    opt_flags: list[str] | None = None,
     use_vf: str = "",
     log_path: Path | None = None,
 ) -> str:
     command = [
         opt_bin,
+        *(opt_flags or []),
         "-pass-remarks=loop-vectorize",
         "-pass-remarks-missed=loop-vectorize",
         "-pass-remarks-analysis=loop-vectorize",
@@ -162,6 +164,7 @@ def build_optimized_artifacts(
     opt_bin: str,
     llc_bin: str,
     compile_flags: list[str],
+    opt_flags: list[str] | None = None,
     use_vf: str = "",
     prevec_passes: str = PREVEC_PASSES,
     opt_passes: str = DEFAULT_OPT_PASSES,
@@ -187,6 +190,7 @@ def build_optimized_artifacts(
             input_ll=prevec_ll,
             output_ll=opt_ll,
             opt_passes=opt_passes,
+            opt_flags=opt_flags,
             use_vf=use_vf,
             log_path=opt_log,
         )
@@ -264,6 +268,7 @@ def parse_args() -> argparse.Namespace:
     build.add_argument("--opt-passes", default=DEFAULT_OPT_PASSES)
     build.add_argument("--opt-log", default="")
     build.add_argument("--compile-flag", action="append", default=[])
+    build.add_argument("--opt-flag", action="append", default=[])
 
     emit_prevec = subparsers.add_parser("emit-prevec")
     emit_prevec.add_argument("--source", required=True)
@@ -288,6 +293,7 @@ def main() -> None:
             opt_bin=args.opt_bin,
             llc_bin=args.llc_bin,
             compile_flags=list(args.compile_flag),
+            opt_flags=list(args.opt_flag),
             use_vf=args.use_vf,
             prevec_passes=args.prevec_passes,
             opt_passes=args.opt_passes,

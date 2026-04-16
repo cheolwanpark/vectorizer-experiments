@@ -43,6 +43,13 @@ class BuildKernelTest(unittest.TestCase):
         self.assertIn('build-artifacts', script)
         self.assertNotIn('emit_default_build_artifacts "$IR_SOURCE" "$OUTPUT"', script)
 
+    def test_extra_opt_flags_are_forwarded_to_pipeline(self):
+        script = BUILD_KERNEL.read_text(encoding="utf-8")
+        self.assertIn('echo "  --optflags=FLAGS Additional opt flags"', script)
+        self.assertIn('--optflags=*) EXTRA_OPT_FLAGS="${1#*=}" ;;', script)
+        self.assertIn('append_split_flags "$EXTRA_OPT_FLAGS" OPT_FLAGS', script)
+        self.assertIn('PIPELINE_CMD+=("--opt-flag=$flag")', script)
+
     def test_generated_mode_adds_tsvc_runtime_without_full_tsvc_runtime_sources(self):
         script = BUILD_KERNEL.read_text(encoding="utf-8")
         block_start = script.index('elif [[ "$GENERATED_MODE" -eq 1 ]]; then', script.index("SUPPORT_SRCS=()"))

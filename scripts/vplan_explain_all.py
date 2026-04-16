@@ -40,6 +40,7 @@ def parse_args() -> argparse.Namespace:
         help="SQLite output path for flattened VF results",
     )
     parser.add_argument("--extra-cflags", default="", help="Extra flags passed to clang")
+    parser.add_argument("--extra-opt-flags", default="", help="Extra flags passed to opt")
     return parser.parse_args()
 
 
@@ -167,6 +168,7 @@ def main() -> None:
             echo_output=False,
             x86_march=args.x86_march,
             extra_cflags=args.extra_cflags,
+            extra_opt_flags=args.extra_opt_flags,
         )
 
         log_text = str(result.get("vplan_log_text") or result.get("container_log_text") or "")

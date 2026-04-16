@@ -36,6 +36,25 @@ class EmulateDockerCommandTest(unittest.TestCase):
             docker_cmd[-1],
         )
 
+    def test_build_emulate_docker_command_passes_extra_opt_flags(self):
+        root = Path("/repo")
+        out_dir = root / "artifacts" / "emulate" / "s111" / "stamp"
+        source = root / "emulator" / "run" / "src" / "generated" / "s111.c"
+
+        docker_cmd = emulate.build_emulate_docker_command(
+            root=root,
+            out_dir=out_dir,
+            source=source,
+            image="example:latest",
+            len_1d=4096,
+            lmul=1,
+            use_vf="fixed:1",
+            effective_timeout=1800,
+            extra_opt_flags="-precise-mem-cost -gather-scatter-overhead=3",
+        )
+
+        self.assertIn("--optflags='-precise-mem-cost -gather-scatter-overhead=3'", docker_cmd[-1])
+
     def test_load_build_artifact_texts_reads_persisted_build_outputs(self):
         with TemporaryDirectory() as tmp:
             out_dir = Path(tmp)

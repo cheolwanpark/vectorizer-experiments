@@ -39,6 +39,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--db-dir", default=DEFAULT_DB_DIR, help="Directory for profile-result-*.sqlite")
     parser.add_argument("--vfs-db", default=DEFAULT_VFS_DB, help="Path to vfs.db from vplan-explain-all")
     parser.add_argument("--extra-cflags", default="", help="Extra flags passed to clang")
+    parser.add_argument("--extra-opt-flags", default="", help="Extra flags passed to opt")
     return parser.parse_args()
 
 
@@ -61,6 +62,7 @@ def run_profile_job(
         log_root=args.log_root,
         ensure_image=False,
         extra_cflags=args.extra_cflags,
+        extra_opt_flags=args.extra_opt_flags,
     )
 
 

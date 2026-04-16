@@ -372,6 +372,7 @@ def build_kernel(
     len_1d: int = 1000,
     use_vf: str | None = None,
     cflags: str | None = None,
+    optflags: str | None = None,
     build_out_dir: Path | None = None,
 ) -> Path:
     """Build a .c kernel using run/build-kernel and return the ELF path."""
@@ -399,6 +400,8 @@ def build_kernel(
         cmd.append(f"--use-vf={use_vf}")
     if cflags:
         cmd.append(f"--cflags={cflags}")
+    if optflags:
+        cmd.append(f"--optflags={optflags}")
 
     vf_text = f", use_vf={use_vf}" if use_vf is not None else ""
     print(f"Building kernel: {source.name} (target={target}, lmul={lmul}{vf_text})")
@@ -1128,6 +1131,7 @@ Verbose Mode (default: ON):
                         help="Enable commit trace (XiangShan: off by default since UART provides kernel cycles)")
     parser.add_argument("-v", "--verbose", action="store_true", help="Verbose CLI output")
     parser.add_argument("--cflags", type=str, default=None, help="Additional C flags for kernel build (e.g., -ffast-math)")
+    parser.add_argument("--optflags", type=str, default=None, help="Additional opt flags for kernel build (e.g., -precise-mem-cost)")
     parser.add_argument("--sim-out-dir", type=str, default=None, help="Simulation output directory for backends that produce extra artifacts")
     parser.add_argument("--build-out-dir", type=str, default=None, help="Kernel build output directory")
     parser.add_argument("extra_args", nargs="*", help="Additional simulator arguments")
@@ -1191,6 +1195,7 @@ Verbose Mode (default: ON):
             len_1d=args.len,
             use_vf=args.use_vf,
             cflags=args.cflags,
+            optflags=args.optflags,
             build_out_dir=Path(args.build_out_dir) if args.build_out_dir else None,
         )
         print("-" * 40)
