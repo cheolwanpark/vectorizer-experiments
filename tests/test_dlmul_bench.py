@@ -11,13 +11,13 @@ class DlmulBenchTest(unittest.TestCase):
 
         jobs = dlmul_bench.iter_selected_jobs(
             manifest,
-            {"wb1-fir32"},
+            {"wb1"},
             {"dyn_main"},
         )
 
         self.assertEqual(len(jobs), 1)
         case, variant, sample_index = jobs[0]
-        self.assertEqual(case.case_name, "wb1-fir32")
+        self.assertEqual(case.case_name, "wb1")
         self.assertEqual(variant.name, "dyn_main")
         self.assertEqual(sample_index, 1)
 
@@ -26,11 +26,11 @@ class DlmulBenchTest(unittest.TestCase):
         jobs = dlmul_bench.iter_selected_jobs(manifest, None, None)
         case_paths = {case.case_name: case.source_path for case in manifest}
 
-        self.assertEqual(len(jobs), 25)
-        self.assertTrue(case_paths["wb1-fir32"].endswith("emulator/run/src/bench/dlmul/wb1_fir32.c"))
-        self.assertTrue(case_paths["wb2-stencil2d"].endswith("emulator/run/src/bench/dlmul/wb2_stencil2d.c"))
-        self.assertTrue(case_paths["wb4-dequant-gemv"].endswith("emulator/run/src/bench/dlmul/wb4_dequant_gemv.c"))
-        self.assertTrue(case_paths["wb5-widening-rescue"].endswith("emulator/run/src/bench/dlmul/wb5_widening_rescue.c"))
+        self.assertEqual(len(jobs), 35)
+        self.assertTrue(case_paths["wb1"].endswith("emulator/run/src/bench/dlmul/wb1.c"))
+        self.assertTrue(case_paths["wb2"].endswith("emulator/run/src/bench/dlmul/wb2.c"))
+        self.assertTrue(case_paths["wb5"].endswith("emulator/run/src/bench/dlmul/wb5_widening_rescue.c"))
+        self.assertTrue(case_paths["wb9"].endswith("emulator/run/src/bench/dlmul/wb9.c"))
 
     def test_each_workload_has_compact_variants(self):
         manifest = dlmul_bench.make_manifest()
@@ -38,11 +38,13 @@ class DlmulBenchTest(unittest.TestCase):
         self.assertEqual(
             [case.case_name for case in manifest],
             [
-                "wb1-fir32",
-                "wb2-stencil2d",
-                "wb3-layernorm",
-                "wb4-dequant-gemv",
-                "wb5-widening-rescue",
+                "wb1",
+                "wb2",
+                "wb5",
+                "wb6",
+                "wb7",
+                "wb8",
+                "wb9",
             ],
         )
         for case in manifest:
@@ -77,7 +79,7 @@ class DlmulBenchTest(unittest.TestCase):
         self.assertEqual(columns["asm_expectation_json"], "TEXT")
 
     def test_make_row_from_emulate_result_warns_without_failing(self):
-        case = next(case for case in dlmul_bench.make_manifest() if case.case_name == "wb1-fir32")
+        case = next(case for case in dlmul_bench.make_manifest() if case.case_name == "wb1")
         variant = next(variant for variant in case.variants if variant.name == "dyn_main")
         result = {
             "summary": {
@@ -87,7 +89,7 @@ class DlmulBenchTest(unittest.TestCase):
                 "total_cycles": 456,
                 "wall_time_s": 1.25,
                 "sim_speed_khz": 4.5,
-                "source": "/repo/emulator/run/src/bench/dlmul/wb1_fir32.c",
+                "source": "/repo/emulator/run/src/bench/dlmul/wb1.c",
                 "artifact_dir": "/repo/artifacts/dlmul-bench/wb1",
                 "container_log": "/repo/artifacts/dlmul-bench/wb1/container.log",
                 "run_detail_path": "/repo/artifacts/dlmul-bench/wb1/log.txt",
@@ -114,7 +116,7 @@ class DlmulBenchTest(unittest.TestCase):
         self.assertIn("missing pattern", row["asm_check_message"])
 
     def test_run_job_delegates_to_emulate_source(self):
-        case = next(case for case in dlmul_bench.make_manifest() if case.case_name == "wb4-dequant-gemv")
+        case = next(case for case in dlmul_bench.make_manifest() if case.case_name == "wb2")
         variant = next(variant for variant in case.variants if variant.name == "dyn_safe")
 
         with patch("scripts.dlmul_runner.emulate.run_emulate_source", return_value={"summary": {}, "failed": False}) as mocked:
@@ -128,8 +130,8 @@ class DlmulBenchTest(unittest.TestCase):
             )
 
         kwargs = mocked.call_args.kwargs
-        self.assertEqual(kwargs["benchmark"], "dlmul_wb4_dequant_gemv__dyn_safe")
-        self.assertTrue(kwargs["source"].endswith("emulator/run/src/bench/dlmul/wb4_dequant_gemv.c"))
+        self.assertEqual(kwargs["benchmark"], "dlmul_wb2__dyn_safe")
+        self.assertTrue(kwargs["source"].endswith("emulator/run/src/bench/dlmul/wb2.c"))
         self.assertEqual(kwargs["use_vf"], "")
         self.assertIn("-DDLB_PHASE2_VARIANT=1", kwargs["extra_cflags"])
 
