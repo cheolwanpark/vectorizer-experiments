@@ -147,7 +147,7 @@ class DlmulMicrobenchTest(unittest.TestCase):
         case = next(case for case in dlmul_microbench.make_manifest() if case.case_name == "mb2-memory-phase")
         variant = next(variant for variant in case.variants if variant.name == "m4")
 
-        with patch("scripts.dlmul_microbench.emulate.run_emulate_source", return_value={"summary": {}, "failed": False}) as mocked:
+        with patch("scripts.dlmul_runner.emulate.run_emulate_source", return_value={"summary": {}, "failed": False}) as mocked:
             dlmul_microbench.run_job(
                 case=case,
                 variant=variant,

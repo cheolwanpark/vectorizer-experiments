@@ -34,6 +34,10 @@ MICROBENCH_DB ?= artifacts/microbench.sqlite
 MICROBENCH_LOG_ROOT ?= artifacts/microbench
 MICROBENCH_CASE ?= all
 MICROBENCH_VARIANT ?= all
+DLMUL_BENCH_DB ?= artifacts/dlmul-bench.sqlite
+DLMUL_BENCH_LOG_ROOT ?= artifacts/dlmul-bench
+DLMUL_BENCH_CASE ?= all
+DLMUL_BENCH_VARIANT ?= all
 
 # --- RVV precise cost model flags (RISCV TTI) ---
 PRECISE_MEM_COST ?=
@@ -60,7 +64,7 @@ _EXTRA_OPT_FLAGS_ARG = $(if $(strip $(_OPT_FLAGS)),--extra-opt-flags='$(strip $(
 
 BENCH := $(firstword $(filter s%,$(MAKECMDGOALS)))
 
-.PHONY: help emulate emulate-all vplan-explain dlmul-microbench
+.PHONY: help emulate emulate-all vplan-explain dlmul-microbench dlmul-bench
 .PHONY: vplan-explain-all plot-results plot-results-cmp profile profile-all FORCE
 
 help:
@@ -78,6 +82,7 @@ help:
 	@echo "  plot-results          Plot results from a single result DB"
 	@echo "  plot-results-cmp      Compare emulate vs profile results"
 	@echo "  dlmul-microbench      Run C-based dynamic LMUL microbench suite (MB1-MB11) on XiangShan"
+	@echo "  dlmul-bench           Run C-based dynamic LMUL workload bench suite on XiangShan"
 	@echo ""
 	@echo "COMMON OPTIONS:"
 	@echo ""
@@ -132,6 +137,10 @@ help:
 	@echo "  MICROBENCH_LOG_ROOT=artifacts/microbench    Output directory"
 	@echo "  MICROBENCH_CASE=all                         Case filter (e.g. mb1-switch)"
 	@echo "  MICROBENCH_VARIANT=all                      Variant filter (e.g. m8_to_m1)"
+	@echo "  DLMUL_BENCH_DB=artifacts/dlmul-bench.sqlite   Output SQLite path"
+	@echo "  DLMUL_BENCH_LOG_ROOT=artifacts/dlmul-bench    Output directory"
+	@echo "  DLMUL_BENCH_CASE=all                          Case filter (e.g. wb1-fir32)"
+	@echo "  DLMUL_BENCH_VARIANT=all                       Variant filter (e.g. dyn_main)"
 	@echo ""
 	@echo "EXAMPLES:"
 	@echo ""
@@ -140,6 +149,7 @@ help:
 	@echo "  make vplan-explain s4112 ARCH=RVV PRECISE_MEM_COST=1 GATHER_SCATTER_OVERHEAD=3"
 	@echo "  make profile-all CONCURRENCY=4 X86_MARCH=sapphirerapids"
 	@echo "  make dlmul-microbench MICROBENCH_CASE=mb4-two-phase MICROBENCH_VARIANT=m8_to_m1"
+	@echo "  make dlmul-bench DLMUL_BENCH_CASE=wb1-fir32 DLMUL_BENCH_VARIANT=dyn_main"
 	@echo ""
 
 emulate:
@@ -258,6 +268,16 @@ dlmul-microbench:
 		--log-root "$(MICROBENCH_LOG_ROOT)" \
 		--case "$(MICROBENCH_CASE)" \
 		--variant "$(MICROBENCH_VARIANT)" \
+		--timeout "$(TIMEOUT)" \
+		--concurrency "$(CONCURRENCY)"
+
+dlmul-bench:
+	@$(PYTHON) scripts/dlmul_bench.py \
+		--image "$(IMAGE)" \
+		--db-path "$(DLMUL_BENCH_DB)" \
+		--log-root "$(DLMUL_BENCH_LOG_ROOT)" \
+		--case "$(DLMUL_BENCH_CASE)" \
+		--variant "$(DLMUL_BENCH_VARIANT)" \
 		--timeout "$(TIMEOUT)" \
 		--concurrency "$(CONCURRENCY)"
 
