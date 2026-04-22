@@ -82,6 +82,8 @@ def compact_variants(
     phase3_total_elems: int,
     outer_iters: int,
     len_1d: int = 256,
+    dyn_main_phase3_lmul: str = "m2",
+    dyn_safe_phase3_lmul: str = "m1",
 ) -> tuple[VariantSpec, ...]:
     def make_variant(name: str, phase1_lmul: str, phase2_lmul: str, phase3_lmul: str) -> VariantSpec:
         lmul_values = {"m1": 1, "m2": 2, "m4": 4}
@@ -119,8 +121,8 @@ def compact_variants(
         make_variant("fixed_m1", "m1", "m1", "m1"),
         make_variant("fixed_m2", "m2", "m2", "m2"),
         make_variant("fixed_m4", "m4", "m4", "m4"),
-        make_variant("dyn_main", "m4", "m2", "m2"),
-        make_variant("dyn_safe", "m4", "m1", "m1"),
+        make_variant("dyn_main", "m4", "m2", dyn_main_phase3_lmul),
+        make_variant("dyn_safe", "m4", "m1", dyn_safe_phase3_lmul),
     )
 
 
@@ -173,6 +175,20 @@ def make_manifest() -> tuple[CaseSpec, ...]:
                 phase2_total_elems=128,
                 phase3_total_elems=16,
                 outer_iters=24,
+            ),
+        ),
+        CaseSpec(
+            "dynamic_lmul_workload",
+            "wb5-widening-rescue",
+            str(root / "wb5_widening_rescue.c"),
+            compact_variants(
+                kind="widening_rescue",
+                phase1_total_elems=64,
+                phase2_total_elems=128,
+                phase3_total_elems=64,
+                outer_iters=24,
+                dyn_main_phase3_lmul="m4",
+                dyn_safe_phase3_lmul="m4",
             ),
         ),
     )

@@ -26,10 +26,11 @@ class DlmulBenchTest(unittest.TestCase):
         jobs = dlmul_bench.iter_selected_jobs(manifest, None, None)
         case_paths = {case.case_name: case.source_path for case in manifest}
 
-        self.assertEqual(len(jobs), 20)
+        self.assertEqual(len(jobs), 25)
         self.assertTrue(case_paths["wb1-fir32"].endswith("emulator/run/src/bench/dlmul/wb1_fir32.c"))
         self.assertTrue(case_paths["wb2-stencil2d"].endswith("emulator/run/src/bench/dlmul/wb2_stencil2d.c"))
         self.assertTrue(case_paths["wb4-dequant-gemv"].endswith("emulator/run/src/bench/dlmul/wb4_dequant_gemv.c"))
+        self.assertTrue(case_paths["wb5-widening-rescue"].endswith("emulator/run/src/bench/dlmul/wb5_widening_rescue.c"))
 
     def test_each_workload_has_compact_variants(self):
         manifest = dlmul_bench.make_manifest()
@@ -41,6 +42,7 @@ class DlmulBenchTest(unittest.TestCase):
                 "wb2-stencil2d",
                 "wb3-layernorm",
                 "wb4-dequant-gemv",
+                "wb5-widening-rescue",
             ],
         )
         for case in manifest:
