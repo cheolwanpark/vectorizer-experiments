@@ -9,20 +9,56 @@ static int32_t wb6_accum[LEN_1D];
 
 #if DLB_PHASE1_VARIANT == DLMUL_LMUL_M1
 static __attribute__((noinline)) size_t wb6_phase1_step(int offset, size_t avl) {
-    size_t vl = __riscv_vsetvl_e16m1(avl);
-    vint16m1_t x = __riscv_vle16_v_i16m1(&wb6_src0[offset], vl);
-    vint16m1_t y = __riscv_vle16_v_i16m1(&wb6_src1[offset], vl);
-    vint32m2_t seed = __riscv_vwadd_vv_i32m2(x, y, vl);
-    __riscv_vse32_v_i32m2(&wb6_seed[offset], seed, vl);
+    size_t vl = __riscv_vsetvl_e16m4(avl);
+    vint16m4_t x_big = __riscv_vle16_v_i16m4(&wb6_src0[offset], vl);
+    vint16m4_t y_big = __riscv_vle16_v_i16m4(&wb6_src1[offset], vl);
+    vint32m8_t seed_big = __riscv_vmv_v_x_i32m8(0, vl);
+    size_t chunk = __riscv_vsetvl_e16m1(avl);
+
+#define WB6_PHASE1_CHUNK_M1(K) do { \
+    size_t start = (size_t)(K) * chunk; \
+    if (start < avl) { \
+        size_t vlc = __riscv_vsetvl_e16m1(avl - start); \
+        vint16m1_t x = __riscv_vget_v_i16m4_i16m1(x_big, K); \
+        vint16m1_t y = __riscv_vget_v_i16m4_i16m1(y_big, K); \
+        vint32m2_t seed = __riscv_vwadd_vv_i32m2(x, y, vlc); \
+        seed_big = __riscv_vset_v_i32m2_i32m8(seed_big, K, seed); \
+    } \
+} while (0)
+
+    WB6_PHASE1_CHUNK_M1(0);
+    WB6_PHASE1_CHUNK_M1(1);
+    WB6_PHASE1_CHUNK_M1(2);
+    WB6_PHASE1_CHUNK_M1(3);
+#undef WB6_PHASE1_CHUNK_M1
+
+    __riscv_vse32_v_i32m8(&wb6_seed[offset], seed_big, vl);
     return vl;
 }
 #elif DLB_PHASE1_VARIANT == DLMUL_LMUL_M2
 static __attribute__((noinline)) size_t wb6_phase1_step(int offset, size_t avl) {
-    size_t vl = __riscv_vsetvl_e16m2(avl);
-    vint16m2_t x = __riscv_vle16_v_i16m2(&wb6_src0[offset], vl);
-    vint16m2_t y = __riscv_vle16_v_i16m2(&wb6_src1[offset], vl);
-    vint32m4_t seed = __riscv_vwadd_vv_i32m4(x, y, vl);
-    __riscv_vse32_v_i32m4(&wb6_seed[offset], seed, vl);
+    size_t vl = __riscv_vsetvl_e16m4(avl);
+    vint16m4_t x_big = __riscv_vle16_v_i16m4(&wb6_src0[offset], vl);
+    vint16m4_t y_big = __riscv_vle16_v_i16m4(&wb6_src1[offset], vl);
+    vint32m8_t seed_big = __riscv_vmv_v_x_i32m8(0, vl);
+    size_t chunk = __riscv_vsetvl_e16m2(avl);
+
+#define WB6_PHASE1_CHUNK_M2(K) do { \
+    size_t start = (size_t)(K) * chunk; \
+    if (start < avl) { \
+        size_t vlc = __riscv_vsetvl_e16m2(avl - start); \
+        vint16m2_t x = __riscv_vget_v_i16m4_i16m2(x_big, K); \
+        vint16m2_t y = __riscv_vget_v_i16m4_i16m2(y_big, K); \
+        vint32m4_t seed = __riscv_vwadd_vv_i32m4(x, y, vlc); \
+        seed_big = __riscv_vset_v_i32m4_i32m8(seed_big, K, seed); \
+    } \
+} while (0)
+
+    WB6_PHASE1_CHUNK_M2(0);
+    WB6_PHASE1_CHUNK_M2(1);
+#undef WB6_PHASE1_CHUNK_M2
+
+    __riscv_vse32_v_i32m8(&wb6_seed[offset], seed_big, vl);
     return vl;
 }
 #elif DLB_PHASE1_VARIANT == DLMUL_LMUL_M4
@@ -40,38 +76,78 @@ static __attribute__((noinline)) size_t wb6_phase1_step(int offset, size_t avl) 
 
 #if DLB_PHASE2_VARIANT == DLMUL_LMUL_M1
 static __attribute__((noinline)) size_t wb6_phase2_step(int offset, size_t avl) {
-    size_t vl = __riscv_vsetvl_e16m1(avl);
-    vint16m1_t x = __riscv_vle16_v_i16m1(&wb6_src0[offset], vl);
-    vint16m1_t y = __riscv_vle16_v_i16m1(&wb6_src1[offset], vl);
-    vint16m1_t z = __riscv_vle16_v_i16m1(&wb6_src2[offset], vl);
-    vint32m2_t seed = __riscv_vle32_v_i32m2(&wb6_seed[offset], vl);
-    vint32m2_t t0 = __riscv_vwmul_vv_i32m2(x, y, vl);
-    vint32m2_t t1 = __riscv_vwmul_vv_i32m2(y, z, vl);
-    vint32m2_t t2 = __riscv_vwadd_vv_i32m2(x, z, vl);
-    vint32m2_t t3 = __riscv_vwmul_vv_i32m2(z, z, vl);
-    vint32m2_t out = __riscv_vadd_vv_i32m2(seed, t0, vl);
-    out = __riscv_vadd_vv_i32m2(out, t1, vl);
-    out = __riscv_vadd_vv_i32m2(out, t2, vl);
-    out = __riscv_vadd_vv_i32m2(out, t3, vl);
-    __riscv_vse32_v_i32m2(&wb6_accum[offset], out, vl);
+    size_t vl = __riscv_vsetvl_e16m4(avl);
+    vint16m4_t x_big = __riscv_vle16_v_i16m4(&wb6_src0[offset], vl);
+    vint16m4_t y_big = __riscv_vle16_v_i16m4(&wb6_src1[offset], vl);
+    vint16m4_t z_big = __riscv_vle16_v_i16m4(&wb6_src2[offset], vl);
+    vint32m8_t seed_big = __riscv_vle32_v_i32m8(&wb6_seed[offset], vl);
+    vint32m8_t accum_big = __riscv_vmv_v_x_i32m8(0, vl);
+    size_t chunk = __riscv_vsetvl_e16m1(avl);
+
+#define WB6_PHASE2_CHUNK_M1(K) do { \
+    size_t start = (size_t)(K) * chunk; \
+    if (start < avl) { \
+        size_t vlc = __riscv_vsetvl_e16m1(avl - start); \
+        vint16m1_t x = __riscv_vget_v_i16m4_i16m1(x_big, K); \
+        vint16m1_t y = __riscv_vget_v_i16m4_i16m1(y_big, K); \
+        vint16m1_t z = __riscv_vget_v_i16m4_i16m1(z_big, K); \
+        vint32m2_t seed = __riscv_vget_v_i32m8_i32m2(seed_big, K); \
+        vint32m2_t t0 = __riscv_vwmul_vv_i32m2(x, y, vlc); \
+        vint32m2_t t1 = __riscv_vwmul_vv_i32m2(y, z, vlc); \
+        vint32m2_t t2 = __riscv_vwadd_vv_i32m2(x, z, vlc); \
+        vint32m2_t t3 = __riscv_vwmul_vv_i32m2(z, z, vlc); \
+        vint32m2_t out = __riscv_vadd_vv_i32m2(seed, t0, vlc); \
+        out = __riscv_vadd_vv_i32m2(out, t1, vlc); \
+        out = __riscv_vadd_vv_i32m2(out, t2, vlc); \
+        out = __riscv_vadd_vv_i32m2(out, t3, vlc); \
+        accum_big = __riscv_vset_v_i32m2_i32m8(accum_big, K, out); \
+    } \
+} while (0)
+
+    WB6_PHASE2_CHUNK_M1(0);
+    WB6_PHASE2_CHUNK_M1(1);
+    WB6_PHASE2_CHUNK_M1(2);
+    WB6_PHASE2_CHUNK_M1(3);
+#undef WB6_PHASE2_CHUNK_M1
+
+    __riscv_vse32_v_i32m8(&wb6_accum[offset], accum_big, vl);
     return vl;
 }
 #elif DLB_PHASE2_VARIANT == DLMUL_LMUL_M2
 static __attribute__((noinline)) size_t wb6_phase2_step(int offset, size_t avl) {
-    size_t vl = __riscv_vsetvl_e16m2(avl);
-    vint16m2_t x = __riscv_vle16_v_i16m2(&wb6_src0[offset], vl);
-    vint16m2_t y = __riscv_vle16_v_i16m2(&wb6_src1[offset], vl);
-    vint16m2_t z = __riscv_vle16_v_i16m2(&wb6_src2[offset], vl);
-    vint32m4_t seed = __riscv_vle32_v_i32m4(&wb6_seed[offset], vl);
-    vint32m4_t t0 = __riscv_vwmul_vv_i32m4(x, y, vl);
-    vint32m4_t t1 = __riscv_vwmul_vv_i32m4(y, z, vl);
-    vint32m4_t t2 = __riscv_vwadd_vv_i32m4(x, z, vl);
-    vint32m4_t t3 = __riscv_vwmul_vv_i32m4(z, z, vl);
-    vint32m4_t out = __riscv_vadd_vv_i32m4(seed, t0, vl);
-    out = __riscv_vadd_vv_i32m4(out, t1, vl);
-    out = __riscv_vadd_vv_i32m4(out, t2, vl);
-    out = __riscv_vadd_vv_i32m4(out, t3, vl);
-    __riscv_vse32_v_i32m4(&wb6_accum[offset], out, vl);
+    size_t vl = __riscv_vsetvl_e16m4(avl);
+    vint16m4_t x_big = __riscv_vle16_v_i16m4(&wb6_src0[offset], vl);
+    vint16m4_t y_big = __riscv_vle16_v_i16m4(&wb6_src1[offset], vl);
+    vint16m4_t z_big = __riscv_vle16_v_i16m4(&wb6_src2[offset], vl);
+    vint32m8_t seed_big = __riscv_vle32_v_i32m8(&wb6_seed[offset], vl);
+    vint32m8_t accum_big = __riscv_vmv_v_x_i32m8(0, vl);
+    size_t chunk = __riscv_vsetvl_e16m2(avl);
+
+#define WB6_PHASE2_CHUNK_M2(K) do { \
+    size_t start = (size_t)(K) * chunk; \
+    if (start < avl) { \
+        size_t vlc = __riscv_vsetvl_e16m2(avl - start); \
+        vint16m2_t x = __riscv_vget_v_i16m4_i16m2(x_big, K); \
+        vint16m2_t y = __riscv_vget_v_i16m4_i16m2(y_big, K); \
+        vint16m2_t z = __riscv_vget_v_i16m4_i16m2(z_big, K); \
+        vint32m4_t seed = __riscv_vget_v_i32m8_i32m4(seed_big, K); \
+        vint32m4_t t0 = __riscv_vwmul_vv_i32m4(x, y, vlc); \
+        vint32m4_t t1 = __riscv_vwmul_vv_i32m4(y, z, vlc); \
+        vint32m4_t t2 = __riscv_vwadd_vv_i32m4(x, z, vlc); \
+        vint32m4_t t3 = __riscv_vwmul_vv_i32m4(z, z, vlc); \
+        vint32m4_t out = __riscv_vadd_vv_i32m4(seed, t0, vlc); \
+        out = __riscv_vadd_vv_i32m4(out, t1, vlc); \
+        out = __riscv_vadd_vv_i32m4(out, t2, vlc); \
+        out = __riscv_vadd_vv_i32m4(out, t3, vlc); \
+        accum_big = __riscv_vset_v_i32m4_i32m8(accum_big, K, out); \
+    } \
+} while (0)
+
+    WB6_PHASE2_CHUNK_M2(0);
+    WB6_PHASE2_CHUNK_M2(1);
+#undef WB6_PHASE2_CHUNK_M2
+
+    __riscv_vse32_v_i32m8(&wb6_accum[offset], accum_big, vl);
     return vl;
 }
 #elif DLB_PHASE2_VARIANT == DLMUL_LMUL_M4
@@ -98,20 +174,56 @@ static __attribute__((noinline)) size_t wb6_phase2_step(int offset, size_t avl) 
 
 #if DLB_PHASE3_VARIANT == DLMUL_LMUL_M1
 static __attribute__((noinline)) size_t wb6_phase3_step(int offset, size_t avl) {
-    size_t vl = __riscv_vsetvl_e32m1(avl);
-    vint32m1_t seed = __riscv_vle32_v_i32m1(&wb6_seed[offset], vl);
-    vint32m1_t accum = __riscv_vle32_v_i32m1(&wb6_accum[offset], vl);
-    vint32m1_t out = __riscv_vadd_vv_i32m1(seed, accum, vl);
-    __riscv_vse32_v_i32m1(&indx[offset], out, vl);
+    size_t vl = __riscv_vsetvl_e32m4(avl);
+    vint32m4_t seed_big = __riscv_vle32_v_i32m4(&wb6_seed[offset], vl);
+    vint32m4_t accum_big = __riscv_vle32_v_i32m4(&wb6_accum[offset], vl);
+    vint32m4_t out_big = __riscv_vmv_v_x_i32m4(0, vl);
+    size_t chunk = __riscv_vsetvl_e32m1(avl);
+
+#define WB6_PHASE3_CHUNK_M1(K) do { \
+    size_t start = (size_t)(K) * chunk; \
+    if (start < avl) { \
+        size_t vlc = __riscv_vsetvl_e32m1(avl - start); \
+        vint32m1_t seed = __riscv_vget_v_i32m4_i32m1(seed_big, K); \
+        vint32m1_t accum = __riscv_vget_v_i32m4_i32m1(accum_big, K); \
+        vint32m1_t out = __riscv_vadd_vv_i32m1(seed, accum, vlc); \
+        out_big = __riscv_vset_v_i32m1_i32m4(out_big, K, out); \
+    } \
+} while (0)
+
+    WB6_PHASE3_CHUNK_M1(0);
+    WB6_PHASE3_CHUNK_M1(1);
+    WB6_PHASE3_CHUNK_M1(2);
+    WB6_PHASE3_CHUNK_M1(3);
+#undef WB6_PHASE3_CHUNK_M1
+
+    __riscv_vse32_v_i32m4(&indx[offset], out_big, vl);
     return vl;
 }
 #elif DLB_PHASE3_VARIANT == DLMUL_LMUL_M2
 static __attribute__((noinline)) size_t wb6_phase3_step(int offset, size_t avl) {
-    size_t vl = __riscv_vsetvl_e32m2(avl);
-    vint32m2_t seed = __riscv_vle32_v_i32m2(&wb6_seed[offset], vl);
-    vint32m2_t accum = __riscv_vle32_v_i32m2(&wb6_accum[offset], vl);
-    vint32m2_t out = __riscv_vadd_vv_i32m2(seed, accum, vl);
-    __riscv_vse32_v_i32m2(&indx[offset], out, vl);
+    size_t vl = __riscv_vsetvl_e32m4(avl);
+    vint32m4_t seed_big = __riscv_vle32_v_i32m4(&wb6_seed[offset], vl);
+    vint32m4_t accum_big = __riscv_vle32_v_i32m4(&wb6_accum[offset], vl);
+    vint32m4_t out_big = __riscv_vmv_v_x_i32m4(0, vl);
+    size_t chunk = __riscv_vsetvl_e32m2(avl);
+
+#define WB6_PHASE3_CHUNK_M2(K) do { \
+    size_t start = (size_t)(K) * chunk; \
+    if (start < avl) { \
+        size_t vlc = __riscv_vsetvl_e32m2(avl - start); \
+        vint32m2_t seed = __riscv_vget_v_i32m4_i32m2(seed_big, K); \
+        vint32m2_t accum = __riscv_vget_v_i32m4_i32m2(accum_big, K); \
+        vint32m2_t out = __riscv_vadd_vv_i32m2(seed, accum, vlc); \
+        out_big = __riscv_vset_v_i32m2_i32m4(out_big, K, out); \
+    } \
+} while (0)
+
+    WB6_PHASE3_CHUNK_M2(0);
+    WB6_PHASE3_CHUNK_M2(1);
+#undef WB6_PHASE3_CHUNK_M2
+
+    __riscv_vse32_v_i32m4(&indx[offset], out_big, vl);
     return vl;
 }
 #elif DLB_PHASE3_VARIANT == DLMUL_LMUL_M4
