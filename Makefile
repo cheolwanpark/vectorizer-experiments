@@ -30,6 +30,10 @@ PLOT_CMP_EMULATE_VFS_DB ?=
 PLOT_CMP_PROFILE_VFS_DB ?=
 PLOT_CMP_OUTPUT_DIR ?= artifacts/plots
 PLOT_CMP_PREFIX ?= rvv-intel-kernel
+MICROBENCH_DB ?= artifacts/microbench.sqlite
+MICROBENCH_LOG_ROOT ?= artifacts/microbench
+MICROBENCH_CASE ?= all
+MICROBENCH_VARIANT ?= all
 
 # --- RVV precise cost model flags (RISCV TTI) ---
 PRECISE_MEM_COST ?=
@@ -56,7 +60,7 @@ _EXTRA_OPT_FLAGS_ARG = $(if $(strip $(_OPT_FLAGS)),--extra-opt-flags='$(strip $(
 
 BENCH := $(firstword $(filter s%,$(MAKECMDGOALS)))
 
-.PHONY: help emulate emulate-all vplan-explain
+.PHONY: help emulate emulate-all vplan-explain dlmul-microbench
 .PHONY: vplan-explain-all plot-results plot-results-cmp profile profile-all FORCE
 
 help:
@@ -73,6 +77,7 @@ help:
 	@echo "  profile-all           Profile all kernels on x86 (uses VFS_DB)"
 	@echo "  plot-results          Plot results from a single result DB"
 	@echo "  plot-results-cmp      Compare emulate vs profile results"
+	@echo "  dlmul-microbench      Run assembly-only dynamic LMUL microbench suite on XiangShan"
 	@echo ""
 	@echo "COMMON OPTIONS:"
 	@echo ""
@@ -121,12 +126,20 @@ help:
 	@echo "  PLOT_CMP_OUTPUT_DIR=artifacts/plots"
 	@echo "  PLOT_CMP_PREFIX=rvv-intel-kernel"
 	@echo ""
+	@echo "MICROBENCH OPTIONS:"
+	@echo ""
+	@echo "  MICROBENCH_DB=artifacts/microbench.sqlite   Output SQLite path"
+	@echo "  MICROBENCH_LOG_ROOT=artifacts/microbench    Output directory"
+	@echo "  MICROBENCH_CASE=all                         Case filter (e.g. mb1-switch)"
+	@echo "  MICROBENCH_VARIANT=all                      Variant filter (e.g. m8_to_m1)"
+	@echo ""
 	@echo "EXAMPLES:"
 	@echo ""
 	@echo "  make emulate s2101 LMUL=2"
 	@echo "  make emulate-all LLVM_CUSTOM=llvm-project/build/bin PRECISE_MEM_COST=1"
 	@echo "  make vplan-explain s4112 ARCH=RVV PRECISE_MEM_COST=1 GATHER_SCATTER_OVERHEAD=3"
 	@echo "  make profile-all CONCURRENCY=4 X86_MARCH=sapphirerapids"
+	@echo "  make dlmul-microbench MICROBENCH_CASE=mb4-two-phase MICROBENCH_VARIANT=m8_to_m1"
 	@echo ""
 
 emulate:
@@ -237,6 +250,16 @@ profile-all: $(VFS_DB)
 		--vfs-db "$(VFS_DB)" \
 		$(_EXTRA_CFLAGS_ARG) \
 		$(_EXTRA_OPT_FLAGS_ARG)
+
+dlmul-microbench:
+	@$(PYTHON) scripts/dlmul_microbench.py \
+		--image "$(IMAGE)" \
+		--db-path "$(MICROBENCH_DB)" \
+		--log-root "$(MICROBENCH_LOG_ROOT)" \
+		--case "$(MICROBENCH_CASE)" \
+		--variant "$(MICROBENCH_VARIANT)" \
+		--timeout "$(TIMEOUT)" \
+		--concurrency "$(CONCURRENCY)"
 
 plot-results:
 	@if [ -z "$(RESULT_DB)" ]; then \
