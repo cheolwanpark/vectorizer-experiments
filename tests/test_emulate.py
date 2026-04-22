@@ -77,6 +77,17 @@ class EmulateDockerCommandTest(unittest.TestCase):
 
         self.assertEqual(texts, expected)
 
+    def test_resolve_source_path_accepts_arbitrary_repo_c_file(self):
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            source = root / "emulator" / "run" / "src" / "microbench" / "dlmul" / "mb1_switch.c"
+            source.parent.mkdir(parents=True, exist_ok=True)
+            source.write_text("void kernel(void) {}\n", encoding="utf-8")
+
+            resolved = emulate.resolve_source_path(root, source)
+
+        self.assertEqual(resolved, source.resolve())
+
 
 if __name__ == "__main__":
     unittest.main()

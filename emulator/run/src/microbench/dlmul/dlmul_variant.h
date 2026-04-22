@@ -1,0 +1,11 @@
+#ifndef DLMUL_VARIANT_H
+#define DLMUL_VARIANT_H
+
+#define DLMUL_LMUL_MF4 104
+#define DLMUL_LMUL_MF2 102
+#define DLMUL_LMUL_M1 1
+#define DLMUL_LMUL_M2 2
+#define DLMUL_LMUL_M4 4
+#define DLMUL_LMUL_M8 8
+
+#endif

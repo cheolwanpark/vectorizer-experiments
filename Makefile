@@ -77,7 +77,7 @@ help:
 	@echo "  profile-all           Profile all kernels on x86 (uses VFS_DB)"
 	@echo "  plot-results          Plot results from a single result DB"
 	@echo "  plot-results-cmp      Compare emulate vs profile results"
-	@echo "  dlmul-microbench      Run assembly-only dynamic LMUL microbench suite on XiangShan"
+	@echo "  dlmul-microbench      Run C-based dynamic LMUL microbench suite on XiangShan"
 	@echo ""
 	@echo "COMMON OPTIONS:"
 	@echo ""

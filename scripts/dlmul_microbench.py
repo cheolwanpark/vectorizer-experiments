@@ -3,35 +3,27 @@ from __future__ import annotations
 
 import argparse
 import json
-import shlex
+import re
 import sqlite3
-import subprocess
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from typing import Any, NoReturn
 
+try:
+    import emulate
+except ModuleNotFoundError:
+    from scripts import emulate
 
-DEFAULT_IMAGE = "vplan-cost-measure:latest"
-DEFAULT_PLATFORM = "linux/amd64"
+
 DEFAULT_DB_PATH = "artifacts/microbench.sqlite"
 DEFAULT_LOG_ROOT = "artifacts/microbench"
-DEFAULT_TIMEOUT = 120
 DEFAULT_CONCURRENCY = 1
-DEFAULT_TARGET = "xiangshan.KunminghuV2Config"
-LEGACY_TIMEOUT_S = 120
-XIANSHAN_DEFAULT_TIMEOUT_S = 1800
-
-CONTAINER_PROJECT_ROOT = Path("/workspace/host-project")
-CONTAINER_OUTPUT_ROOT = Path("/workspace/output")
-CONTAINER_EMULATOR_ROOT = Path("/workspace/emulator")
-CONTAINER_RUN_SIM = CONTAINER_EMULATOR_ROOT / "run-sim.sh"
-CONTAINER_SIM_CONFIG = CONTAINER_EMULATOR_ROOT / "sim-configs.yaml"
-CONTAINER_COMMON_ROOT = CONTAINER_PROJECT_ROOT / "emulator" / "benchmarks" / "microbenchmark" / "dlmul" / "common"
-CONTAINER_CASE_ROOT = CONTAINER_PROJECT_ROOT / "emulator" / "benchmarks" / "microbenchmark" / "dlmul" / "cases"
-CONTAINER_CRT = CONTAINER_PROJECT_ROOT / "emulator" / "run" / "crt" / "crt_rv64.S"
-CONTAINER_LINKER = CONTAINER_PROJECT_ROOT / "emulator" / "run" / "link" / "link_rv64.ld"
+DEFAULT_TIMEOUT = 120
+DEFAULT_LEN_1D = 256
+DEFAULT_LMUL = 1
+CATALOG_ROOT = Path("emulator") / "run" / "src" / "microbench" / "dlmul"
 
 RESULT_COLUMNS = [
     "run_id",
@@ -50,14 +42,17 @@ RESULT_COLUMNS = [
     "sim_speed_khz",
     "params_json",
     "source_path",
-    "elf_path",
-    "objdump_path",
-    "objdump_text",
+    "artifact_dir",
     "container_log_path",
     "container_log_text",
     "run_detail_path",
     "run_detail_text",
     "trace_file",
+    "opt_ll_text",
+    "asm_text",
+    "asm_check_status",
+    "asm_check_message",
+    "asm_expectation_json",
     "command",
 ]
 
@@ -65,8 +60,9 @@ RESULT_COLUMNS = [
 @dataclass(frozen=True)
 class VariantSpec:
     name: str
-    defines: dict[str, str]
+    defines: tuple[str, ...]
     params: dict[str, Any]
+    asm_patterns: tuple[str, ...]
     sample_count: int = 1
 
 
@@ -80,20 +76,20 @@ class CaseSpec:
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Run dynamic LMUL assembly microbenchmarks on XiangShan and save results to SQLite."
+        description="Run C-based dynamic LMUL microbenchmarks through emulate.py and save results to SQLite."
     )
-    parser.add_argument("--image", default=DEFAULT_IMAGE, help="Docker image tag")
+    parser.add_argument("--image", default=emulate.DEFAULT_IMAGE, help="Docker image tag")
     parser.add_argument("--db-path", default=DEFAULT_DB_PATH, help="SQLite output path")
     parser.add_argument("--log-root", default=DEFAULT_LOG_ROOT, help="Artifact output root")
     parser.add_argument("--case", default="all", help="Case filter, or comma-separated list")
     parser.add_argument("--variant", default="all", help="Variant filter, or comma-separated list")
     parser.add_argument("--timeout", type=int, default=DEFAULT_TIMEOUT, help="Simulation timeout in seconds")
     parser.add_argument("--concurrency", type=int, default=DEFAULT_CONCURRENCY, help="Parallel job count")
-    parser.add_argument("--target", default=DEFAULT_TARGET, help="run-sim target token")
+    parser.add_argument("--target", default=emulate.SIM_TARGET, help="Reserved target token; only XiangShan is supported")
     return parser.parse_args()
 
 
-def fail(message: str, exit_code: int = 2) -> "NoReturn":
+def fail(message: str, exit_code: int = 2) -> NoReturn:
     print(message)
     raise SystemExit(exit_code)
 
@@ -103,25 +99,8 @@ def validate_positive_int(name: str, value: int) -> None:
         fail(f"{name} must be a positive integer")
 
 
-def resolve_timeout(timeout_s: int, target: str) -> int:
-    if target.startswith("xiangshan") and timeout_s == LEGACY_TIMEOUT_S:
-        return XIANSHAN_DEFAULT_TIMEOUT_S
-    return timeout_s
-
-
 def repo_root() -> Path:
     return Path(__file__).resolve().parents[1]
-
-
-def ensure_image_exists(image: str) -> None:
-    result = subprocess.run(
-        ["docker", "image", "inspect", image],
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-    if result.returncode != 0:
-        fail(f"Docker image not found: {image}")
 
 
 def resolve_output_path(root: Path, value: str) -> Path:
@@ -147,38 +126,6 @@ def parse_filter(value: str) -> set[str] | None:
     return entries or None
 
 
-def parse_run_sim_output(text: str) -> dict[str, Any]:
-    parsed: dict[str, Any] = {}
-    for line in text.splitlines():
-        stripped = line.strip()
-        if stripped.startswith("Status:"):
-            parsed["status"] = stripped.split(":", 1)[1].strip()
-        elif stripped.startswith("Exit code:"):
-            parsed["exit_code"] = int(stripped.split(":", 1)[1].strip())
-        elif stripped.startswith("Wall time:"):
-            parsed["wall_time_s"] = float(stripped.split(":", 1)[1].strip().removesuffix("s"))
-        elif stripped.startswith("Kernel:"):
-            parsed["kernel_cycles"] = int(stripped.split(":", 1)[1].strip().split()[0].replace(",", ""))
-        elif stripped.startswith("Total sim:"):
-            parsed["total_cycles"] = int(stripped.split(":", 1)[1].strip().split()[0].replace(",", ""))
-        elif stripped.startswith("Sim speed:"):
-            parsed["sim_speed_khz"] = float(stripped.split(":", 1)[1].strip().split()[0])
-        elif stripped.startswith("Log file:"):
-            parsed["run_detail_path"] = stripped.split(":", 1)[1].strip()
-        elif stripped.startswith("Trace:"):
-            parsed["trace_file"] = stripped.split(":", 1)[1].strip()
-    return parsed
-
-
-def map_container_output_path(path_text: str, host_output_dir: Path) -> Path:
-    path = Path(path_text)
-    try:
-        relative = path.relative_to(CONTAINER_OUTPUT_ROOT)
-    except ValueError:
-        return path
-    return host_output_dir / relative
-
-
 def create_table(conn: sqlite3.Connection) -> None:
     conn.execute(
         """
@@ -199,14 +146,17 @@ def create_table(conn: sqlite3.Connection) -> None:
             sim_speed_khz REAL,
             params_json TEXT NOT NULL,
             source_path TEXT NOT NULL,
-            elf_path TEXT NOT NULL,
-            objdump_path TEXT NOT NULL,
-            objdump_text TEXT NOT NULL,
+            artifact_dir TEXT NOT NULL,
             container_log_path TEXT NOT NULL,
             container_log_text TEXT NOT NULL,
             run_detail_path TEXT NOT NULL,
             run_detail_text TEXT NOT NULL,
             trace_file TEXT NOT NULL,
+            opt_ll_text TEXT NOT NULL,
+            asm_text TEXT NOT NULL,
+            asm_check_status TEXT NOT NULL,
+            asm_check_message TEXT NOT NULL,
+            asm_expectation_json TEXT NOT NULL,
             command TEXT NOT NULL,
             PRIMARY KEY (case_name, variant_name, sample_index)
         )
@@ -226,96 +176,158 @@ def insert_row(conn: sqlite3.Connection, row: dict[str, Any]) -> None:
     conn.commit()
 
 
+def ordered_patterns_match(text: str, patterns: tuple[str, ...]) -> tuple[bool, str]:
+    if not patterns:
+        return True, "no asm expectations configured"
+    position = 0
+    for index, pattern in enumerate(patterns, start=1):
+        match = re.search(pattern, text[position:], re.MULTILINE)
+        if match is None:
+            return False, f"missing pattern {index}/{len(patterns)}: {pattern}"
+        position += match.end()
+    return True, "matched expected asm pattern order"
+
+
+def build_extra_cflags(variant: VariantSpec) -> str:
+    flags = ["-fno-vectorize", "-fno-slp-vectorize"]
+    flags.extend(f"-D{define}" for define in variant.defines)
+    return " ".join(flags)
+
+
+def benchmark_id(case: CaseSpec, variant: VariantSpec) -> str:
+    return f"dlmul_{case.case_name.replace('-', '_')}__{variant.name}"
+
+
 def make_manifest() -> tuple[CaseSpec, ...]:
+    root = CATALOG_ROOT
     return (
         CaseSpec(
             suite="dynamic_lmul",
             case_name="mb1-switch",
-            source_path="emulator/benchmarks/microbenchmark/dlmul/cases/mb1_switch.S",
+            source_path=str(root / "mb1_switch.c"),
             variants=(
                 VariantSpec(
                     name="m1_to_m4",
-                    defines={"SWITCH_FROM_LMUL": "m1", "SWITCH_TO_LMUL": "m4"},
-                    params={"kind": "switch", "from_lmul": "m1", "to_lmul": "m4", "first_avl": 64, "second_avl": 64, "outer_iters": 256},
+                    defines=("MB1_FROM_VARIANT=1", "MB1_TO_VARIANT=4", "MB1_FIRST_AVL=64", "MB1_SECOND_AVL=64", "MB1_OUTER_ITERS=256"),
+                    params={"kind": "switch", "from_lmul": "m1", "to_lmul": "m4", "first_avl": 64, "second_avl": 64, "outer_iters": 256, "len_1d": 256},
+                    asm_patterns=(r"vsetvli.*e32,\s*m1\b", r"vsetvli.*e32,\s*m4\b"),
                 ),
                 VariantSpec(
                     name="m4_to_m1",
-                    defines={"SWITCH_FROM_LMUL": "m4", "SWITCH_TO_LMUL": "m1"},
-                    params={"kind": "switch", "from_lmul": "m4", "to_lmul": "m1", "first_avl": 64, "second_avl": 64, "outer_iters": 256},
+                    defines=("MB1_FROM_VARIANT=4", "MB1_TO_VARIANT=1", "MB1_FIRST_AVL=64", "MB1_SECOND_AVL=64", "MB1_OUTER_ITERS=256"),
+                    params={"kind": "switch", "from_lmul": "m4", "to_lmul": "m1", "first_avl": 64, "second_avl": 64, "outer_iters": 256, "len_1d": 256},
+                    asm_patterns=(r"vsetvli.*e32,\s*m4\b", r"vsetvli.*e32,\s*m1\b"),
                 ),
                 VariantSpec(
                     name="m1_to_m8",
-                    defines={"SWITCH_FROM_LMUL": "m1", "SWITCH_TO_LMUL": "m8"},
-                    params={"kind": "switch", "from_lmul": "m1", "to_lmul": "m8", "first_avl": 64, "second_avl": 64, "outer_iters": 256},
+                    defines=("MB1_FROM_VARIANT=1", "MB1_TO_VARIANT=8", "MB1_FIRST_AVL=64", "MB1_SECOND_AVL=64", "MB1_OUTER_ITERS=256"),
+                    params={"kind": "switch", "from_lmul": "m1", "to_lmul": "m8", "first_avl": 64, "second_avl": 64, "outer_iters": 256, "len_1d": 256},
+                    asm_patterns=(r"vsetvli.*e32,\s*m1\b", r"vsetvli.*e32,\s*m8\b"),
                 ),
                 VariantSpec(
                     name="m1_to_mf2",
-                    defines={"SWITCH_FROM_LMUL": "m1", "SWITCH_TO_LMUL": "mf2"},
-                    params={"kind": "switch", "from_lmul": "m1", "to_lmul": "mf2", "first_avl": 64, "second_avl": 64, "outer_iters": 256},
+                    defines=("MB1_FROM_VARIANT=1", "MB1_TO_VARIANT=102", "MB1_FIRST_AVL=64", "MB1_SECOND_AVL=64", "MB1_OUTER_ITERS=256"),
+                    params={"kind": "switch", "from_lmul": "m1", "to_lmul": "mf2", "first_avl": 64, "second_avl": 64, "outer_iters": 256, "len_1d": 256},
+                    asm_patterns=(r"vsetvli.*e32,\s*m1\b", r"vsetvli.*e32,\s*mf2\b"),
                 ),
                 VariantSpec(
                     name="m1_reconfig",
-                    defines={"SWITCH_FROM_LMUL": "m1", "SWITCH_TO_LMUL": "m1", "SWITCH_SECOND_AVL": "32"},
-                    params={"kind": "same_lmul_reconfig", "from_lmul": "m1", "to_lmul": "m1", "first_avl": 64, "second_avl": 32, "outer_iters": 256},
+                    defines=("MB1_FROM_VARIANT=1", "MB1_TO_VARIANT=1", "MB1_FIRST_AVL=64", "MB1_SECOND_AVL=32", "MB1_OUTER_ITERS=256"),
+                    params={"kind": "same_lmul_reconfig", "from_lmul": "m1", "to_lmul": "m1", "first_avl": 64, "second_avl": 32, "outer_iters": 256, "len_1d": 256},
+                    asm_patterns=(r"vsetvli.*e32,\s*m1\b", r"vsetvli.*e32,\s*m1\b"),
                 ),
             ),
         ),
         CaseSpec(
             suite="dynamic_lmul",
             case_name="mb2-memory-phase",
-            source_path="emulator/benchmarks/microbenchmark/dlmul/cases/mb2_memory_phase.S",
-            variants=tuple(
+            source_path=str(root / "mb2_memory_phase.c"),
+            variants=(
                 VariantSpec(
-                    name=lmul_name,
-                    defines={"MEM_LMUL": lmul_name},
-                    params={"kind": "memory_phase", "lmul": lmul_name, "total_elems": 256, "outer_iters": 64},
-                )
-                for lmul_name in ("m1", "m4", "m8")
+                    name="m1",
+                    defines=("MB2_VARIANT=1", "MB2_TOTAL_ELEMS=256", "MB2_OUTER_ITERS=64"),
+                    params={"kind": "memory_phase", "lmul": "m1", "total_elems": 256, "outer_iters": 64, "len_1d": 256},
+                    asm_patterns=(r"vsetvli.*e32,\s*m1\b",),
+                ),
+                VariantSpec(
+                    name="m4",
+                    defines=("MB2_VARIANT=4", "MB2_TOTAL_ELEMS=256", "MB2_OUTER_ITERS=64"),
+                    params={"kind": "memory_phase", "lmul": "m4", "total_elems": 256, "outer_iters": 64, "len_1d": 256},
+                    asm_patterns=(r"vsetvli.*e32,\s*m4\b",),
+                ),
+                VariantSpec(
+                    name="m8",
+                    defines=("MB2_VARIANT=8", "MB2_TOTAL_ELEMS=256", "MB2_OUTER_ITERS=64"),
+                    params={"kind": "memory_phase", "lmul": "m8", "total_elems": 256, "outer_iters": 64, "len_1d": 256},
+                    asm_patterns=(r"vsetvli.*e32,\s*m8\b",),
+                ),
             ),
         ),
         CaseSpec(
             suite="dynamic_lmul",
             case_name="mb3-fractional-rescue",
-            source_path="emulator/benchmarks/microbenchmark/dlmul/cases/mb3_fractional_rescue.S",
-            variants=tuple(
+            source_path=str(root / "mb3_fractional_rescue.c"),
+            variants=(
                 VariantSpec(
-                    name=f"{lmul_name}_k{temp_count}",
-                    defines={"PRESSURE_LMUL": lmul_name, "TEMP_REG_COUNT": str(temp_count)},
-                    params={"kind": "fractional_rescue", "lmul": lmul_name, "temp_reg_count": temp_count, "total_elems": 64, "outer_iters": 48},
-                )
-                for lmul_name in ("mf4", "mf2", "m1", "m2")
-                for temp_count in (8,)
+                    name="mf4_k8",
+                    defines=("MB3_VARIANT=104", "MB3_TEMP_COUNT=8", "MB3_TOTAL_ELEMS=64", "MB3_OUTER_ITERS=48"),
+                    params={"kind": "fractional_rescue", "lmul": "mf4", "temp_reg_count": 8, "total_elems": 64, "outer_iters": 48, "len_1d": 256},
+                    asm_patterns=(r"vsetvli.*e32,\s*mf4\b",),
+                ),
+                VariantSpec(
+                    name="mf2_k8",
+                    defines=("MB3_VARIANT=102", "MB3_TEMP_COUNT=8", "MB3_TOTAL_ELEMS=64", "MB3_OUTER_ITERS=48"),
+                    params={"kind": "fractional_rescue", "lmul": "mf2", "temp_reg_count": 8, "total_elems": 64, "outer_iters": 48, "len_1d": 256},
+                    asm_patterns=(r"vsetvli.*e32,\s*mf2\b",),
+                ),
+                VariantSpec(
+                    name="m1_k8",
+                    defines=("MB3_VARIANT=1", "MB3_TEMP_COUNT=8", "MB3_TOTAL_ELEMS=64", "MB3_OUTER_ITERS=48"),
+                    params={"kind": "fractional_rescue", "lmul": "m1", "temp_reg_count": 8, "total_elems": 64, "outer_iters": 48, "len_1d": 256},
+                    asm_patterns=(r"vsetvli.*e32,\s*m1\b",),
+                ),
+                VariantSpec(
+                    name="m2_k8",
+                    defines=("MB3_VARIANT=2", "MB3_TEMP_COUNT=8", "MB3_TOTAL_ELEMS=64", "MB3_OUTER_ITERS=48"),
+                    params={"kind": "fractional_rescue", "lmul": "m2", "temp_reg_count": 8, "total_elems": 64, "outer_iters": 48, "len_1d": 256},
+                    asm_patterns=(r"vsetvli.*e32,\s*m2\b",),
+                ),
             ),
         ),
         CaseSpec(
             suite="dynamic_lmul",
             case_name="mb4-two-phase",
-            source_path="emulator/benchmarks/microbenchmark/dlmul/cases/mb4_two_phase.S",
+            source_path=str(root / "mb4_two_phase.c"),
             variants=(
                 VariantSpec(
                     name="fixed_m1",
-                    defines={"PHASE1_LMUL": "m1", "PHASE2_LMUL": "m1"},
-                    params={"kind": "two_phase", "phase1_lmul": "m1", "phase2_lmul": "m1", "mode": "fixed", "phase1_total_elems": 256, "phase2_total_elems": 64, "outer_iters": 48},
+                    defines=("MB4_PHASE1_VARIANT=1", "MB4_PHASE2_VARIANT=1", "MB4_PHASE1_TOTAL_ELEMS=128", "MB4_PHASE2_TOTAL_ELEMS=64", "MB4_OUTER_ITERS=48"),
+                    params={"kind": "two_phase", "phase1_lmul": "m1", "phase2_lmul": "m1", "phase1_total_elems": 128, "phase2_total_elems": 64, "outer_iters": 48, "len_1d": 256},
+                    asm_patterns=(r"vsetvli.*e32,\s*m1\b",),
                 ),
                 VariantSpec(
                     name="fixed_m4",
-                    defines={"PHASE1_LMUL": "m4", "PHASE2_LMUL": "m4"},
-                    params={"kind": "two_phase", "phase1_lmul": "m4", "phase2_lmul": "m4", "mode": "fixed", "phase1_total_elems": 256, "phase2_total_elems": 64, "outer_iters": 48},
+                    defines=("MB4_PHASE1_VARIANT=4", "MB4_PHASE2_VARIANT=4", "MB4_PHASE1_TOTAL_ELEMS=128", "MB4_PHASE2_TOTAL_ELEMS=64", "MB4_OUTER_ITERS=48"),
+                    params={"kind": "two_phase", "phase1_lmul": "m4", "phase2_lmul": "m4", "phase1_total_elems": 128, "phase2_total_elems": 64, "outer_iters": 48, "len_1d": 256},
+                    asm_patterns=(r"vsetvli.*e32,\s*m4\b",),
                 ),
                 VariantSpec(
                     name="fixed_m8",
-                    defines={"PHASE1_LMUL": "m8", "PHASE2_LMUL": "m8"},
-                    params={"kind": "two_phase", "phase1_lmul": "m8", "phase2_lmul": "m8", "mode": "fixed", "phase1_total_elems": 256, "phase2_total_elems": 64, "outer_iters": 48},
+                    defines=("MB4_PHASE1_VARIANT=8", "MB4_PHASE2_VARIANT=8", "MB4_PHASE1_TOTAL_ELEMS=128", "MB4_PHASE2_TOTAL_ELEMS=64", "MB4_OUTER_ITERS=48"),
+                    params={"kind": "two_phase", "phase1_lmul": "m8", "phase2_lmul": "m8", "phase1_total_elems": 128, "phase2_total_elems": 64, "outer_iters": 48, "len_1d": 256},
+                    asm_patterns=(r"vsetvli.*e32,\s*m8\b",),
                 ),
                 VariantSpec(
                     name="m8_to_m1",
-                    defines={"PHASE1_LMUL": "m8", "PHASE2_LMUL": "m1"},
-                    params={"kind": "two_phase", "phase1_lmul": "m8", "phase2_lmul": "m1", "mode": "mixed", "phase1_total_elems": 256, "phase2_total_elems": 64, "outer_iters": 48},
+                    defines=("MB4_PHASE1_VARIANT=8", "MB4_PHASE2_VARIANT=1", "MB4_PHASE1_TOTAL_ELEMS=128", "MB4_PHASE2_TOTAL_ELEMS=64", "MB4_OUTER_ITERS=48"),
+                    params={"kind": "two_phase", "phase1_lmul": "m8", "phase2_lmul": "m1", "phase1_total_elems": 128, "phase2_total_elems": 64, "outer_iters": 48, "len_1d": 256},
+                    asm_patterns=(r"vsetvli.*e32,\s*m8\b", r"vsetvli.*e32,\s*m1\b", r"vsetvli.*e32,\s*m8\b"),
                 ),
                 VariantSpec(
                     name="m4_to_mf2",
-                    defines={"PHASE1_LMUL": "m4", "PHASE2_LMUL": "mf2"},
-                    params={"kind": "two_phase", "phase1_lmul": "m4", "phase2_lmul": "mf2", "mode": "mixed", "phase1_total_elems": 256, "phase2_total_elems": 64, "outer_iters": 48},
+                    defines=("MB4_PHASE1_VARIANT=4", "MB4_PHASE2_VARIANT=102", "MB4_PHASE1_TOTAL_ELEMS=128", "MB4_PHASE2_TOTAL_ELEMS=64", "MB4_OUTER_ITERS=48"),
+                    params={"kind": "two_phase", "phase1_lmul": "m4", "phase2_lmul": "mf2", "phase1_total_elems": 128, "phase2_total_elems": 64, "outer_iters": 48, "len_1d": 256},
+                    asm_patterns=(r"vsetvli.*e32,\s*m4\b", r"vsetvli.*e32,\s*mf2\b", r"vsetvli.*e32,\s*m4\b"),
                 ),
             ),
         ),
@@ -339,230 +351,139 @@ def iter_selected_jobs(
     return jobs
 
 
-def build_define_args(defines: dict[str, str]) -> str:
-    items = [f"-D{name}={value}" for name, value in sorted(defines.items())]
-    return " ".join(shlex.quote(item) for item in items)
-
-
-def build_inner_script(
+def make_row_from_emulate_result(
     *,
+    run_id: str,
     case: CaseSpec,
     variant: VariantSpec,
     sample_index: int,
-    timeout_s: int,
-    target: str,
-) -> str:
-    case_source = CONTAINER_PROJECT_ROOT / case.source_path
-    elf_name = f"{case.case_name}_{variant.name}_s{sample_index:02d}.elf"
-    objdump_name = f"{case.case_name}_{variant.name}_s{sample_index:02d}.objdump"
-    elf_path = CONTAINER_OUTPUT_ROOT / "build" / elf_name
-    objdump_path = CONTAINER_OUTPUT_ROOT / "build" / objdump_name
-    define_args = build_define_args(variant.defines)
+    result: dict[str, Any],
+) -> dict[str, Any]:
+    summary = result["summary"]
+    asm_text = str(result.get("asm_text", "") or "")
+    expectations_json = json.dumps(list(variant.asm_patterns))
 
-    lines = [
-        "set -eu",
-        'CLANG="$(command -v clang)"',
-        'OBJDUMP="$(command -v llvm-objdump || command -v riscv64-unknown-elf-objdump)"',
-        'if [ -z "$CLANG" ]; then echo "clang not found" >&2; exit 127; fi',
-        'if [ -z "$OBJDUMP" ]; then echo "objdump not found" >&2; exit 127; fi',
-        f"mkdir -p {shlex.quote(str(CONTAINER_OUTPUT_ROOT / 'build'))}",
-        f"mkdir -p {shlex.quote(str(CONTAINER_OUTPUT_ROOT / 'logs'))}",
-        (
-            f'"$CLANG" --target=riscv64-unknown-elf -march=rv64gcv -mabi=lp64d '
-            f'-mcmodel=medany -nostdlib -static -fuse-ld=lld '
-            f'-I {shlex.quote(str(CONTAINER_COMMON_ROOT))} '
-            f'{define_args} '
-            f'{shlex.quote(str(CONTAINER_CRT))} '
-            f'{shlex.quote(str(CONTAINER_COMMON_ROOT / "entry.S"))} '
-            f'{shlex.quote(str(case_source))} '
-            f'-Wl,-T,{shlex.quote(str(CONTAINER_LINKER))} '
-            f'-o {shlex.quote(str(elf_path))}'
-        ),
-        f'"$OBJDUMP" -d {shlex.quote(str(elf_path))} > {shlex.quote(str(objdump_path))}',
-        (
-            f'cd {shlex.quote(str(CONTAINER_EMULATOR_ROOT))} && '
-            f'python3 {shlex.quote(str(CONTAINER_RUN_SIM))} {shlex.quote(target)} '
-            f'{shlex.quote(str(elf_path))} '
-            f'--timeout={timeout_s} '
-            f'--log-dir={shlex.quote(str(CONTAINER_OUTPUT_ROOT / "logs"))}'
-        ),
-    ]
-    return "\n".join(lines)
+    if result.get("failed"):
+        asm_check_status = "SKIP"
+        asm_check_message = "emulate run failed before asm validation"
+    elif not asm_text:
+        asm_check_status = "WARN"
+        asm_check_message = "asm_text is empty"
+    else:
+        matched, message = ordered_patterns_match(asm_text, variant.asm_patterns)
+        asm_check_status = "PASS" if matched else "WARN"
+        asm_check_message = message
 
-
-def build_docker_command(
-    *,
-    root: Path,
-    host_output_dir: Path,
-    image: str,
-    inner_script: str,
-) -> list[str]:
-    return [
-        "docker",
-        "run",
-        "--rm",
-        "--platform",
-        DEFAULT_PLATFORM,
-        "-v",
-        f"{root}:{CONTAINER_PROJECT_ROOT}:ro",
-        "-v",
-        f"{host_output_dir}:{CONTAINER_OUTPUT_ROOT}",
-        "-v",
-        f"{root / 'emulator' / 'run-sim.sh'}:{CONTAINER_RUN_SIM}:ro",
-        "-v",
-        f"{root / 'emulator' / 'sim-configs.yaml'}:{CONTAINER_SIM_CONFIG}:ro",
-        image,
-        "bash",
-        "-lc",
-        inner_script,
-    ]
+    return {
+        "run_id": run_id,
+        "created_at": datetime.now().isoformat(timespec="seconds"),
+        "suite": case.suite,
+        "case_name": case.case_name,
+        "variant_name": variant.name,
+        "sample_index": sample_index,
+        "target": str(summary.get("simulator_target", "")),
+        "status": str(summary.get("status", "")),
+        "failure": "emulate_failed" if result.get("failed") else "",
+        "failure_message": str(summary.get("status", "")) if result.get("failed") else "",
+        "kernel_cycles": summary.get("kernel_cycles"),
+        "total_cycles": summary.get("total_cycles"),
+        "wall_time_s": summary.get("wall_time_s"),
+        "sim_speed_khz": summary.get("sim_speed_khz"),
+        "params_json": json.dumps(variant.params, sort_keys=True),
+        "source_path": str(summary.get("source", "")),
+        "artifact_dir": str(summary.get("artifact_dir", "")),
+        "container_log_path": str(summary.get("container_log", "")),
+        "container_log_text": str(result.get("container_log_text", "") or ""),
+        "run_detail_path": str(summary.get("run_detail_path", "") or ""),
+        "run_detail_text": str(result.get("run_detail", "") or ""),
+        "trace_file": str(summary.get("trace_file", "") or ""),
+        "opt_ll_text": str(result.get("opt_ll_text", "") or ""),
+        "asm_text": asm_text,
+        "asm_check_status": asm_check_status,
+        "asm_check_message": asm_check_message,
+        "asm_expectation_json": expectations_json,
+        "command": str(summary.get("docker_command", "")),
+    }
 
 
-def make_output_dir(log_root: Path, run_id: str, case_name: str, variant_name: str, sample_index: int) -> Path:
-    out_dir = log_root / run_id / case_name / variant_name / f"sample-{sample_index:02d}"
-    out_dir.mkdir(parents=True, exist_ok=False)
-    return out_dir
-
-
-def make_base_row(
+def make_exception_row(
     *,
     run_id: str,
     case: CaseSpec,
     variant: VariantSpec,
     sample_index: int,
     target: str,
-    source_path: str,
-    command: str,
-    container_log_path: str,
-    params_json: str,
+    exc: Exception,
 ) -> dict[str, Any]:
-    row = {column: "" for column in RESULT_COLUMNS}
-    row.update(
-        {
-            "run_id": run_id,
-            "created_at": datetime.now().isoformat(timespec="seconds"),
-            "suite": case.suite,
-            "case_name": case.case_name,
-            "variant_name": variant.name,
-            "sample_index": sample_index,
-            "target": target,
-            "status": "ERROR",
-            "failure": "",
-            "failure_message": "",
-            "params_json": params_json,
-            "source_path": source_path,
-            "container_log_path": container_log_path,
-            "command": command,
-        }
-    )
-    return row
+    return {
+        "run_id": run_id,
+        "created_at": datetime.now().isoformat(timespec="seconds"),
+        "suite": case.suite,
+        "case_name": case.case_name,
+        "variant_name": variant.name,
+        "sample_index": sample_index,
+        "target": target,
+        "status": "ERROR",
+        "failure": "job_exception",
+        "failure_message": str(exc),
+        "kernel_cycles": None,
+        "total_cycles": None,
+        "wall_time_s": None,
+        "sim_speed_khz": None,
+        "params_json": json.dumps(variant.params, sort_keys=True),
+        "source_path": "",
+        "artifact_dir": "",
+        "container_log_path": "",
+        "container_log_text": "",
+        "run_detail_path": "",
+        "run_detail_text": "",
+        "trace_file": "",
+        "opt_ll_text": "",
+        "asm_text": "",
+        "asm_check_status": "SKIP",
+        "asm_check_message": "job exception before asm validation",
+        "asm_expectation_json": json.dumps(list(variant.asm_patterns)),
+        "command": "",
+    }
 
 
 def run_job(
     *,
-    root: Path,
-    run_id: str,
-    image: str,
-    log_root: Path,
     case: CaseSpec,
     variant: VariantSpec,
     sample_index: int,
+    image: str,
+    log_root: str,
     timeout_s: int,
-    target: str,
 ) -> dict[str, Any]:
-    effective_timeout_s = resolve_timeout(timeout_s, target)
-    params = dict(variant.params)
-    params["sample_index"] = sample_index
-    params["timeout_s"] = effective_timeout_s
-    source_path = str((root / case.source_path).resolve())
-    host_output_dir = make_output_dir(log_root, run_id, case.case_name, variant.name, sample_index)
-    container_log_path = host_output_dir / "container.log"
-    inner_script = build_inner_script(
-        case=case,
-        variant=variant,
-        sample_index=sample_index,
-        timeout_s=effective_timeout_s,
-        target=target,
+    bench = benchmark_id(case, variant)
+    source_path = case.source_path
+    return emulate.run_emulate_source(
+        benchmark=bench,
+        source=source_path,
+        image=image,
+        len_1d=int(variant.params.get("len_1d", DEFAULT_LEN_1D)),
+        lmul=int(variant.params.get("compiler_lmul", DEFAULT_LMUL)),
+        use_vf="",
+        timeout_s=timeout_s,
+        log_root=log_root,
+        ensure_image=False,
+        extra_cflags=build_extra_cflags(variant),
+        extra_opt_flags="",
     )
-    docker_cmd = build_docker_command(root=root, host_output_dir=host_output_dir, image=image, inner_script=inner_script)
-    command = shlex.join(docker_cmd)
-    row = make_base_row(
-        run_id=run_id,
-        case=case,
-        variant=variant,
-        sample_index=sample_index,
-        target=target,
-        source_path=source_path,
-        command=command,
-        container_log_path=str(container_log_path),
-        params_json=json.dumps(params, sort_keys=True),
-    )
-
-    try:
-        result = subprocess.run(docker_cmd, capture_output=True, text=True, check=False)
-    except Exception as exc:
-        row["failure"] = "docker_exception"
-        row["failure_message"] = str(exc)
-        return row
-
-    output_text = (result.stdout or "") + (result.stderr or "")
-    container_log_path.write_text(output_text, encoding="utf-8")
-    row["container_log_text"] = output_text
-
-    elf_name = f"{case.case_name}_{variant.name}_s{sample_index:02d}.elf"
-    objdump_name = f"{case.case_name}_{variant.name}_s{sample_index:02d}.objdump"
-    elf_path = host_output_dir / "build" / elf_name
-    objdump_path = host_output_dir / "build" / objdump_name
-    row["elf_path"] = str(elf_path)
-    row["objdump_path"] = str(objdump_path)
-    if objdump_path.exists():
-        row["objdump_text"] = objdump_path.read_text(encoding="utf-8")
-
-    parsed = parse_run_sim_output(output_text)
-    row["status"] = str(parsed.get("status", f"EXIT:{result.returncode}"))
-    row["kernel_cycles"] = parsed.get("kernel_cycles")
-    row["total_cycles"] = parsed.get("total_cycles")
-    row["wall_time_s"] = parsed.get("wall_time_s")
-    row["sim_speed_khz"] = parsed.get("sim_speed_khz")
-
-    if "run_detail_path" in parsed:
-        run_detail_path = map_container_output_path(str(parsed["run_detail_path"]), host_output_dir)
-        row["run_detail_path"] = str(run_detail_path)
-        if run_detail_path.exists():
-            row["run_detail_text"] = run_detail_path.read_text(encoding="utf-8")
-    if "trace_file" in parsed:
-        trace_file = map_container_output_path(str(parsed["trace_file"]), host_output_dir)
-        row["trace_file"] = str(trace_file)
-
-    if result.returncode != 0:
-        row["failure"] = "docker_failed"
-        row["failure_message"] = f"docker exit code {result.returncode}"
-        return row
-    if not elf_path.exists():
-        row["failure"] = "missing_elf"
-        row["failure_message"] = "expected ELF was not generated"
-        return row
-    if not objdump_path.exists():
-        row["failure"] = "missing_objdump"
-        row["failure_message"] = "expected objdump was not generated"
-        return row
-    if row["kernel_cycles"] in ("", None):
-        row["failure"] = "missing_kernel_cycles"
-        row["failure_message"] = "run-sim output did not include kernel cycles"
-        return row
-
-    return row
 
 
 def main() -> None:
     args = parse_args()
     validate_positive_int("timeout", args.timeout)
     validate_positive_int("concurrency", args.concurrency)
+    if args.target != emulate.SIM_TARGET:
+        fail(f"dlmul-microbench currently supports only {emulate.SIM_TARGET}")
 
     root = repo_root()
     db_path = resolve_output_path(root, args.db_path)
     log_root = resolve_log_root(root, args.log_root)
-    ensure_image_exists(args.image)
+    emulate.ensure_image_exists(args.image)
 
     manifest = make_manifest()
     selected_jobs = iter_selected_jobs(
@@ -575,7 +496,6 @@ def main() -> None:
 
     if db_path.exists():
         db_path.unlink()
-
     conn = sqlite3.connect(db_path)
     create_table(conn)
 
@@ -588,48 +508,47 @@ def main() -> None:
         future_map = {
             executor.submit(
                 run_job,
-                root=root,
-                run_id=run_id,
-                image=args.image,
-                log_root=log_root,
                 case=case,
                 variant=variant,
                 sample_index=sample_index,
+                image=args.image,
+                log_root=str(log_root),
                 timeout_s=args.timeout,
-                target=args.target,
-            ): (case.case_name, variant.name, sample_index)
+            ): (case, variant, sample_index)
             for case, variant, sample_index in selected_jobs
         }
 
         for future in as_completed(future_map):
-            case_name, variant_name, sample_index = future_map[future]
+            case, variant, sample_index = future_map[future]
             completed += 1
             try:
-                row = future.result()
-            except Exception as exc:
-                row = {
-                    column: "" for column in RESULT_COLUMNS
-                }
-                row.update(
-                    {
-                        "run_id": run_id,
-                        "created_at": datetime.now().isoformat(timespec="seconds"),
-                        "suite": "dynamic_lmul",
-                        "case_name": case_name,
-                        "variant_name": variant_name,
-                        "sample_index": sample_index,
-                        "target": args.target,
-                        "status": "ERROR",
-                        "failure": "job_exception",
-                        "failure_message": str(exc),
-                        "params_json": "{}",
-                    }
+                result = future.result()
+                row = make_row_from_emulate_result(
+                    run_id=run_id,
+                    case=case,
+                    variant=variant,
+                    sample_index=sample_index,
+                    result=result,
                 )
-            if row.get("failure"):
+            except Exception as exc:
+                row = make_exception_row(
+                    run_id=run_id,
+                    case=case,
+                    variant=variant,
+                    sample_index=sample_index,
+                    target=args.target,
+                    exc=exc,
+                )
+            if row["failure"]:
                 failures += 1
             insert_row(conn, row)
-            status_text = "fail" if row.get("failure") else str(row.get("status", "done")).lower()
-            print(f"[{completed}/{len(selected_jobs)}] {case_name} {variant_name} s{sample_index:02d} {status_text}")
+            status_text = "fail" if row["failure"] else str(row["status"]).lower()
+            if row["asm_check_status"] == "WARN" and not row["failure"]:
+                status_text = "warn"
+            print(
+                f"[{completed}/{len(selected_jobs)}] "
+                f"{case.case_name} {variant.name} s{sample_index:02d} {status_text}"
+            )
 
     conn.close()
     print(f"done: failures={failures} db={db_path}")

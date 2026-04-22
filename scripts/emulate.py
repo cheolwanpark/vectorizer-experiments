@@ -244,6 +244,22 @@ def resolve_benchmark_source(root: Path, bench: str) -> Path:
     return benchmark.source_path
 
 
+def resolve_source_path(root: Path, source: str | Path) -> Path:
+    root = root.resolve()
+    path = Path(source)
+    if not path.is_absolute():
+        path = (root / path).resolve()
+    else:
+        path = path.resolve()
+    if not path.exists():
+        raise FileNotFoundError(f"benchmark source not found: {path}")
+    try:
+        path.relative_to(root)
+    except ValueError as exc:
+        raise RuntimeError(f"benchmark source must be inside repo root: {path}") from exc
+    return path
+
+
 def build_emulate_docker_command(
     *,
     root: Path,
@@ -328,12 +344,50 @@ def run_emulate(
         source = resolve_benchmark_source(root, bench)
     except (FileNotFoundError, benchmark_sources.ConversionError) as exc:
         raise RuntimeError(str(exc)) from exc
+    return run_emulate_source(
+        benchmark=bench,
+        source=source,
+        image=image,
+        len_1d=len_1d,
+        lmul=lmul,
+        use_vf=use_vf,
+        timeout_s=timeout_s,
+        log_root=log_root,
+        ensure_image=ensure_image,
+        extra_cflags=extra_cflags,
+        extra_opt_flags=extra_opt_flags,
+    )
+
+
+def run_emulate_source(
+    *,
+    benchmark: str,
+    source: str | Path,
+    image: str = DEFAULT_IMAGE,
+    len_1d: int = 4096,
+    lmul: int = 1,
+    use_vf: str = "",
+    timeout_s: int = 120,
+    log_root: str = DEFAULT_LOG_ROOT,
+    ensure_image: bool = True,
+    extra_cflags: str = "",
+    extra_opt_flags: str = "",
+) -> dict[str, object]:
+    validate_positive_int("len", len_1d)
+    validate_positive_int("lmul", lmul)
+    validate_vplan_use_vf(use_vf)
+
+    root = repo_root()
+    try:
+        resolved_source = resolve_source_path(root, source)
+    except FileNotFoundError as exc:
+        raise RuntimeError(str(exc)) from exc
     if ensure_image:
         ensure_image_exists(image)
     effective_timeout = resolve_timeout(timeout_s)
 
     resolved_log_root = resolve_log_root(root, log_root)
-    out_dir = timestamp_dir(resolved_log_root, bench)
+    out_dir = timestamp_dir(resolved_log_root, benchmark)
     logs_dir = out_dir / "logs"
     logs_dir.mkdir(parents=True, exist_ok=True)
 
@@ -345,7 +399,7 @@ def run_emulate(
     docker_cmd = build_emulate_docker_command(
         root=root,
         out_dir=out_dir,
-        source=source,
+        source=resolved_source,
         image=image,
         len_1d=len_1d,
         lmul=lmul,
@@ -382,7 +436,7 @@ def run_emulate(
     artifact_texts = load_build_artifact_texts(out_dir, str(parsed.get("built_workload") or ""))
 
     summary: dict[str, object] = {
-        "benchmark": bench,
+        "benchmark": benchmark,
         "image": image,
         "simulator_target": SIM_TARGET,
         "len_1d": len_1d,
@@ -403,7 +457,7 @@ def run_emulate(
         "trace_file": str(trace_file) if trace_file else None,
         "report_file": str(report_file),
         "docker_command": docker_command,
-        "source": str(source),
+        "source": str(resolved_source),
     }
 
     report_text = build_markdown_report(summary)
