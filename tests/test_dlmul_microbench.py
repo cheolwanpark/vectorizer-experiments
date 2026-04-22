@@ -26,9 +26,39 @@ class DlmulMicrobenchTest(unittest.TestCase):
         jobs = dlmul_microbench.iter_selected_jobs(manifest, None, None)
         case_paths = {case.case_name: case.source_path for case in manifest}
 
-        self.assertEqual(len(jobs), 17)
+        self.assertEqual(len(jobs), 108)
         self.assertTrue(case_paths["mb1-switch"].endswith("emulator/run/src/microbench/dlmul/mb1_switch.c"))
         self.assertTrue(case_paths["mb4-two-phase"].endswith("emulator/run/src/microbench/dlmul/mb4_two_phase.c"))
+        self.assertTrue(case_paths["mb11-masked-execution"].endswith("emulator/run/src/microbench/dlmul/mb11_masked_execution.c"))
+
+    def test_manifest_includes_mb5_through_mb11(self):
+        manifest = dlmul_microbench.make_manifest()
+        names = [case.case_name for case in manifest]
+        mb5 = next(case for case in manifest if case.case_name == "mb5-widening-cliff")
+        mb8 = next(case for case in manifest if case.case_name == "mb8-live-temporary-sweep")
+        mb11 = next(case for case in manifest if case.case_name == "mb11-masked-execution")
+
+        self.assertEqual(
+            names,
+            [
+                "mb1-switch",
+                "mb2-memory-phase",
+                "mb3-fractional-rescue",
+                "mb4-two-phase",
+                "mb5-widening-cliff",
+                "mb6-stream-count-sweep",
+                "mb7-pure-compute",
+                "mb8-live-temporary-sweep",
+                "mb9-phase-length-sweep",
+                "mb10-spill-surrogate",
+                "mb11-masked-execution",
+            ],
+        )
+        self.assertEqual(len(mb5.variants), 12)
+        self.assertEqual(len(mb8.variants), 36)
+        self.assertEqual(len(mb11.variants), 9)
+        mb3 = next(case for case in manifest if case.case_name == "mb3-fractional-rescue")
+        self.assertEqual([variant.name for variant in mb3.variants], ["mf2_k8", "m1_k8", "m2_k8"])
 
     def test_build_extra_cflags_disables_auto_vectorization(self):
         manifest = dlmul_microbench.make_manifest()
@@ -44,6 +74,18 @@ class DlmulMicrobenchTest(unittest.TestCase):
         matched, message = dlmul_microbench.ordered_patterns_match(
             "vsetvli zero, a0, e32, m4\n",
             (r"vsetvli.*m8", r"vsetvli.*m1"),
+        )
+
+        self.assertFalse(matched)
+        self.assertIn("missing pattern", message)
+
+    def test_mb11_warn_only_validation_uses_mask_patterns(self):
+        case = next(case for case in dlmul_microbench.make_manifest() if case.case_name == "mb11-masked-execution")
+        variant = next(variant for variant in case.variants if variant.name == "m4_dense")
+
+        matched, message = dlmul_microbench.ordered_patterns_match(
+            "vsetvli zero, a0, e32, m4\nvmslt.vx v0, v8, a1\nvadd.vv v12, v8, v9\n",
+            variant.asm_patterns,
         )
 
         self.assertFalse(matched)
