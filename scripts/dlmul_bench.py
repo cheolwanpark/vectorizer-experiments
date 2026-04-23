@@ -76,6 +76,8 @@ def create_table(conn: sqlite3.Connection) -> None:
 
 def compact_variants(
     *,
+    root: Path,
+    case_name: str,
     kind: str,
     phase1_total_elems: int,
     phase2_total_elems: int,
@@ -86,16 +88,6 @@ def compact_variants(
     dyn_safe_phase3_lmul: str = "m1",
 ) -> tuple[VariantSpec, ...]:
     def make_variant(name: str, phase1_lmul: str, phase2_lmul: str, phase3_lmul: str) -> VariantSpec:
-        lmul_values = {"m1": 1, "m2": 2, "m4": 4}
-        defines = (
-            f"DLB_PHASE1_VARIANT={lmul_values[phase1_lmul]}",
-            f"DLB_PHASE2_VARIANT={lmul_values[phase2_lmul]}",
-            f"DLB_PHASE3_VARIANT={lmul_values[phase3_lmul]}",
-            f"DLB_PHASE1_TOTAL_ELEMS={phase1_total_elems}",
-            f"DLB_PHASE2_TOTAL_ELEMS={phase2_total_elems}",
-            f"DLB_PHASE3_TOTAL_ELEMS={phase3_total_elems}",
-            f"DLB_OUTER_ITERS={outer_iters}",
-        )
         params = {
             "kind": kind,
             "phase1_lmul": phase1_lmul,
@@ -110,11 +102,14 @@ def compact_variants(
         patterns = (rf"vsetvli.*{phase1_lmul}\b",)
         if phase2_lmul != phase1_lmul:
             patterns += (rf"vsetvli.*{phase2_lmul}\b",)
+        if phase3_lmul not in (phase1_lmul, phase2_lmul):
+            patterns += (rf"vsetvli.*{phase3_lmul}\b",)
         return VariantSpec(
             name=name,
-            defines=defines,
+            defines=(),
             params=params,
             asm_patterns=patterns,
+            source_path=str(root / f"{case_name}_{name}.c"),
         )
 
     return (
@@ -134,6 +129,8 @@ def make_manifest() -> tuple[CaseSpec, ...]:
             "wb1",
             str(root / "wb1.c"),
             compact_variants(
+                root=root,
+                case_name="wb1",
                 kind="fp_affine_pressure",
                 phase1_total_elems=96,
                 phase2_total_elems=192,
@@ -146,6 +143,8 @@ def make_manifest() -> tuple[CaseSpec, ...]:
             "wb2",
             str(root / "wb2.c"),
             compact_variants(
+                root=root,
+                case_name="wb2",
                 kind="widening_mix",
                 phase1_total_elems=96,
                 phase2_total_elems=192,
@@ -158,6 +157,8 @@ def make_manifest() -> tuple[CaseSpec, ...]:
             "wb5",
             str(root / "wb5_widening_rescue.c"),
             compact_variants(
+                root=root,
+                case_name="wb5",
                 kind="widening_rescue",
                 phase1_total_elems=64,
                 phase2_total_elems=128,
@@ -172,6 +173,8 @@ def make_manifest() -> tuple[CaseSpec, ...]:
             "wb6",
             str(root / "wb6.c"),
             compact_variants(
+                root=root,
+                case_name="wb6",
                 kind="widening_reduction_fuse",
                 phase1_total_elems=96,
                 phase2_total_elems=192,
@@ -184,6 +187,8 @@ def make_manifest() -> tuple[CaseSpec, ...]:
             "wb7",
             str(root / "wb7.c"),
             compact_variants(
+                root=root,
+                case_name="wb7",
                 kind="dequant_gelu_lite",
                 phase1_total_elems=96,
                 phase2_total_elems=192,
@@ -196,6 +201,8 @@ def make_manifest() -> tuple[CaseSpec, ...]:
             "wb8",
             str(root / "wb8.c"),
             compact_variants(
+                root=root,
+                case_name="wb8",
                 kind="two_output_fusion",
                 phase1_total_elems=96,
                 phase2_total_elems=160,
@@ -208,6 +215,8 @@ def make_manifest() -> tuple[CaseSpec, ...]:
             "wb9",
             str(root / "wb9.c"),
             compact_variants(
+                root=root,
+                case_name="wb9",
                 kind="segmented_pressure_rescue",
                 phase1_total_elems=96,
                 phase2_total_elems=192,

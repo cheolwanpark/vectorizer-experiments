@@ -59,6 +59,7 @@ class VariantSpec:
     defines: tuple[str, ...]
     params: dict[str, Any]
     asm_patterns: tuple[str, ...]
+    source_path: str | None = None
     sample_count: int = 1
 
 
@@ -302,9 +303,10 @@ def run_job(
     timeout_s: int,
 ) -> dict[str, Any]:
     bench = benchmark_id(case, variant)
+    source_path = variant.source_path or case.source_path
     return emulate.run_emulate_source(
         benchmark=bench,
-        source=case.source_path,
+        source=source_path,
         image=image,
         len_1d=int(variant.params.get("len_1d", DEFAULT_LEN_1D)),
         lmul=int(variant.params.get("compiler_lmul", DEFAULT_LMUL)),

@@ -24,13 +24,16 @@ class DlmulBenchTest(unittest.TestCase):
     def test_manifest_uses_c_catalog_and_compact_suite(self):
         manifest = dlmul_bench.make_manifest()
         jobs = dlmul_bench.iter_selected_jobs(manifest, None, None)
-        case_paths = {case.case_name: case.source_path for case in manifest}
+        dyn_sources = {
+            case.case_name: next(variant for variant in case.variants if variant.name == "dyn_main").source_path
+            for case in manifest
+        }
 
         self.assertEqual(len(jobs), 35)
-        self.assertTrue(case_paths["wb1"].endswith("emulator/run/src/bench/dlmul/wb1.c"))
-        self.assertTrue(case_paths["wb2"].endswith("emulator/run/src/bench/dlmul/wb2.c"))
-        self.assertTrue(case_paths["wb5"].endswith("emulator/run/src/bench/dlmul/wb5_widening_rescue.c"))
-        self.assertTrue(case_paths["wb9"].endswith("emulator/run/src/bench/dlmul/wb9.c"))
+        self.assertTrue(dyn_sources["wb1"].endswith("emulator/run/src/bench/dlmul/wb1_dyn_main.c"))
+        self.assertTrue(dyn_sources["wb2"].endswith("emulator/run/src/bench/dlmul/wb2_dyn_main.c"))
+        self.assertTrue(dyn_sources["wb5"].endswith("emulator/run/src/bench/dlmul/wb5_dyn_main.c"))
+        self.assertTrue(dyn_sources["wb9"].endswith("emulator/run/src/bench/dlmul/wb9_dyn_main.c"))
 
     def test_each_workload_has_compact_variants(self):
         manifest = dlmul_bench.make_manifest()
@@ -61,7 +64,7 @@ class DlmulBenchTest(unittest.TestCase):
 
         self.assertIn("-fno-vectorize", flags)
         self.assertIn("-fno-slp-vectorize", flags)
-        self.assertIn("-DDLB_PHASE1_VARIANT=1", flags)
+        self.assertNotIn("-DDLB_PHASE1_VARIANT=", flags)
 
     def test_create_table_contains_expected_columns(self):
         conn = sqlite3.connect(":memory:")
@@ -131,9 +134,10 @@ class DlmulBenchTest(unittest.TestCase):
 
         kwargs = mocked.call_args.kwargs
         self.assertEqual(kwargs["benchmark"], "dlmul_wb2__dyn_safe")
-        self.assertTrue(kwargs["source"].endswith("emulator/run/src/bench/dlmul/wb2.c"))
+        self.assertTrue(kwargs["source"].endswith("emulator/run/src/bench/dlmul/wb2_dyn_safe.c"))
         self.assertEqual(kwargs["use_vf"], "")
-        self.assertIn("-DDLB_PHASE2_VARIANT=1", kwargs["extra_cflags"])
+        self.assertIn("-fno-vectorize", kwargs["extra_cflags"])
+        self.assertNotIn("-DDLB_PHASE2_VARIANT=", kwargs["extra_cflags"])
 
 
 if __name__ == "__main__":
