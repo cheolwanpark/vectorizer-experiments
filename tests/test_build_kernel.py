@@ -50,6 +50,18 @@ class BuildKernelTest(unittest.TestCase):
         self.assertIn('append_split_flags "$EXTRA_OPT_FLAGS" OPT_FLAGS', script)
         self.assertIn('PIPELINE_CMD+=("--opt-flag=$flag")', script)
 
+    def test_assembly_source_mode_assembles_without_llvm_pipeline(self):
+        script = BUILD_KERNEL.read_text(encoding="utf-8")
+        assembly_block_start = script.index('if [[ "$ASSEMBLY_MODE" -eq 1 ]]; then')
+        assembly_block_end = script.index('\nelse\n    OPT_BIN="$(resolve_opt)"', assembly_block_start)
+        assembly_block = script[assembly_block_start:assembly_block_end]
+
+        self.assertIn('*.s|*.S) ASSEMBLY_MODE=1 ;;', script)
+        self.assertIn('KERNEL="${SOURCE_BASENAME%.*}"', script)
+        self.assertIn('cp "$SOURCE" "$ASM_OUT"', assembly_block)
+        self.assertIn('compile_to_object "$SOURCE" "$KERNEL_OBJ"', assembly_block)
+        self.assertNotIn("PIPELINE_CMD", assembly_block)
+
     def test_generated_mode_adds_tsvc_runtime_without_full_tsvc_runtime_sources(self):
         script = BUILD_KERNEL.read_text(encoding="utf-8")
         block_start = script.index('elif [[ "$GENERATED_MODE" -eq 1 ]]; then', script.index("SUPPORT_SRCS=()"))

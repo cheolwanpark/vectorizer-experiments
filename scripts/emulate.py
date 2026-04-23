@@ -32,13 +32,19 @@ BUILD_ARTIFACT_SUFFIXES = {
     "opt_ll_text": ".opt.ll",
     "asm_text": ".s",
 }
+SUPPORTED_SOURCE_SUFFIXES = {".c", ".s", ".S"}
 
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Run one TSVC kernel through XiangShan in Docker and write a host-side report."
+        description="Run one kernel through XiangShan in Docker and write a host-side report."
     )
-    parser.add_argument("--bench", required=True, help="Benchmark name, for example s000")
+    source_group = parser.add_mutually_exclusive_group(required=True)
+    source_group.add_argument("--bench", help="Benchmark name, for example s000")
+    source_group.add_argument(
+        "--source",
+        help="Repo-local .c, .s, or .S source path to build and emulate",
+    )
     parser.add_argument("--image", default=DEFAULT_IMAGE, help="Docker image tag")
     parser.add_argument("--len", type=int, default=4096, help="LEN_1D value")
     parser.add_argument("--lmul", type=int, default=1, help="LMUL value")
@@ -260,6 +266,11 @@ def resolve_source_path(root: Path, source: str | Path) -> Path:
     return path
 
 
+def validate_source_suffix(source: Path) -> None:
+    if source.suffix not in SUPPORTED_SOURCE_SUFFIXES:
+        fail(f"source must be a .c, .s, or .S file: {source}")
+
+
 def build_emulate_docker_command(
     *,
     root: Path,
@@ -382,6 +393,7 @@ def run_emulate_source(
         resolved_source = resolve_source_path(root, source)
     except FileNotFoundError as exc:
         raise RuntimeError(str(exc)) from exc
+    validate_source_suffix(resolved_source)
     if ensure_image:
         ensure_image_exists(image)
     effective_timeout = resolve_timeout(timeout_s)
@@ -481,18 +493,34 @@ def run_emulate_source(
 def main() -> None:
     args = parse_args()
     try:
-        result = run_emulate(
-            bench=args.bench,
-            image=args.image,
-            len_1d=args.len,
-            lmul=args.lmul,
-            use_vf=args.use_vf,
-            timeout_s=args.timeout,
-            log_root=args.log_root,
-            extra_cflags=args.extra_cflags,
-            extra_opt_flags=args.extra_opt_flags,
-        )
-    except RuntimeError as exc:
+        if args.bench:
+            result = run_emulate(
+                bench=args.bench,
+                image=args.image,
+                len_1d=args.len,
+                lmul=args.lmul,
+                use_vf=args.use_vf,
+                timeout_s=args.timeout,
+                log_root=args.log_root,
+                extra_cflags=args.extra_cflags,
+                extra_opt_flags=args.extra_opt_flags,
+            )
+        else:
+            source = resolve_source_path(repo_root(), args.source)
+            validate_source_suffix(source)
+            result = run_emulate_source(
+                benchmark=source.stem,
+                source=source,
+                image=args.image,
+                len_1d=args.len,
+                lmul=args.lmul,
+                use_vf=args.use_vf,
+                timeout_s=args.timeout,
+                log_root=args.log_root,
+                extra_cflags=args.extra_cflags,
+                extra_opt_flags=args.extra_opt_flags,
+            )
+    except (FileNotFoundError, RuntimeError) as exc:
         fail(str(exc))
     print_summary(result["summary"])
     if result["failed"]:

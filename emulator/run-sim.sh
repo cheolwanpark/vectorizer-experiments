@@ -5,6 +5,7 @@ Unified simulator runner.
 Examples:
   ./run-sim.sh saturn my-test.elf
   ./run-sim.sh saturn src/kernel.c --lmul=2
+  ./run-sim.sh xiangshan.KunminghuV2Config out/kernel.s --lmul=1
   ./run-sim.sh xiangshan.MinimalConfig workloads/hello.bin
   ./run-sim.sh t1 tests/rvv-test.elf
 
@@ -375,7 +376,7 @@ def build_kernel(
     optflags: str | None = None,
     build_out_dir: Path | None = None,
 ) -> Path:
-    """Build a .c kernel using run/build-kernel and return the ELF path."""
+    """Build a .c/.s/.S kernel using run/build-kernel and return the ELF path."""
     build_script = root_dir / "run" / "build-kernel"
     if not build_script.exists():
         raise FileNotFoundError(f"build-kernel not found: {build_script}")
@@ -1110,7 +1111,7 @@ Verbose Mode (default: ON):
 """,
     )
     parser.add_argument("target", nargs="?", help="Simulator target (e.g., 'saturn', 'xiangshan.MinimalConfig')")
-    parser.add_argument("workload", nargs="?", help="Path to ELF/binary or .c source file")
+    parser.add_argument("workload", nargs="?", help="Path to ELF/binary or .c/.s/.S source file")
     parser.add_argument("--config-file", default="sim-configs.yaml", help="Config file path")
     parser.add_argument("--max-cycles", type=int, default=100_000_000, help="Maximum simulation cycles")
     parser.add_argument("--timeout", type=int, default=600, help="Timeout in seconds")
@@ -1184,8 +1185,8 @@ Verbose Mode (default: ON):
     if not workload.is_absolute():
         workload = Path.cwd() / workload
 
-    # If workload is a .c file, build it first
-    if workload.suffix == ".c":
+    # If workload is a source file, build it first.
+    if workload.suffix in (".c", ".s", ".S"):
         build_target = GROUP_TO_BUILD_TARGET.get(spec.group, spec.group)
         workload = build_kernel(
             root_dir,

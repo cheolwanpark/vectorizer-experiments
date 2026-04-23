@@ -9,7 +9,7 @@ TSVC_WRAPPER_MARKER="TSVC_EMULATE_WRAPPER"
 TSVC_GENERATED_MARKER="TSVC_EMULATE_GENERATED"
 
 usage() {
-    echo "Usage: build-kernel <target> <source.c> [options]"
+    echo "Usage: build-kernel <target> <source.c|source.s|source.S> [options]"
     echo ""
     echo "Targets: spike, gem5, saturn, ara, xiangshan, t1, c910, vicuna, ocelot"
     echo ""
@@ -272,15 +272,20 @@ TARGET_FILE="${SCRIPT_DIR}/targets/${TARGET}.sh"
 [[ ! -f "$TARGET_FILE" ]] && die "Unknown target: $TARGET"
 source "$TARGET_FILE"
 
-KERNEL="$(basename "$SOURCE" .c)"
+SOURCE_BASENAME="$(basename "$SOURCE")"
+KERNEL="${SOURCE_BASENAME%.*}"
+ASSEMBLY_MODE=0
+case "$SOURCE" in
+    *.s|*.S) ASSEMBLY_MODE=1 ;;
+esac
 TSVC_MODE=0
 GENERATED_MODE=0
 TSVC_LOOP_SOURCE=""
-if [[ -f "$SOURCE" ]] && grep -q "${TSVC_WRAPPER_MARKER}" "$SOURCE"; then
+if [[ "$ASSEMBLY_MODE" -eq 0 && -f "$SOURCE" ]] && grep -q "${TSVC_WRAPPER_MARKER}" "$SOURCE"; then
     TSVC_MODE=1
     TSVC_LOOP_SOURCE="${SCRIPT_DIR}/../benchmarks/TSVC_2/src/loops/${KERNEL}.c"
     [[ ! -f "$TSVC_LOOP_SOURCE" ]] && die "TSVC loop source not found: $TSVC_LOOP_SOURCE"
-elif [[ -f "$SOURCE" ]] && grep -q "${TSVC_GENERATED_MARKER}" "$SOURCE"; then
+elif [[ "$ASSEMBLY_MODE" -eq 0 && -f "$SOURCE" ]] && grep -q "${TSVC_GENERATED_MARKER}" "$SOURCE"; then
     GENERATED_MODE=1
 fi
 OUT_DIR="${SCRIPT_DIR}/out"
@@ -393,9 +398,6 @@ fi
 
 OBJECT_COMPILE_FLAGS=("${COMPILE_FLAGS[@]}" -O3)
 
-OPT_BIN="$(resolve_opt)" || die "opt not found. Set OPT or ensure an LLVM build with opt is available."
-LLC_BIN="$(resolve_llc)" || die "llc not found. Set LLC or ensure an LLVM build with llc is available."
-PIPELINE_HELPER="$(resolve_pipeline_helper)" || die "llvm_pipeline.py not found"
 BASE_PATH="${OUTPUT%.elf}"
 OPT_LL="${BASE_PATH}.opt.ll"
 OPT_LOG="${BASE_PATH}.opt.log"
@@ -408,41 +410,58 @@ if [[ "$TSVC_MODE" -eq 1 ]]; then
     IR_SOURCE="$TSVC_LOOP_SOURCE"
 fi
 KERNEL_OBJ="${BUILD_DIR}/${KERNEL}.o"
-PIPELINE_CMD=(
-    python3
-    "$PIPELINE_HELPER"
-    build-artifacts
-    --source "$IR_SOURCE"
-    --opt-ll "$OPT_LL"
-    --asm-out "$ASM_OUT"
-    --obj-out "$KERNEL_OBJ"
-    --clang-bin "$CC"
-    --opt-bin "$OPT_BIN"
-    --llc-bin "$LLC_BIN"
-    --prevec-passes "$PREVEC_PASSES"
-    --opt-passes "$FORCED_OPT_PASSES"
-)
-for flag in "${COMPILE_FLAGS[@]}"; do
-    PIPELINE_CMD+=("--compile-flag=$flag")
-done
-for flag in "${OPT_FLAGS[@]}"; do
-    PIPELINE_CMD+=("--opt-flag=$flag")
-done
-if [[ -n "$USE_VF" ]]; then
-    PIPELINE_CMD+=(--use-vf "$USE_VF" --opt-log "$OPT_LOG")
-fi
 
-echo "Building: $KERNEL (target=$TARGET, lmul=$LMUL, use_vf=$USE_VF)"
-if ! "${PIPELINE_CMD[@]}"; then
-    if [[ -f "$OPT_LOG" ]]; then
-        cat "$OPT_LOG" >&2
-        die "Forced VF optimization failed. Log: $OPT_LOG"
+if [[ "$ASSEMBLY_MODE" -eq 1 ]]; then
+    if [[ -n "$USE_VF" ]]; then
+        warn "--use-vf is ignored for assembly sources"
     fi
-    die "LLVM pipeline failed for ${IR_SOURCE}"
-fi
-if [[ -n "$USE_VF" ]]; then
-    verify_forced_vector_ir "$OPT_LL" "$USE_VF" "$OPT_LOG"
-    rm -f "$OPT_LOG"
+    echo "Building assembly: $KERNEL (target=$TARGET, lmul=$LMUL)"
+    if [[ "$SOURCE" != "$ASM_OUT" ]]; then
+        cp "$SOURCE" "$ASM_OUT"
+    fi
+    if [[ "$ASM" != "1" ]]; then
+        compile_to_object "$SOURCE" "$KERNEL_OBJ"
+    fi
+else
+    OPT_BIN="$(resolve_opt)" || die "opt not found. Set OPT or ensure an LLVM build with opt is available."
+    LLC_BIN="$(resolve_llc)" || die "llc not found. Set LLC or ensure an LLVM build with llc is available."
+    PIPELINE_HELPER="$(resolve_pipeline_helper)" || die "llvm_pipeline.py not found"
+    PIPELINE_CMD=(
+        python3
+        "$PIPELINE_HELPER"
+        build-artifacts
+        --source "$IR_SOURCE"
+        --opt-ll "$OPT_LL"
+        --asm-out "$ASM_OUT"
+        --obj-out "$KERNEL_OBJ"
+        --clang-bin "$CC"
+        --opt-bin "$OPT_BIN"
+        --llc-bin "$LLC_BIN"
+        --prevec-passes "$PREVEC_PASSES"
+        --opt-passes "$FORCED_OPT_PASSES"
+    )
+    for flag in "${COMPILE_FLAGS[@]}"; do
+        PIPELINE_CMD+=("--compile-flag=$flag")
+    done
+    for flag in "${OPT_FLAGS[@]}"; do
+        PIPELINE_CMD+=("--opt-flag=$flag")
+    done
+    if [[ -n "$USE_VF" ]]; then
+        PIPELINE_CMD+=(--use-vf "$USE_VF" --opt-log "$OPT_LOG")
+    fi
+
+    echo "Building: $KERNEL (target=$TARGET, lmul=$LMUL, use_vf=$USE_VF)"
+    if ! "${PIPELINE_CMD[@]}"; then
+        if [[ -f "$OPT_LOG" ]]; then
+            cat "$OPT_LOG" >&2
+            die "Forced VF optimization failed. Log: $OPT_LOG"
+        fi
+        die "LLVM pipeline failed for ${IR_SOURCE}"
+    fi
+    if [[ -n "$USE_VF" ]]; then
+        verify_forced_vector_ir "$OPT_LL" "$USE_VF" "$OPT_LOG"
+        rm -f "$OPT_LOG"
+    fi
 fi
 
 echo "Assembly: $ASM_OUT"

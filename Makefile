@@ -63,8 +63,9 @@ _EXTRA_CFLAGS_ARG = $(if $(strip $(_CLANG_MLLVM_FLAGS)),--extra-cflags='$(strip 
 _EXTRA_OPT_FLAGS_ARG = $(if $(strip $(_OPT_FLAGS)),--extra-opt-flags='$(strip $(_OPT_FLAGS))',)
 
 BENCH := $(firstword $(filter s%,$(MAKECMDGOALS)))
+ASM_SOURCE := $(firstword $(filter %.s %.S,$(MAKECMDGOALS)))
 
-.PHONY: help emulate emulate-all vplan-explain dlmul-microbench dlmul-bench
+.PHONY: help emulate emulate-asm emulate-all vplan-explain dlmul-microbench dlmul-bench
 .PHONY: vplan-explain-all plot-results plot-results-cmp profile profile-all FORCE
 
 help:
@@ -74,6 +75,7 @@ help:
 	@echo "TARGETS:"
 	@echo ""
 	@echo "  emulate sXXX          Run one kernel on XiangShan emulator"
+	@echo "  emulate-asm xxx.s     Run one assembly kernel on XiangShan emulator"
 	@echo "  emulate-all           Run all kernels on emulator (uses VFS_DB)"
 	@echo "  vplan-explain sXXX    Generate VPlan cost explanation for one kernel"
 	@echo "  vplan-explain-all     Generate VPlan explanations for all kernels"
@@ -145,6 +147,7 @@ help:
 	@echo "EXAMPLES:"
 	@echo ""
 	@echo "  make emulate s2101 LMUL=2"
+	@echo "  make emulate-asm emulator/run/out/s111_xiangshan_lmul1.s"
 	@echo "  make emulate-all LLVM_CUSTOM=llvm-project/build/bin PRECISE_MEM_COST=1"
 	@echo "  make vplan-explain s4112 ARCH=RVV PRECISE_MEM_COST=1 GATHER_SCATTER_OVERHEAD=3"
 	@echo "  make profile-all CONCURRENCY=4 X86_MARCH=sapphirerapids"
@@ -158,6 +161,13 @@ emulate:
 		exit 2; \
 	fi
 	@$(PYTHON) scripts/emulate.py --bench "$(BENCH)" --image "$(IMAGE)" --len "$(LEN)" --lmul "$(LMUL)" $(if $(strip $(USE_VF)),--use-vf "$(USE_VF)",) --timeout "$(TIMEOUT)" --log-root "$(LOG_ROOT)" $(_EXTRA_CFLAGS_ARG) $(_EXTRA_OPT_FLAGS_ARG)
+
+emulate-asm:
+	@if [ -z "$(ASM_SOURCE)" ]; then \
+		echo "usage: make emulate-asm xxx.s [IMAGE=...] [LEN=4096] [LMUL=1] [TIMEOUT=120] [LOG_ROOT=artifacts/emulate]   # XiangShan" >&2; \
+		exit 2; \
+	fi
+	@$(PYTHON) scripts/emulate.py --source "$(ASM_SOURCE)" --image "$(IMAGE)" --len "$(LEN)" --lmul "$(LMUL)" $(if $(strip $(USE_VF)),--use-vf "$(USE_VF)",) --timeout "$(TIMEOUT)" --log-root "$(LOG_ROOT)" $(_EXTRA_CFLAGS_ARG) $(_EXTRA_OPT_FLAGS_ARG)
 
 emulate-all: $(VFS_DB)
 	@$(PYTHON) scripts/emulate_all.py \
@@ -302,4 +312,10 @@ plot-results-cmp:
 		--prefix "$(PLOT_CMP_PREFIX)"
 
 s%:
+	@:
+
+%.s:
+	@:
+
+%.S:
 	@:
