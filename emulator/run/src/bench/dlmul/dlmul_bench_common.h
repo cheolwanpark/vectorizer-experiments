@@ -2,36 +2,16 @@
 #define DLMUL_BENCH_COMMON_H
 
 #include "common.h"
-#include "../../microbench/dlmul/dlmul_variant.h"
 #include <stdint.h>
 
-#ifndef DLB_PHASE1_VARIANT
-#define DLB_PHASE1_VARIANT DLMUL_LMUL_M4
-#endif
-
-#ifndef DLB_PHASE2_VARIANT
-#define DLB_PHASE2_VARIANT DLMUL_LMUL_M2
-#endif
-
-#ifndef DLB_PHASE3_VARIANT
-#define DLB_PHASE3_VARIANT DLMUL_LMUL_M2
-#endif
-
-#ifndef DLB_PHASE1_TOTAL_ELEMS
-#define DLB_PHASE1_TOTAL_ELEMS 256
-#endif
-
-#ifndef DLB_PHASE2_TOTAL_ELEMS
-#define DLB_PHASE2_TOTAL_ELEMS 128
-#endif
-
-#ifndef DLB_PHASE3_TOTAL_ELEMS
-#define DLB_PHASE3_TOTAL_ELEMS 16
-#endif
-
-#ifndef DLB_OUTER_ITERS
-#define DLB_OUTER_ITERS 24
-#endif
+#define DLB_VARIANT_FIXED_M1 1
+#define DLB_VARIANT_FIXED_M2 2
+#define DLB_VARIANT_FIXED_M4 4
+#define DLB_VARIANT_FIXED_M8 8
+#define DLB_VARIANT_DYN_M4_M2_M4 42
+#define DLB_VARIANT_DYN_M8_M2_M8 82
+#define DLB_VARIANT_DYN_M8_M2_M2 822
+#define DLB_VARIANT_DYN_M8_M2_M4 824
 
 static inline void dlb_init_real_inputs(void) {
     for (int i = 0; i < LEN_1D; ++i) {

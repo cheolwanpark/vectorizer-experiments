@@ -1,5 +1,6 @@
 import sqlite3
 import unittest
+from pathlib import Path
 from unittest.mock import patch
 
 from scripts import dlmul_bench
@@ -80,6 +81,26 @@ class DlmulBenchTest(unittest.TestCase):
             [variant.name for variant in manifest[9].variants],
             ["fixed_m2", "fixed_m4", "fixed_m8", "dyn_m8_m2_m8"],
         )
+
+    def test_db_sources_keep_kernel_local_explicit_rvv_style(self):
+        manifest = dlmul_bench.make_manifest()
+        source_paths = {
+            Path(variant.source_path)
+            for case in manifest
+            for variant in case.variants
+        }
+
+        for source_path in source_paths:
+            source_text = source_path.read_text(encoding="utf-8")
+            self.assertNotIn("dlmul_bench_vector_macros.h", source_text)
+            self.assertNotIn("DLB_F32_T", source_text)
+            self.assertNotIn("DLB_I16_T", source_text)
+            self.assertNotIn("DLB_I32_T", source_text)
+            self.assertNotIn("DLB_VLE", source_text)
+            self.assertNotIn("DLB_VSE", source_text)
+            self.assertNotIn("static void run_", source_text)
+            self.assertNotRegex(source_text, r"#define DB\d+_[A-Z0-9_]*PHASE\(")
+            self.assertIn("void kernel(void)", source_text)
 
     def test_build_extra_cflags_disables_auto_vectorization(self):
         manifest = dlmul_bench.make_manifest()

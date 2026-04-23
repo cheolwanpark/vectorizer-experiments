@@ -1,5 +1,4 @@
 #include "dlmul_bench_common.h"
-#include "dlmul_bench_vector_macros.h"
 #include <riscv_vector.h>
 
 #ifndef DLB_BENCH_VARIANT
@@ -12,120 +11,177 @@
 static int16_t db1_src0[LEN_1D];
 static int16_t db1_src1[LEN_1D];
 static int16_t db1_bias[LEN_1D];
-static int32_t db1_acc[LEN_1D];
-
-static void db1_init(void) {
-    dlb_init_real_inputs();
-    dlb_init_int16_triplet(db1_src0, db1_src1, db1_bias, DB1_TOTAL_ELEMS);
-}
-
-#define DB1_WIDE_PHASE(lmul) do { \
-    int offset = 0; \
-    int remaining = DB1_TOTAL_ELEMS; \
-    while (remaining > 0) { \
-        size_t vl = DLB_VSETVL_E32(lmul)((size_t)remaining); \
-        DLB_F32_T(lmul) va = DLB_VLE32(lmul)(&a[offset], vl); \
-        DLB_F32_T(lmul) vb = DLB_VLE32(lmul)(&b[offset], vl); \
-        DLB_F32_T(lmul) vc = DLB_VLE32(lmul)(&c[offset], vl); \
-        DLB_F32_T(lmul) vd = DLB_VLE32(lmul)(&d[offset], vl); \
-        DLB_F32_T(lmul) t0 = DLB_VFADD(lmul)(va, vb, vl); \
-        DLB_F32_T(lmul) t1 = DLB_VFMUL(lmul)(vc, vd, vl); \
-        DLB_F32_T(lmul) out = DLB_VFMACC_VF(lmul)(t0, 0.25f, t1, vl); \
-        DLB_VSE32(lmul)(&a[offset], out, vl); \
-        remaining -= (int)vl; \
-        offset += (int)vl; \
-    } \
-} while (0)
-
-#define DB1_WIDEN_PHASE(src_lmul, dst_lmul) do { \
-    int offset = 0; \
-    int remaining = DB1_TOTAL_ELEMS; \
-    while (remaining > 0) { \
-        size_t vl = DLB_VSETVL_E16(src_lmul)((size_t)remaining); \
-        DLB_I16_T(src_lmul) x0 = DLB_VLE16(src_lmul)(&db1_src0[offset], vl); \
-        DLB_I16_T(src_lmul) x1 = DLB_VLE16(src_lmul)(&db1_src1[offset], vl); \
-        DLB_I16_T(src_lmul) xb = DLB_VLE16(src_lmul)(&db1_bias[offset], vl); \
-        DLB_I32_T(dst_lmul) acc0 = DLB_VWADD_I32(dst_lmul)(x0, x1, vl); \
-        DLB_I32_T(dst_lmul) acc1 = DLB_VWMUL_I32(dst_lmul)(x0, x1, vl); \
-        DLB_I32_T(dst_lmul) acc2 = DLB_VWADD_I32(dst_lmul)(x1, xb, vl); \
-        DLB_I32_T(dst_lmul) acc3 = DLB_VWMUL_I32(dst_lmul)(x1, xb, vl); \
-        DLB_I32_T(dst_lmul) acc4 = DLB_VWADD_I32(dst_lmul)(x0, xb, vl); \
-        DLB_I32_T(dst_lmul) acc5 = DLB_VWMUL_I32(dst_lmul)(x0, xb, vl); \
-        DLB_I32_T(dst_lmul) acc6 = DLB_VWADD_I32(dst_lmul)(xb, x1, vl); \
-        DLB_I32_T(dst_lmul) acc7 = DLB_VWMUL_I32(dst_lmul)(xb, x0, vl); \
-        DLB_I32_T(dst_lmul) out = DLB_VADD_I32(dst_lmul)(acc0, acc1, vl); \
-        out = DLB_VADD_I32(dst_lmul)(out, acc2, vl); \
-        out = DLB_VADD_I32(dst_lmul)(out, acc3, vl); \
-        out = DLB_VADD_I32(dst_lmul)(out, acc4, vl); \
-        out = DLB_VADD_I32(dst_lmul)(out, acc5, vl); \
-        out = DLB_VADD_I32(dst_lmul)(out, acc6, vl); \
-        out = DLB_VADD_I32(dst_lmul)(out, acc7, vl); \
-        DLB_VSE32_I(dst_lmul)(&db1_acc[offset], out, vl); \
-        remaining -= (int)vl; \
-        offset += (int)vl; \
-    } \
-} while (0)
-
-#define DB1_EPILOGUE_PHASE(lmul) do { \
-    int offset = 0; \
-    int remaining = DB1_TOTAL_ELEMS; \
-    while (remaining > 0) { \
-        size_t vl = DLB_VSETVL_E32(lmul)((size_t)remaining); \
-        DLB_F32_T(lmul) va = DLB_VLE32(lmul)(&a[offset], vl); \
-        DLB_F32_T(lmul) ve = DLB_VLE32(lmul)(&e[offset], vl); \
-        DLB_F32_T(lmul) vx = DLB_VLE32(lmul)(&x[offset], vl); \
-        DLB_F32_T(lmul) out = DLB_VFADD(lmul)(va, ve, vl); \
-        out = DLB_VFMACC_VF(lmul)(out, 0.125f, vx, vl); \
-        DLB_VSE32(lmul)(&d[offset], out, vl); \
-        remaining -= (int)vl; \
-        offset += (int)vl; \
-    } \
-} while (0)
-
-static void run_fixed_m1(void) {
-    db1_init();
-    for (int iter = 0; iter < DB1_OUTER_ITERS; ++iter) {
-        DB1_WIDE_PHASE(m1);
-        DB1_WIDEN_PHASE(m1, m2);
-        DB1_EPILOGUE_PHASE(m1);
-    }
-}
-
-static void run_fixed_m2(void) {
-    db1_init();
-    for (int iter = 0; iter < DB1_OUTER_ITERS; ++iter) {
-        DB1_WIDE_PHASE(m2);
-        DB1_WIDEN_PHASE(m2, m4);
-        DB1_EPILOGUE_PHASE(m2);
-    }
-}
-
-static void run_fixed_m4(void) {
-    db1_init();
-    for (int iter = 0; iter < DB1_OUTER_ITERS; ++iter) {
-        DB1_WIDE_PHASE(m4);
-        DB1_WIDEN_PHASE(m4, m8);
-        DB1_EPILOGUE_PHASE(m4);
-    }
-}
-
-static void run_dyn_m4_m2_m4(void) {
-    db1_init();
-    for (int iter = 0; iter < DB1_OUTER_ITERS; ++iter) {
-        DB1_WIDE_PHASE(m4);
-        DB1_WIDEN_PHASE(m2, m4);
-        DB1_EPILOGUE_PHASE(m4);
-    }
-}
 
 void kernel(void) {
+    dlb_init_real_inputs();
+    dlb_init_int16_triplet(db1_src0, db1_src1, db1_bias, DB1_TOTAL_ELEMS);
+
+    for (int iter = 0; iter < DB1_OUTER_ITERS; ++iter) {
 #if DLB_BENCH_VARIANT == DLB_VARIANT_FIXED_M1
-    run_fixed_m1();
+        size_t vl_base = __riscv_vsetvl_e32m1((size_t)DB1_TOTAL_ELEMS);
+        for (int offset = 0; offset < DB1_TOTAL_ELEMS; offset += (int)vl_base) {
+            size_t avl = (size_t)(DB1_TOTAL_ELEMS - offset);
+            if (avl > vl_base) avl = vl_base;
+
+            vfloat32m1_t va = __riscv_vle32_v_f32m1(&a[offset], avl);
+            vfloat32m1_t vb = __riscv_vle32_v_f32m1(&b[offset], avl);
+            vfloat32m1_t vc = __riscv_vle32_v_f32m1(&c[offset], avl);
+            vfloat32m1_t vd = __riscv_vle32_v_f32m1(&d[offset], avl);
+            vfloat32m1_t ve = __riscv_vle32_v_f32m1(&e[offset], avl);
+            vfloat32m1_t vx = __riscv_vle32_v_f32m1(&x[offset], avl);
+            vfloat32m1_t t0 = __riscv_vfadd_vv_f32m1(va, vb, avl);
+            vfloat32m1_t t1 = __riscv_vfmul_vv_f32m1(vc, vd, avl);
+            vfloat32m1_t a_out = __riscv_vfmacc_vf_f32m1(t0, 0.25f, t1, avl);
+            vfloat32m1_t d_out = __riscv_vfadd_vv_f32m1(a_out, ve, avl);
+            d_out = __riscv_vfmacc_vf_f32m1(d_out, 0.125f, vx, avl);
+
+            vint16m1_t x0 = __riscv_vle16_v_i16m1(&db1_src0[offset], avl);
+            vint16m1_t x1 = __riscv_vle16_v_i16m1(&db1_src1[offset], avl);
+            vint16m1_t xb = __riscv_vle16_v_i16m1(&db1_bias[offset], avl);
+            vint32m2_t acc0 = __riscv_vwadd_vv_i32m2(x0, x1, avl);
+            vint32m2_t acc1 = __riscv_vwmul_vv_i32m2(x0, x1, avl);
+            vint32m2_t acc2 = __riscv_vwadd_vv_i32m2(x1, xb, avl);
+            vint32m2_t acc3 = __riscv_vwmul_vv_i32m2(x1, xb, avl);
+            vint32m2_t acc4 = __riscv_vwadd_vv_i32m2(x0, xb, avl);
+            vint32m2_t acc5 = __riscv_vwmul_vv_i32m2(x0, xb, avl);
+            vint32m2_t acc6 = __riscv_vwadd_vv_i32m2(xb, x1, avl);
+            vint32m2_t acc7 = __riscv_vwmul_vv_i32m2(xb, x0, avl);
+            vint32m2_t i_out = __riscv_vadd_vv_i32m2(acc0, acc1, avl);
+            i_out = __riscv_vadd_vv_i32m2(i_out, acc2, avl);
+            i_out = __riscv_vadd_vv_i32m2(i_out, acc3, avl);
+            i_out = __riscv_vadd_vv_i32m2(i_out, acc4, avl);
+            i_out = __riscv_vadd_vv_i32m2(i_out, acc5, avl);
+            i_out = __riscv_vadd_vv_i32m2(i_out, acc6, avl);
+            i_out = __riscv_vadd_vv_i32m2(i_out, acc7, avl);
+
+            __riscv_vse32_v_f32m1(&a[offset], a_out, avl);
+            __riscv_vse32_v_f32m1(&d[offset], d_out, avl);
+            __riscv_vse32_v_i32m2(&indx[offset], i_out, avl);
+        }
 #elif DLB_BENCH_VARIANT == DLB_VARIANT_FIXED_M2
-    run_fixed_m2();
+        size_t vl_base = __riscv_vsetvl_e32m2((size_t)DB1_TOTAL_ELEMS);
+        for (int offset = 0; offset < DB1_TOTAL_ELEMS; offset += (int)vl_base) {
+            size_t avl = (size_t)(DB1_TOTAL_ELEMS - offset);
+            if (avl > vl_base) avl = vl_base;
+
+            vfloat32m2_t va = __riscv_vle32_v_f32m2(&a[offset], avl);
+            vfloat32m2_t vb = __riscv_vle32_v_f32m2(&b[offset], avl);
+            vfloat32m2_t vc = __riscv_vle32_v_f32m2(&c[offset], avl);
+            vfloat32m2_t vd = __riscv_vle32_v_f32m2(&d[offset], avl);
+            vfloat32m2_t ve = __riscv_vle32_v_f32m2(&e[offset], avl);
+            vfloat32m2_t vx = __riscv_vle32_v_f32m2(&x[offset], avl);
+            vfloat32m2_t t0 = __riscv_vfadd_vv_f32m2(va, vb, avl);
+            vfloat32m2_t t1 = __riscv_vfmul_vv_f32m2(vc, vd, avl);
+            vfloat32m2_t a_out = __riscv_vfmacc_vf_f32m2(t0, 0.25f, t1, avl);
+            vfloat32m2_t d_out = __riscv_vfadd_vv_f32m2(a_out, ve, avl);
+            d_out = __riscv_vfmacc_vf_f32m2(d_out, 0.125f, vx, avl);
+
+            vint16m2_t x0 = __riscv_vle16_v_i16m2(&db1_src0[offset], avl);
+            vint16m2_t x1 = __riscv_vle16_v_i16m2(&db1_src1[offset], avl);
+            vint16m2_t xb = __riscv_vle16_v_i16m2(&db1_bias[offset], avl);
+            vint32m4_t acc0 = __riscv_vwadd_vv_i32m4(x0, x1, avl);
+            vint32m4_t acc1 = __riscv_vwmul_vv_i32m4(x0, x1, avl);
+            vint32m4_t acc2 = __riscv_vwadd_vv_i32m4(x1, xb, avl);
+            vint32m4_t acc3 = __riscv_vwmul_vv_i32m4(x1, xb, avl);
+            vint32m4_t acc4 = __riscv_vwadd_vv_i32m4(x0, xb, avl);
+            vint32m4_t acc5 = __riscv_vwmul_vv_i32m4(x0, xb, avl);
+            vint32m4_t acc6 = __riscv_vwadd_vv_i32m4(xb, x1, avl);
+            vint32m4_t acc7 = __riscv_vwmul_vv_i32m4(xb, x0, avl);
+            vint32m4_t i_out = __riscv_vadd_vv_i32m4(acc0, acc1, avl);
+            i_out = __riscv_vadd_vv_i32m4(i_out, acc2, avl);
+            i_out = __riscv_vadd_vv_i32m4(i_out, acc3, avl);
+            i_out = __riscv_vadd_vv_i32m4(i_out, acc4, avl);
+            i_out = __riscv_vadd_vv_i32m4(i_out, acc5, avl);
+            i_out = __riscv_vadd_vv_i32m4(i_out, acc6, avl);
+            i_out = __riscv_vadd_vv_i32m4(i_out, acc7, avl);
+
+            __riscv_vse32_v_f32m2(&a[offset], a_out, avl);
+            __riscv_vse32_v_f32m2(&d[offset], d_out, avl);
+            __riscv_vse32_v_i32m4(&indx[offset], i_out, avl);
+        }
 #elif DLB_BENCH_VARIANT == DLB_VARIANT_FIXED_M4
-    run_fixed_m4();
+        size_t vl_base = __riscv_vsetvl_e32m4((size_t)DB1_TOTAL_ELEMS);
+        for (int offset = 0; offset < DB1_TOTAL_ELEMS; offset += (int)vl_base) {
+            size_t avl = (size_t)(DB1_TOTAL_ELEMS - offset);
+            if (avl > vl_base) avl = vl_base;
+
+            vfloat32m4_t va = __riscv_vle32_v_f32m4(&a[offset], avl);
+            vfloat32m4_t vb = __riscv_vle32_v_f32m4(&b[offset], avl);
+            vfloat32m4_t vc = __riscv_vle32_v_f32m4(&c[offset], avl);
+            vfloat32m4_t vd = __riscv_vle32_v_f32m4(&d[offset], avl);
+            vfloat32m4_t ve = __riscv_vle32_v_f32m4(&e[offset], avl);
+            vfloat32m4_t vx = __riscv_vle32_v_f32m4(&x[offset], avl);
+            vfloat32m4_t t0 = __riscv_vfadd_vv_f32m4(va, vb, avl);
+            vfloat32m4_t t1 = __riscv_vfmul_vv_f32m4(vc, vd, avl);
+            vfloat32m4_t a_out = __riscv_vfmacc_vf_f32m4(t0, 0.25f, t1, avl);
+            vfloat32m4_t d_out = __riscv_vfadd_vv_f32m4(a_out, ve, avl);
+            d_out = __riscv_vfmacc_vf_f32m4(d_out, 0.125f, vx, avl);
+
+            vint16m4_t x0 = __riscv_vle16_v_i16m4(&db1_src0[offset], avl);
+            vint16m4_t x1 = __riscv_vle16_v_i16m4(&db1_src1[offset], avl);
+            vint16m4_t xb = __riscv_vle16_v_i16m4(&db1_bias[offset], avl);
+            vint32m8_t acc0 = __riscv_vwadd_vv_i32m8(x0, x1, avl);
+            vint32m8_t acc1 = __riscv_vwmul_vv_i32m8(x0, x1, avl);
+            vint32m8_t acc2 = __riscv_vwadd_vv_i32m8(x1, xb, avl);
+            vint32m8_t acc3 = __riscv_vwmul_vv_i32m8(x1, xb, avl);
+            vint32m8_t acc4 = __riscv_vwadd_vv_i32m8(x0, xb, avl);
+            vint32m8_t acc5 = __riscv_vwmul_vv_i32m8(x0, xb, avl);
+            vint32m8_t acc6 = __riscv_vwadd_vv_i32m8(xb, x1, avl);
+            vint32m8_t acc7 = __riscv_vwmul_vv_i32m8(xb, x0, avl);
+            vint32m8_t i_out = __riscv_vadd_vv_i32m8(acc0, acc1, avl);
+            i_out = __riscv_vadd_vv_i32m8(i_out, acc2, avl);
+            i_out = __riscv_vadd_vv_i32m8(i_out, acc3, avl);
+            i_out = __riscv_vadd_vv_i32m8(i_out, acc4, avl);
+            i_out = __riscv_vadd_vv_i32m8(i_out, acc5, avl);
+            i_out = __riscv_vadd_vv_i32m8(i_out, acc6, avl);
+            i_out = __riscv_vadd_vv_i32m8(i_out, acc7, avl);
+
+            __riscv_vse32_v_f32m4(&a[offset], a_out, avl);
+            __riscv_vse32_v_f32m4(&d[offset], d_out, avl);
+            __riscv_vse32_v_i32m8(&indx[offset], i_out, avl);
+        }
 #else
-    run_dyn_m4_m2_m4();
+        size_t vl4 = __riscv_vsetvl_e32m4((size_t)DB1_TOTAL_ELEMS);
+        for (int offset = 0; offset < DB1_TOTAL_ELEMS; offset += (int)vl4) {
+            size_t avl = (size_t)(DB1_TOTAL_ELEMS - offset);
+            if (avl > vl4) avl = vl4;
+
+            vfloat32m4_t va = __riscv_vle32_v_f32m4(&a[offset], avl);
+            vfloat32m4_t vb = __riscv_vle32_v_f32m4(&b[offset], avl);
+            vfloat32m4_t vc = __riscv_vle32_v_f32m4(&c[offset], avl);
+            vfloat32m4_t vd = __riscv_vle32_v_f32m4(&d[offset], avl);
+            vfloat32m4_t ve = __riscv_vle32_v_f32m4(&e[offset], avl);
+            vfloat32m4_t vx = __riscv_vle32_v_f32m4(&x[offset], avl);
+            vfloat32m4_t t0 = __riscv_vfadd_vv_f32m4(va, vb, avl);
+            vfloat32m4_t t1 = __riscv_vfmul_vv_f32m4(vc, vd, avl);
+            vfloat32m4_t a_out = __riscv_vfmacc_vf_f32m4(t0, 0.25f, t1, avl);
+            vfloat32m4_t d_out = __riscv_vfadd_vv_f32m4(a_out, ve, avl);
+            d_out = __riscv_vfmacc_vf_f32m4(d_out, 0.125f, vx, avl);
+
+            vint16m2_t x0 = __riscv_vle16_v_i16m2(&db1_src0[offset], avl);
+            vint16m2_t x1 = __riscv_vle16_v_i16m2(&db1_src1[offset], avl);
+            vint16m2_t xb = __riscv_vle16_v_i16m2(&db1_bias[offset], avl);
+            vint32m4_t acc0 = __riscv_vwadd_vv_i32m4(x0, x1, avl);
+            vint32m4_t acc1 = __riscv_vwmul_vv_i32m4(x0, x1, avl);
+            vint32m4_t acc2 = __riscv_vwadd_vv_i32m4(x1, xb, avl);
+            vint32m4_t acc3 = __riscv_vwmul_vv_i32m4(x1, xb, avl);
+            vint32m4_t acc4 = __riscv_vwadd_vv_i32m4(x0, xb, avl);
+            vint32m4_t acc5 = __riscv_vwmul_vv_i32m4(x0, xb, avl);
+            vint32m4_t acc6 = __riscv_vwadd_vv_i32m4(xb, x1, avl);
+            vint32m4_t acc7 = __riscv_vwmul_vv_i32m4(xb, x0, avl);
+            vint32m4_t i_out = __riscv_vadd_vv_i32m4(acc0, acc1, avl);
+            i_out = __riscv_vadd_vv_i32m4(i_out, acc2, avl);
+            i_out = __riscv_vadd_vv_i32m4(i_out, acc3, avl);
+            i_out = __riscv_vadd_vv_i32m4(i_out, acc4, avl);
+            i_out = __riscv_vadd_vv_i32m4(i_out, acc5, avl);
+            i_out = __riscv_vadd_vv_i32m4(i_out, acc6, avl);
+            i_out = __riscv_vadd_vv_i32m4(i_out, acc7, avl);
+
+            __riscv_vsetvl_e32m4(avl);
+            __riscv_vse32_v_f32m4(&a[offset], a_out, avl);
+            __riscv_vse32_v_f32m4(&d[offset], d_out, avl);
+            __riscv_vse32_v_i32m4(&indx[offset], i_out, avl);
+        }
 #endif
+    }
 }
