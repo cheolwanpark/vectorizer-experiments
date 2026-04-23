@@ -29,11 +29,14 @@ class DlmulBenchTest(unittest.TestCase):
             for case in manifest
         }
 
-        self.assertEqual(len(jobs), 25)
+        self.assertEqual(len(jobs), 54)
         self.assertTrue(dyn_sources["db1"].endswith("emulator/run/src/bench/dlmul/db1.c"))
         self.assertTrue(dyn_sources["db2"].endswith("emulator/run/src/bench/dlmul/db2.c"))
         self.assertTrue(dyn_sources["db3-long"].endswith("emulator/run/src/bench/dlmul/db3.c"))
         self.assertTrue(dyn_sources["db5"].endswith("emulator/run/src/bench/dlmul/db5.c"))
+        self.assertTrue(dyn_sources["db6"].endswith("emulator/run/src/bench/dlmul/db6.c"))
+        self.assertTrue(dyn_sources["db8-long"].endswith("emulator/run/src/bench/dlmul/db8.c"))
+        self.assertTrue(dyn_sources["db10"].endswith("emulator/run/src/bench/dlmul/db10.c"))
 
     def test_each_workload_has_expected_db_variants(self):
         manifest = dlmul_bench.make_manifest()
@@ -48,6 +51,13 @@ class DlmulBenchTest(unittest.TestCase):
                 "db3-long",
                 "db4",
                 "db5",
+                "db6",
+                "db7",
+                "db8-short",
+                "db8-medium",
+                "db8-long",
+                "db9",
+                "db10",
             ],
         )
         self.assertEqual(
@@ -61,6 +71,14 @@ class DlmulBenchTest(unittest.TestCase):
         self.assertEqual(
             [variant.name for variant in manifest[2].variants],
             ["fixed_m2", "fixed_m4", "dyn_m4_m2_m4"],
+        )
+        self.assertEqual(
+            [variant.name for variant in manifest[7].variants],
+            ["fixed_m1", "fixed_m2", "fixed_m4", "dyn_m8_m2_m2", "dyn_m8_m2_m4"],
+        )
+        self.assertEqual(
+            [variant.name for variant in manifest[9].variants],
+            ["fixed_m2", "fixed_m4", "fixed_m8", "dyn_m8_m2_m8"],
         )
 
     def test_build_extra_cflags_disables_auto_vectorization(self):

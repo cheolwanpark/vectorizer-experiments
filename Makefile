@@ -82,7 +82,7 @@ help:
 	@echo "  plot-results          Plot results from a single result DB"
 	@echo "  plot-results-cmp      Compare emulate vs profile results"
 	@echo "  dlmul-microbench      Run C-based dynamic LMUL microbench suite (MB1-MB11) on XiangShan"
-	@echo "  dlmul-bench           Run C-based dynamic LMUL DB1-DB5 workload bench suite on XiangShan"
+	@echo "  dlmul-bench           Run C-based dynamic LMUL DB1-DB10 workload bench suite on XiangShan"
 	@echo ""
 	@echo "COMMON OPTIONS:"
 	@echo ""
