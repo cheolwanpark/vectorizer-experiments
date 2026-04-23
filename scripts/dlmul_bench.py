@@ -78,6 +78,7 @@ def compact_variants(
     *,
     root: Path,
     case_name: str,
+    source_case_name: str | None = None,
     kind: str,
     phase1_total_elems: int,
     phase2_total_elems: int,
@@ -87,6 +88,8 @@ def compact_variants(
     dyn_main_phase3_lmul: str = "m2",
     dyn_safe_phase3_lmul: str = "m1",
 ) -> tuple[VariantSpec, ...]:
+    source_case_name = source_case_name or case_name
+
     def make_variant(name: str, phase1_lmul: str, phase2_lmul: str, phase3_lmul: str) -> VariantSpec:
         params = {
             "kind": kind,
@@ -98,6 +101,7 @@ def compact_variants(
             "phase3_total_elems": phase3_total_elems,
             "outer_iters": outer_iters,
             "len_1d": len_1d,
+            "source_case_name": source_case_name,
         }
         patterns = (rf"vsetvli.*{phase1_lmul}\b",)
         if phase2_lmul != phase1_lmul:
@@ -109,7 +113,7 @@ def compact_variants(
             defines=(),
             params=params,
             asm_patterns=patterns,
-            source_path=str(root / f"{case_name}_{name}.c"),
+            source_path=str(root / f"{source_case_name}_{name}.c"),
         )
 
     return (
@@ -118,6 +122,50 @@ def compact_variants(
         make_variant("fixed_m4", "m4", "m4", "m4"),
         make_variant("dyn_main", "m4", "m2", dyn_main_phase3_lmul),
         make_variant("dyn_safe", "m4", "m1", dyn_safe_phase3_lmul),
+    )
+
+
+def pressure_island_variants(
+    *,
+    root: Path,
+    case_name: str,
+    source_case_name: str | None = None,
+    kind: str,
+    total_elems: int,
+    outer_iters: int,
+    hypothesis: str,
+) -> tuple[VariantSpec, ...]:
+    source_case_name = source_case_name or case_name
+    source_path = str(root / f"{source_case_name}.c")
+
+    def make_variant(name: str, define_value: int, island_lmul: str, patterns: tuple[str, ...]) -> VariantSpec:
+        params = {
+            "kind": kind,
+            "hypothesis": hypothesis,
+            "phase1_lmul": "m4" if name.startswith("dyn_") else island_lmul,
+            "phase2_lmul": island_lmul,
+            "phase3_lmul": "m4" if name.startswith("dyn_") else island_lmul,
+            "phase1_total_elems": total_elems,
+            "phase2_total_elems": total_elems,
+            "phase3_total_elems": total_elems,
+            "outer_iters": outer_iters,
+            "len_1d": 256,
+            "source_case_name": source_case_name,
+        }
+        return VariantSpec(
+            name=name,
+            defines=(f"DLB_BENCH_VARIANT={define_value}",),
+            params=params,
+            asm_patterns=patterns,
+            source_path=source_path,
+        )
+
+    return (
+        make_variant("fixed_m1", 1, "m1", (r"vsetvli.*m1\b",)),
+        make_variant("fixed_m2", 2, "m2", (r"vsetvli.*m2\b",)),
+        make_variant("fixed_m4", 4, "m4", (r"vsetvli.*m4\b",)),
+        make_variant("dyn_main", 20, "m2", (r"vsetvli.*m4\b", r"vsetvli.*m2\b", r"vsetvli.*m4\b")),
+        make_variant("dyn_safe", 10, "m1", (r"vsetvli.*m4\b", r"vsetvli.*m1\b", r"vsetvli.*m4\b")),
     )
 
 
@@ -141,40 +189,11 @@ def make_manifest() -> tuple[CaseSpec, ...]:
         CaseSpec(
             "dynamic_lmul_workload",
             "wb2",
-            str(root / "wb2.c"),
-            compact_variants(
-                root=root,
-                case_name="wb2",
-                kind="widening_mix",
-                phase1_total_elems=96,
-                phase2_total_elems=192,
-                phase3_total_elems=32,
-                outer_iters=24,
-            ),
-        ),
-        CaseSpec(
-            "dynamic_lmul_workload",
-            "wb5",
-            str(root / "wb5_widening_rescue.c"),
-            compact_variants(
-                root=root,
-                case_name="wb5",
-                kind="widening_rescue",
-                phase1_total_elems=64,
-                phase2_total_elems=128,
-                phase3_total_elems=64,
-                outer_iters=24,
-                dyn_main_phase3_lmul="m4",
-                dyn_safe_phase3_lmul="m4",
-            ),
-        ),
-        CaseSpec(
-            "dynamic_lmul_workload",
-            "wb6",
             str(root / "wb6.c"),
             compact_variants(
                 root=root,
-                case_name="wb6",
+                case_name="wb2",
+                source_case_name="wb6",
                 kind="widening_reduction_fuse",
                 phase1_total_elems=96,
                 phase2_total_elems=192,
@@ -184,11 +203,12 @@ def make_manifest() -> tuple[CaseSpec, ...]:
         ),
         CaseSpec(
             "dynamic_lmul_workload",
-            "wb7",
+            "wb3",
             str(root / "wb7.c"),
             compact_variants(
                 root=root,
-                case_name="wb7",
+                case_name="wb3",
+                source_case_name="wb7",
                 kind="dequant_gelu_lite",
                 phase1_total_elems=96,
                 phase2_total_elems=192,
@@ -198,30 +218,73 @@ def make_manifest() -> tuple[CaseSpec, ...]:
         ),
         CaseSpec(
             "dynamic_lmul_workload",
-            "wb8",
-            str(root / "wb8.c"),
-            compact_variants(
-                root=root,
-                case_name="wb8",
-                kind="two_output_fusion",
-                phase1_total_elems=96,
-                phase2_total_elems=160,
-                phase3_total_elems=32,
-                outer_iters=24,
-            ),
-        ),
-        CaseSpec(
-            "dynamic_lmul_workload",
-            "wb9",
+            "wb4",
             str(root / "wb9.c"),
             compact_variants(
                 root=root,
-                case_name="wb9",
+                case_name="wb4",
+                source_case_name="wb9",
                 kind="segmented_pressure_rescue",
                 phase1_total_elems=96,
                 phase2_total_elems=192,
                 phase3_total_elems=32,
                 outer_iters=28,
+            ),
+        ),
+        CaseSpec(
+            "dynamic_lmul_workload",
+            "wb5",
+            str(root / "wb10.c"),
+            pressure_island_variants(
+                root=root,
+                case_name="wb5",
+                source_case_name="wb10",
+                kind="wide_envelope_pressure_island",
+                total_elems=224,
+                outer_iters=28,
+                hypothesis="m4 load/precompute and m4 epilogue amortize loop cost while m2 island avoids live-temp pressure",
+            ),
+        ),
+        CaseSpec(
+            "dynamic_lmul_workload",
+            "wb6",
+            str(root / "wb11.c"),
+            pressure_island_variants(
+                root=root,
+                case_name="wb6",
+                source_case_name="wb11",
+                kind="dual_pressure_island",
+                total_elems=192,
+                outer_iters=30,
+                hypothesis="two register-heavy islands benefit from narrowed LMUL without giving up m4 between islands",
+            ),
+        ),
+        CaseSpec(
+            "dynamic_lmul_workload",
+            "wb7",
+            str(root / "wb12.c"),
+            pressure_island_variants(
+                root=root,
+                case_name="wb7",
+                source_case_name="wb12",
+                kind="many_input_fanout",
+                total_elems=224,
+                outer_iters=24,
+                hypothesis="many m4 input streams favor wide loads, but fanout temporaries favor m2 compute",
+            ),
+        ),
+        CaseSpec(
+            "dynamic_lmul_workload",
+            "wb8",
+            str(root / "wb13.c"),
+            pressure_island_variants(
+                root=root,
+                case_name="wb8",
+                source_case_name="wb13",
+                kind="wide_epilogue_after_pressure",
+                total_elems=256,
+                outer_iters=22,
+                hypothesis="narrow dependency chain reduces pressure, then m4 epilogue keeps wide postcompute and store efficient",
             ),
         ),
     )

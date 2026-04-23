@@ -29,11 +29,11 @@ class DlmulBenchTest(unittest.TestCase):
             for case in manifest
         }
 
-        self.assertEqual(len(jobs), 35)
+        self.assertEqual(len(jobs), 40)
         self.assertTrue(dyn_sources["wb1"].endswith("emulator/run/src/bench/dlmul/wb1_dyn_main.c"))
-        self.assertTrue(dyn_sources["wb2"].endswith("emulator/run/src/bench/dlmul/wb2_dyn_main.c"))
-        self.assertTrue(dyn_sources["wb5"].endswith("emulator/run/src/bench/dlmul/wb5_dyn_main.c"))
-        self.assertTrue(dyn_sources["wb9"].endswith("emulator/run/src/bench/dlmul/wb9_dyn_main.c"))
+        self.assertTrue(dyn_sources["wb2"].endswith("emulator/run/src/bench/dlmul/wb6_dyn_main.c"))
+        self.assertTrue(dyn_sources["wb4"].endswith("emulator/run/src/bench/dlmul/wb9_dyn_main.c"))
+        self.assertTrue(dyn_sources["wb8"].endswith("emulator/run/src/bench/dlmul/wb13.c"))
 
     def test_each_workload_has_compact_variants(self):
         manifest = dlmul_bench.make_manifest()
@@ -43,11 +43,12 @@ class DlmulBenchTest(unittest.TestCase):
             [
                 "wb1",
                 "wb2",
+                "wb3",
+                "wb4",
                 "wb5",
                 "wb6",
                 "wb7",
                 "wb8",
-                "wb9",
             ],
         )
         for case in manifest:
@@ -134,7 +135,7 @@ class DlmulBenchTest(unittest.TestCase):
 
         kwargs = mocked.call_args.kwargs
         self.assertEqual(kwargs["benchmark"], "dlmul_wb2__dyn_safe")
-        self.assertTrue(kwargs["source"].endswith("emulator/run/src/bench/dlmul/wb2_dyn_safe.c"))
+        self.assertTrue(kwargs["source"].endswith("emulator/run/src/bench/dlmul/wb6_dyn_safe.c"))
         self.assertEqual(kwargs["use_vf"], "")
         self.assertIn("-fno-vectorize", kwargs["extra_cflags"])
         self.assertNotIn("-DDLB_PHASE2_VARIANT=", kwargs["extra_cflags"])
