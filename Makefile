@@ -82,7 +82,7 @@ help:
 	@echo "  plot-results          Plot results from a single result DB"
 	@echo "  plot-results-cmp      Compare emulate vs profile results"
 	@echo "  dlmul-microbench      Run C-based dynamic LMUL microbench suite (MB1-MB11) on XiangShan"
-	@echo "  dlmul-bench           Run C-based dynamic LMUL workload bench suite on XiangShan"
+	@echo "  dlmul-bench           Run C-based dynamic LMUL DB1-DB5 workload bench suite on XiangShan"
 	@echo ""
 	@echo "COMMON OPTIONS:"
 	@echo ""
@@ -139,8 +139,8 @@ help:
 	@echo "  MICROBENCH_VARIANT=all                      Variant filter (e.g. m8_to_m1)"
 	@echo "  DLMUL_BENCH_DB=artifacts/dlmul-bench.sqlite   Output SQLite path"
 	@echo "  DLMUL_BENCH_LOG_ROOT=artifacts/dlmul-bench    Output directory"
-	@echo "  DLMUL_BENCH_CASE=all                          Case filter (e.g. wb1-fir32)"
-	@echo "  DLMUL_BENCH_VARIANT=all                       Variant filter (e.g. dyn_main)"
+	@echo "  DLMUL_BENCH_CASE=all                          Case filter (e.g. db1)"
+	@echo "  DLMUL_BENCH_VARIANT=all                       Variant filter (e.g. dyn_m4_m2_m4)"
 	@echo ""
 	@echo "EXAMPLES:"
 	@echo ""
@@ -149,7 +149,7 @@ help:
 	@echo "  make vplan-explain s4112 ARCH=RVV PRECISE_MEM_COST=1 GATHER_SCATTER_OVERHEAD=3"
 	@echo "  make profile-all CONCURRENCY=4 X86_MARCH=sapphirerapids"
 	@echo "  make dlmul-microbench MICROBENCH_CASE=mb4-two-phase MICROBENCH_VARIANT=m8_to_m1"
-	@echo "  make dlmul-bench DLMUL_BENCH_CASE=wb1-fir32 DLMUL_BENCH_VARIANT=dyn_main"
+	@echo "  make dlmul-bench DLMUL_BENCH_CASE=db1 DLMUL_BENCH_VARIANT=all"
 	@echo ""
 
 emulate:

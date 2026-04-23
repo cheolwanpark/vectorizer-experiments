@@ -74,217 +74,326 @@ def create_table(conn: sqlite3.Connection) -> None:
     dlmul_runner.create_table(conn, "dlmul_bench_results")
 
 
-def compact_variants(
+def lmul_patterns(*lmuls: str) -> tuple[str, ...]:
+    patterns: list[str] = []
+    previous = ""
+    for lmul in lmuls:
+        if lmul != previous:
+            patterns.append(rf"vsetvli.*{lmul}\b")
+        previous = lmul
+    return tuple(patterns)
+
+
+def db_variant(
     *,
     root: Path,
-    case_name: str,
-    source_case_name: str | None = None,
+    source_name: str,
+    name: str,
+    define_value: str,
     kind: str,
-    phase1_total_elems: int,
-    phase2_total_elems: int,
-    phase3_total_elems: int,
+    phase_lmuls: tuple[str, str, str],
+    phase_totals: tuple[int, int, int],
     outer_iters: int,
-    len_1d: int = 256,
-    dyn_main_phase3_lmul: str = "m2",
-    dyn_safe_phase3_lmul: str = "m1",
-) -> tuple[VariantSpec, ...]:
-    source_case_name = source_case_name or case_name
-
-    def make_variant(name: str, phase1_lmul: str, phase2_lmul: str, phase3_lmul: str) -> VariantSpec:
-        params = {
+    hypothesis: str,
+    extra_defines: tuple[str, ...] = (),
+) -> VariantSpec:
+    return VariantSpec(
+        name=name,
+        defines=(f"DLB_BENCH_VARIANT={define_value}",) + extra_defines,
+        params={
             "kind": kind,
-            "phase1_lmul": phase1_lmul,
-            "phase2_lmul": phase2_lmul,
-            "phase3_lmul": phase3_lmul,
-            "phase1_total_elems": phase1_total_elems,
-            "phase2_total_elems": phase2_total_elems,
-            "phase3_total_elems": phase3_total_elems,
+            "hypothesis": hypothesis,
+            "phase1_lmul": phase_lmuls[0],
+            "phase2_lmul": phase_lmuls[1],
+            "phase3_lmul": phase_lmuls[2],
+            "phase1_total_elems": phase_totals[0],
+            "phase2_total_elems": phase_totals[1],
+            "phase3_total_elems": phase_totals[2],
             "outer_iters": outer_iters,
-            "len_1d": len_1d,
-            "source_case_name": source_case_name,
-        }
-        patterns = (rf"vsetvli.*{phase1_lmul}\b",)
-        if phase2_lmul != phase1_lmul:
-            patterns += (rf"vsetvli.*{phase2_lmul}\b",)
-        if phase3_lmul not in (phase1_lmul, phase2_lmul):
-            patterns += (rf"vsetvli.*{phase3_lmul}\b",)
-        return VariantSpec(
-            name=name,
-            defines=(),
-            params=params,
-            asm_patterns=patterns,
-            source_path=str(root / f"{source_case_name}_{name}.c"),
-        )
-
-    return (
-        make_variant("fixed_m1", "m1", "m1", "m1"),
-        make_variant("fixed_m2", "m2", "m2", "m2"),
-        make_variant("fixed_m4", "m4", "m4", "m4"),
-        make_variant("dyn_main", "m4", "m2", dyn_main_phase3_lmul),
-        make_variant("dyn_safe", "m4", "m1", dyn_safe_phase3_lmul),
+            "len_1d": 256,
+            "source_case_name": source_name,
+        },
+        asm_patterns=lmul_patterns(*phase_lmuls),
+        source_path=str(root / f"{source_name}.c"),
     )
 
 
-def pressure_island_variants(
+def db_case(
     *,
     root: Path,
     case_name: str,
-    source_case_name: str | None = None,
-    kind: str,
-    total_elems: int,
-    outer_iters: int,
-    hypothesis: str,
-) -> tuple[VariantSpec, ...]:
-    source_case_name = source_case_name or case_name
-    source_path = str(root / f"{source_case_name}.c")
-
-    def make_variant(name: str, define_value: int, island_lmul: str, patterns: tuple[str, ...]) -> VariantSpec:
-        params = {
-            "kind": kind,
-            "hypothesis": hypothesis,
-            "phase1_lmul": "m4" if name.startswith("dyn_") else island_lmul,
-            "phase2_lmul": island_lmul,
-            "phase3_lmul": "m4" if name.startswith("dyn_") else island_lmul,
-            "phase1_total_elems": total_elems,
-            "phase2_total_elems": total_elems,
-            "phase3_total_elems": total_elems,
-            "outer_iters": outer_iters,
-            "len_1d": 256,
-            "source_case_name": source_case_name,
-        }
-        return VariantSpec(
-            name=name,
-            defines=(f"DLB_BENCH_VARIANT={define_value}",),
-            params=params,
-            asm_patterns=patterns,
-            source_path=source_path,
-        )
-
-    return (
-        make_variant("fixed_m1", 1, "m1", (r"vsetvli.*m1\b",)),
-        make_variant("fixed_m2", 2, "m2", (r"vsetvli.*m2\b",)),
-        make_variant("fixed_m4", 4, "m4", (r"vsetvli.*m4\b",)),
-        make_variant("dyn_main", 20, "m2", (r"vsetvli.*m4\b", r"vsetvli.*m2\b", r"vsetvli.*m4\b")),
-        make_variant("dyn_safe", 10, "m1", (r"vsetvli.*m4\b", r"vsetvli.*m1\b", r"vsetvli.*m4\b")),
+    source_name: str,
+    variants: tuple[VariantSpec, ...],
+) -> CaseSpec:
+    return CaseSpec(
+        "dynamic_lmul_workload",
+        case_name,
+        str(root / f"{source_name}.c"),
+        variants,
     )
 
 
 def make_manifest() -> tuple[CaseSpec, ...]:
     root = CATALOG_ROOT
+    db1_hypothesis = "m4 stream envelope plus m2 e16-to-e32 widening accumulator island"
+    db2_hypothesis = "m8 stream envelope with a high-live-temp m2 f32 FMA island"
+    db3_hypothesis = "dynamic m4/m2/m4 improves as the widening pressure island grows"
+    db4_hypothesis = "dequantized dot core uses m2 widening pressure with m4 setup and epilogue"
+    db5_hypothesis = "wide-only control should prefer fixed m8 or m4 over unnecessary switching"
+
     return (
-        CaseSpec(
-            "dynamic_lmul_workload",
-            "wb1",
-            str(root / "wb1.c"),
-            compact_variants(
-                root=root,
-                case_name="wb1",
-                kind="fp_affine_pressure",
-                phase1_total_elems=96,
-                phase2_total_elems=192,
-                phase3_total_elems=32,
-                outer_iters=32,
+        db_case(
+            root=root,
+            case_name="db1",
+            source_name="db1",
+            variants=(
+                db_variant(
+                    root=root,
+                    source_name="db1",
+                    name="fixed_m1",
+                    define_value="DLB_VARIANT_FIXED_M1",
+                    kind="wide_stream_widening_acc8",
+                    phase_lmuls=("m1", "m1", "m1"),
+                    phase_totals=(192, 192, 192),
+                    outer_iters=32,
+                    hypothesis=db1_hypothesis,
+                ),
+                db_variant(
+                    root=root,
+                    source_name="db1",
+                    name="fixed_m2",
+                    define_value="DLB_VARIANT_FIXED_M2",
+                    kind="wide_stream_widening_acc8",
+                    phase_lmuls=("m2", "m2", "m2"),
+                    phase_totals=(192, 192, 192),
+                    outer_iters=32,
+                    hypothesis=db1_hypothesis,
+                ),
+                db_variant(
+                    root=root,
+                    source_name="db1",
+                    name="fixed_m4",
+                    define_value="DLB_VARIANT_FIXED_M4",
+                    kind="wide_stream_widening_acc8",
+                    phase_lmuls=("m4", "m4", "m4"),
+                    phase_totals=(192, 192, 192),
+                    outer_iters=32,
+                    hypothesis=db1_hypothesis,
+                ),
+                db_variant(
+                    root=root,
+                    source_name="db1",
+                    name="dyn_m4_m2_m4",
+                    define_value="DLB_VARIANT_DYN_M4_M2_M4",
+                    kind="wide_stream_widening_acc8",
+                    phase_lmuls=("m4", "m2", "m4"),
+                    phase_totals=(192, 192, 192),
+                    outer_iters=32,
+                    hypothesis=db1_hypothesis,
+                ),
             ),
         ),
-        CaseSpec(
-            "dynamic_lmul_workload",
-            "wb2",
-            str(root / "wb6.c"),
-            compact_variants(
-                root=root,
-                case_name="wb2",
-                source_case_name="wb6",
-                kind="widening_reduction_fuse",
-                phase1_total_elems=96,
-                phase2_total_elems=192,
-                phase3_total_elems=32,
-                outer_iters=24,
+        db_case(
+            root=root,
+            case_name="db2",
+            source_name="db2",
+            variants=(
+                db_variant(
+                    root=root,
+                    source_name="db2",
+                    name="fixed_m2",
+                    define_value="DLB_VARIANT_FIXED_M2",
+                    kind="m8_stream_m2_fma_island",
+                    phase_lmuls=("m2", "m2", "m2"),
+                    phase_totals=(128, 128, 128),
+                    outer_iters=40,
+                    hypothesis=db2_hypothesis,
+                ),
+                db_variant(
+                    root=root,
+                    source_name="db2",
+                    name="fixed_m4",
+                    define_value="DLB_VARIANT_FIXED_M4",
+                    kind="m8_stream_m2_fma_island",
+                    phase_lmuls=("m4", "m4", "m4"),
+                    phase_totals=(128, 128, 128),
+                    outer_iters=40,
+                    hypothesis=db2_hypothesis,
+                ),
+                db_variant(
+                    root=root,
+                    source_name="db2",
+                    name="fixed_m8",
+                    define_value="DLB_VARIANT_FIXED_M8",
+                    kind="m8_stream_m2_fma_island",
+                    phase_lmuls=("m8", "m8", "m8"),
+                    phase_totals=(128, 128, 128),
+                    outer_iters=40,
+                    hypothesis=db2_hypothesis,
+                ),
+                db_variant(
+                    root=root,
+                    source_name="db2",
+                    name="dyn_m8_m2_m8",
+                    define_value="DLB_VARIANT_DYN_M8_M2_M8",
+                    kind="m8_stream_m2_fma_island",
+                    phase_lmuls=("m8", "m2", "m8"),
+                    phase_totals=(128, 128, 128),
+                    outer_iters=40,
+                    hypothesis=db2_hypothesis,
+                ),
             ),
         ),
-        CaseSpec(
-            "dynamic_lmul_workload",
-            "wb3",
-            str(root / "wb7.c"),
-            compact_variants(
+        *tuple(
+            db_case(
                 root=root,
-                case_name="wb3",
-                source_case_name="wb7",
-                kind="dequant_gelu_lite",
-                phase1_total_elems=96,
-                phase2_total_elems=192,
-                phase3_total_elems=32,
-                outer_iters=24,
+                case_name=case_name,
+                source_name="db3",
+                variants=(
+                    db_variant(
+                        root=root,
+                        source_name="db3",
+                        name="fixed_m2",
+                        define_value="DLB_VARIANT_FIXED_M2",
+                        kind="phase_length_sweep",
+                        phase_lmuls=("m2", "m2", "m2"),
+                        phase_totals=(128, phase_b_elems, 128),
+                        outer_iters=32,
+                        hypothesis=db3_hypothesis,
+                        extra_defines=(f"DB3_PHASE_B_ELEMS={phase_b_elems}",),
+                    ),
+                    db_variant(
+                        root=root,
+                        source_name="db3",
+                        name="fixed_m4",
+                        define_value="DLB_VARIANT_FIXED_M4",
+                        kind="phase_length_sweep",
+                        phase_lmuls=("m4", "m4", "m4"),
+                        phase_totals=(128, phase_b_elems, 128),
+                        outer_iters=32,
+                        hypothesis=db3_hypothesis,
+                        extra_defines=(f"DB3_PHASE_B_ELEMS={phase_b_elems}",),
+                    ),
+                    db_variant(
+                        root=root,
+                        source_name="db3",
+                        name="dyn_m4_m2_m4",
+                        define_value="DLB_VARIANT_DYN_M4_M2_M4",
+                        kind="phase_length_sweep",
+                        phase_lmuls=("m4", "m2", "m4"),
+                        phase_totals=(128, phase_b_elems, 128),
+                        outer_iters=32,
+                        hypothesis=db3_hypothesis,
+                        extra_defines=(f"DB3_PHASE_B_ELEMS={phase_b_elems}",),
+                    ),
+                ),
+            )
+            for case_name, phase_b_elems in (
+                ("db3-short", 32),
+                ("db3-medium", 96),
+                ("db3-long", 192),
+            )
+        ),
+        db_case(
+            root=root,
+            case_name="db4",
+            source_name="db4",
+            variants=(
+                db_variant(
+                    root=root,
+                    source_name="db4",
+                    name="fixed_m1",
+                    define_value="DLB_VARIANT_FIXED_M1",
+                    kind="dequant_dot_widening_core",
+                    phase_lmuls=("m1", "m1", "m1"),
+                    phase_totals=(192, 192, 192),
+                    outer_iters=30,
+                    hypothesis=db4_hypothesis,
+                ),
+                db_variant(
+                    root=root,
+                    source_name="db4",
+                    name="fixed_m2",
+                    define_value="DLB_VARIANT_FIXED_M2",
+                    kind="dequant_dot_widening_core",
+                    phase_lmuls=("m2", "m2", "m2"),
+                    phase_totals=(192, 192, 192),
+                    outer_iters=30,
+                    hypothesis=db4_hypothesis,
+                ),
+                db_variant(
+                    root=root,
+                    source_name="db4",
+                    name="fixed_m4",
+                    define_value="DLB_VARIANT_FIXED_M4",
+                    kind="dequant_dot_widening_core",
+                    phase_lmuls=("m4", "m4", "m4"),
+                    phase_totals=(192, 192, 192),
+                    outer_iters=30,
+                    hypothesis=db4_hypothesis,
+                ),
+                db_variant(
+                    root=root,
+                    source_name="db4",
+                    name="dyn_m4_m2_m4",
+                    define_value="DLB_VARIANT_DYN_M4_M2_M4",
+                    kind="dequant_dot_widening_core",
+                    phase_lmuls=("m4", "m2", "m4"),
+                    phase_totals=(192, 192, 192),
+                    outer_iters=30,
+                    hypothesis=db4_hypothesis,
+                ),
             ),
         ),
-        CaseSpec(
-            "dynamic_lmul_workload",
-            "wb4",
-            str(root / "wb9.c"),
-            compact_variants(
-                root=root,
-                case_name="wb4",
-                source_case_name="wb9",
-                kind="segmented_pressure_rescue",
-                phase1_total_elems=96,
-                phase2_total_elems=192,
-                phase3_total_elems=32,
-                outer_iters=28,
-            ),
-        ),
-        CaseSpec(
-            "dynamic_lmul_workload",
-            "wb5",
-            str(root / "wb10.c"),
-            pressure_island_variants(
-                root=root,
-                case_name="wb5",
-                source_case_name="wb10",
-                kind="wide_envelope_pressure_island",
-                total_elems=224,
-                outer_iters=28,
-                hypothesis="m4 load/precompute and m4 epilogue amortize loop cost while m2 island avoids live-temp pressure",
-            ),
-        ),
-        CaseSpec(
-            "dynamic_lmul_workload",
-            "wb6",
-            str(root / "wb11.c"),
-            pressure_island_variants(
-                root=root,
-                case_name="wb6",
-                source_case_name="wb11",
-                kind="dual_pressure_island",
-                total_elems=192,
-                outer_iters=30,
-                hypothesis="two register-heavy islands benefit from narrowed LMUL without giving up m4 between islands",
-            ),
-        ),
-        CaseSpec(
-            "dynamic_lmul_workload",
-            "wb7",
-            str(root / "wb12.c"),
-            pressure_island_variants(
-                root=root,
-                case_name="wb7",
-                source_case_name="wb12",
-                kind="many_input_fanout",
-                total_elems=224,
-                outer_iters=24,
-                hypothesis="many m4 input streams favor wide loads, but fanout temporaries favor m2 compute",
-            ),
-        ),
-        CaseSpec(
-            "dynamic_lmul_workload",
-            "wb8",
-            str(root / "wb13.c"),
-            pressure_island_variants(
-                root=root,
-                case_name="wb8",
-                source_case_name="wb13",
-                kind="wide_epilogue_after_pressure",
-                total_elems=256,
-                outer_iters=22,
-                hypothesis="narrow dependency chain reduces pressure, then m4 epilogue keeps wide postcompute and store efficient",
+        db_case(
+            root=root,
+            case_name="db5",
+            source_name="db5",
+            variants=(
+                db_variant(
+                    root=root,
+                    source_name="db5",
+                    name="fixed_m2",
+                    define_value="DLB_VARIANT_FIXED_M2",
+                    kind="wide_only_negative_control",
+                    phase_lmuls=("m2", "m2", "m2"),
+                    phase_totals=(192, 192, 192),
+                    outer_iters=36,
+                    hypothesis=db5_hypothesis,
+                ),
+                db_variant(
+                    root=root,
+                    source_name="db5",
+                    name="fixed_m4",
+                    define_value="DLB_VARIANT_FIXED_M4",
+                    kind="wide_only_negative_control",
+                    phase_lmuls=("m4", "m4", "m4"),
+                    phase_totals=(192, 192, 192),
+                    outer_iters=36,
+                    hypothesis=db5_hypothesis,
+                ),
+                db_variant(
+                    root=root,
+                    source_name="db5",
+                    name="fixed_m8",
+                    define_value="DLB_VARIANT_FIXED_M8",
+                    kind="wide_only_negative_control",
+                    phase_lmuls=("m8", "m8", "m8"),
+                    phase_totals=(192, 192, 192),
+                    outer_iters=36,
+                    hypothesis=db5_hypothesis,
+                ),
+                db_variant(
+                    root=root,
+                    source_name="db5",
+                    name="dyn_m8_m2_m8",
+                    define_value="DLB_VARIANT_DYN_M8_M2_M8",
+                    kind="wide_only_negative_control",
+                    phase_lmuls=("m8", "m2", "m8"),
+                    phase_totals=(192, 192, 192),
+                    outer_iters=36,
+                    hypothesis=db5_hypothesis,
+                ),
             ),
         ),
     )
