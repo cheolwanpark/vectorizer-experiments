@@ -45,20 +45,20 @@
     size_t start = (size_t)(k) * (chunk); \
     if (start < (avl)) { \
         size_t vlc = __riscv_vsetvl_e32m2((avl) - start); \
-        vfloat32m2_t pre0 = __riscv_vget_v_f32m4_f32m2((pre0_big), (k)); \
-        vfloat32m2_t pre1 = __riscv_vget_v_f32m4_f32m2((pre1_big), (k)); \
-        vfloat32m2_t pre2 = __riscv_vget_v_f32m4_f32m2((pre2_big), (k)); \
-        vfloat32m2_t vc = __riscv_vget_v_f32m4_f32m2((vc_big), (k)); \
-        vfloat32m2_t vd = __riscv_vget_v_f32m4_f32m2((vd_big), (k)); \
-        vfloat32m2_t t0 = __riscv_vfadd_vv_f32m2(pre0, pre1, vlc); \
-        vfloat32m2_t t1 = __riscv_vfmul_vv_f32m2(pre2, vc, vlc); \
+        vfloat32m2_t pre0_part = __riscv_vget_v_f32m4_f32m2((pre0_big), (k)); \
+        vfloat32m2_t pre1_part = __riscv_vget_v_f32m4_f32m2((pre1_big), (k)); \
+        vfloat32m2_t pre2_part = __riscv_vget_v_f32m4_f32m2((pre2_big), (k)); \
+        vfloat32m2_t vc_part = __riscv_vget_v_f32m4_f32m2((vc_big), (k)); \
+        vfloat32m2_t vd_part = __riscv_vget_v_f32m4_f32m2((vd_big), (k)); \
+        vfloat32m2_t t0 = __riscv_vfadd_vv_f32m2(pre0_part, pre1_part, vlc); \
+        vfloat32m2_t t1 = __riscv_vfmul_vv_f32m2(pre2_part, vc_part, vlc); \
         vfloat32m2_t t2 = __riscv_vfsub_vv_f32m2(t0, t1, vlc); \
-        vfloat32m2_t t3 = __riscv_vfmul_vv_f32m2(t2, vd, vlc); \
-        vfloat32m2_t t4 = __riscv_vfadd_vv_f32m2(t3, pre0, vlc); \
+        vfloat32m2_t t3 = __riscv_vfmul_vv_f32m2(t2, vd_part, vlc); \
+        vfloat32m2_t t4 = __riscv_vfadd_vv_f32m2(t3, pre0_part, vlc); \
         vfloat32m2_t t5 = __riscv_vfmacc_vf_f32m2(t1, 0.25f, t4, vlc); \
         vfloat32m2_t t6 = __riscv_vfadd_vv_f32m2(t5, t2, vlc); \
-        vfloat32m2_t out = __riscv_vfmacc_vf_f32m2(t6, 0.125f, pre2, vlc); \
-        big_out = __riscv_vset_v_f32m2_f32m4((big_out), (k), out); \
+        vfloat32m2_t out_part = __riscv_vfmacc_vf_f32m2(t6, 0.125f, pre2_part, vlc); \
+        big_out = __riscv_vset_v_f32m2_f32m4((big_out), (k), out_part); \
     } \
 } while (0)
 
@@ -66,20 +66,20 @@
     size_t start = (size_t)(k) * (chunk); \
     if (start < (avl)) { \
         size_t vlc = __riscv_vsetvl_e32m1((avl) - start); \
-        vfloat32m1_t pre0 = __riscv_vget_v_f32m4_f32m1((pre0_big), (k)); \
-        vfloat32m1_t pre1 = __riscv_vget_v_f32m4_f32m1((pre1_big), (k)); \
-        vfloat32m1_t pre2 = __riscv_vget_v_f32m4_f32m1((pre2_big), (k)); \
-        vfloat32m1_t vc = __riscv_vget_v_f32m4_f32m1((vc_big), (k)); \
-        vfloat32m1_t vd = __riscv_vget_v_f32m4_f32m1((vd_big), (k)); \
-        vfloat32m1_t t0 = __riscv_vfadd_vv_f32m1(pre0, pre1, vlc); \
-        vfloat32m1_t t1 = __riscv_vfmul_vv_f32m1(pre2, vc, vlc); \
+        vfloat32m1_t pre0_part = __riscv_vget_v_f32m4_f32m1((pre0_big), (k)); \
+        vfloat32m1_t pre1_part = __riscv_vget_v_f32m4_f32m1((pre1_big), (k)); \
+        vfloat32m1_t pre2_part = __riscv_vget_v_f32m4_f32m1((pre2_big), (k)); \
+        vfloat32m1_t vc_part = __riscv_vget_v_f32m4_f32m1((vc_big), (k)); \
+        vfloat32m1_t vd_part = __riscv_vget_v_f32m4_f32m1((vd_big), (k)); \
+        vfloat32m1_t t0 = __riscv_vfadd_vv_f32m1(pre0_part, pre1_part, vlc); \
+        vfloat32m1_t t1 = __riscv_vfmul_vv_f32m1(pre2_part, vc_part, vlc); \
         vfloat32m1_t t2 = __riscv_vfsub_vv_f32m1(t0, t1, vlc); \
-        vfloat32m1_t t3 = __riscv_vfmul_vv_f32m1(t2, vd, vlc); \
-        vfloat32m1_t t4 = __riscv_vfadd_vv_f32m1(t3, pre0, vlc); \
+        vfloat32m1_t t3 = __riscv_vfmul_vv_f32m1(t2, vd_part, vlc); \
+        vfloat32m1_t t4 = __riscv_vfadd_vv_f32m1(t3, pre0_part, vlc); \
         vfloat32m1_t t5 = __riscv_vfmacc_vf_f32m1(t1, 0.25f, t4, vlc); \
         vfloat32m1_t t6 = __riscv_vfadd_vv_f32m1(t5, t2, vlc); \
-        vfloat32m1_t out = __riscv_vfmacc_vf_f32m1(t6, 0.125f, pre2, vlc); \
-        big_out = __riscv_vset_v_f32m1_f32m4((big_out), (k), out); \
+        vfloat32m1_t out_part = __riscv_vfmacc_vf_f32m1(t6, 0.125f, pre2_part, vlc); \
+        big_out = __riscv_vset_v_f32m1_f32m4((big_out), (k), out_part); \
     } \
 } while (0)
 
