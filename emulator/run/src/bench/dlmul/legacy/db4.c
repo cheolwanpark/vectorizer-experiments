@@ -1,4 +1,4 @@
-#include "dlmul_bench_common.h"
+#include "../dlmul_bench_common.h"
 #include <riscv_vector.h>
 
 #ifndef DLB_BENCH_VARIANT

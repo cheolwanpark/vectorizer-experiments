@@ -30,14 +30,12 @@ class DlmulBenchTest(unittest.TestCase):
             for case in manifest
         }
 
-        self.assertEqual(len(jobs), 54)
+        self.assertEqual(len(jobs), 20)
         self.assertTrue(dyn_sources["db1"].endswith("emulator/run/src/bench/dlmul/db1.c"))
-        self.assertTrue(dyn_sources["db2"].endswith("emulator/run/src/bench/dlmul/db2.c"))
-        self.assertTrue(dyn_sources["db3-long"].endswith("emulator/run/src/bench/dlmul/db3.c"))
-        self.assertTrue(dyn_sources["db5"].endswith("emulator/run/src/bench/dlmul/db5.c"))
-        self.assertTrue(dyn_sources["db6"].endswith("emulator/run/src/bench/dlmul/db6.c"))
-        self.assertTrue(dyn_sources["db8-long"].endswith("emulator/run/src/bench/dlmul/db8.c"))
-        self.assertTrue(dyn_sources["db10"].endswith("emulator/run/src/bench/dlmul/db10.c"))
+        self.assertTrue(dyn_sources["db11"].endswith("emulator/run/src/bench/dlmul/db11.c"))
+        self.assertTrue(dyn_sources["db12"].endswith("emulator/run/src/bench/dlmul/db12.c"))
+        self.assertTrue(dyn_sources["db8-medium"].endswith("emulator/run/src/bench/dlmul/db8.c"))
+        self.assertTrue(dyn_sources["db9"].endswith("emulator/run/src/bench/dlmul/db9.c"))
 
     def test_each_workload_has_expected_db_variants(self):
         manifest = dlmul_bench.make_manifest()
@@ -46,19 +44,10 @@ class DlmulBenchTest(unittest.TestCase):
             [case.case_name for case in manifest],
             [
                 "db1",
-                "db2",
-                "db3-short",
-                "db3-medium",
-                "db3-long",
-                "db4",
-                "db5",
-                "db6",
-                "db7",
-                "db8-short",
+                "db11",
+                "db12",
                 "db8-medium",
-                "db8-long",
                 "db9",
-                "db10",
             ],
         )
         self.assertEqual(
@@ -67,20 +56,33 @@ class DlmulBenchTest(unittest.TestCase):
         )
         self.assertEqual(
             [variant.name for variant in manifest[1].variants],
-            ["fixed_m2", "fixed_m4", "fixed_m8", "dyn_m8_m2_m8"],
+            ["fixed_m1", "fixed_m2", "fixed_m4", "dyn_m4_m2_m4"],
         )
         self.assertEqual(
             [variant.name for variant in manifest[2].variants],
-            ["fixed_m2", "fixed_m4", "dyn_m4_m2_m4"],
+            ["fixed_m1", "fixed_m2", "fixed_m4", "dyn_m4_m2_m4"],
         )
         self.assertEqual(
-            [variant.name for variant in manifest[7].variants],
-            ["fixed_m1", "fixed_m2", "fixed_m4", "dyn_m8_m2_m2", "dyn_m8_m2_m4"],
-        )
-        self.assertEqual(
-            [variant.name for variant in manifest[9].variants],
+            [variant.name for variant in manifest[3].variants],
             ["fixed_m2", "fixed_m4", "fixed_m8", "dyn_m8_m2_m8"],
         )
+        self.assertEqual(
+            [variant.name for variant in manifest[4].variants],
+            ["fixed_m2", "fixed_m4", "fixed_m8", "dyn_m8_m2_m4"],
+        )
+
+    def test_new_dependent_cases_and_control_are_classified(self):
+        manifest = {case.case_name: case for case in dlmul_bench.make_manifest()}
+
+        db1_dyn = next(variant for variant in manifest["db1"].variants if variant.name.startswith("dyn_"))
+        db11_dyn = next(variant for variant in manifest["db11"].variants if variant.name.startswith("dyn_"))
+        db12_dyn = next(variant for variant in manifest["db12"].variants if variant.name.startswith("dyn_"))
+
+        self.assertEqual(db1_dyn.params["kind"], "independent_control_wide_stream_widening_acc8")
+        self.assertEqual(db11_dyn.params["kind"], "dependent_gamma_polynomial_m4_m2_m4")
+        self.assertEqual(db12_dyn.params["kind"], "dependent_normalized_force_m4_m2_m4")
+        self.assertEqual(db11_dyn.asm_patterns, (r"vsetvli.*m4\b", r"vsetvli.*m2\b", r"vsetvli.*m4\b"))
+        self.assertEqual(db12_dyn.asm_patterns, (r"vsetvli.*m4\b", r"vsetvli.*m2\b", r"vsetvli.*m4\b"))
 
     def test_db_sources_keep_kernel_local_explicit_rvv_style(self):
         manifest = dlmul_bench.make_manifest()
@@ -165,7 +167,7 @@ class DlmulBenchTest(unittest.TestCase):
         self.assertIn("missing pattern", row["asm_check_message"])
 
     def test_run_job_delegates_to_emulate_source(self):
-        case = next(case for case in dlmul_bench.make_manifest() if case.case_name == "db2")
+        case = next(case for case in dlmul_bench.make_manifest() if case.case_name == "db8-medium")
         variant = next(variant for variant in case.variants if variant.name == "dyn_m8_m2_m8")
 
         with patch("scripts.dlmul_runner.emulate.run_emulate_source", return_value={"summary": {}, "failed": False}) as mocked:
@@ -179,11 +181,12 @@ class DlmulBenchTest(unittest.TestCase):
             )
 
         kwargs = mocked.call_args.kwargs
-        self.assertEqual(kwargs["benchmark"], "dlmul_db2__dyn_m8_m2_m8")
-        self.assertTrue(kwargs["source"].endswith("emulator/run/src/bench/dlmul/db2.c"))
+        self.assertEqual(kwargs["benchmark"], "dlmul_db8_medium__dyn_m8_m2_m8")
+        self.assertTrue(kwargs["source"].endswith("emulator/run/src/bench/dlmul/db8.c"))
         self.assertEqual(kwargs["use_vf"], "")
         self.assertIn("-fno-vectorize", kwargs["extra_cflags"])
         self.assertIn("-DDLB_BENCH_VARIANT=DLB_VARIANT_DYN_M8_M2_M8", kwargs["extra_cflags"])
+        self.assertIn("-DDB8_PRESSURE_REPEATS=2", kwargs["extra_cflags"])
 
 
 if __name__ == "__main__":
