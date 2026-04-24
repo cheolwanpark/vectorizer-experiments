@@ -63,6 +63,8 @@ DEFAULT_CASE_NAMES = (
     "dep-1-3",
     "dep-1-2",
     "dep-1-3-1-2",
+    "alias-ok",
+    "alias-bad",
 )
 DEFAULT_SUITE = "dynamic_lmul_workload"
 
@@ -109,6 +111,7 @@ def db_variant(
     hypothesis: str,
     extra_defines: tuple[str, ...] = (),
     extra_params: dict[str, object] | None = None,
+    asm_patterns: tuple[str, ...] | None = None,
 ) -> VariantSpec:
     params: dict[str, object] = {
         "kind": kind,
@@ -130,7 +133,7 @@ def db_variant(
         name=name,
         defines=(f"DLB_BENCH_VARIANT={define_value}",) + extra_defines,
         params=params,
-        asm_patterns=lmul_patterns(*phase_lmuls),
+        asm_patterns=lmul_patterns(*phase_lmuls) if asm_patterns is None else asm_patterns,
         source_path=str(root / f"{source_name}.c"),
     )
 
@@ -170,6 +173,7 @@ def make_catalog_manifest() -> tuple[CaseSpec, ...]:
     db11_hypothesis = "m4 color polynomial chain with a dependent m2 pressure island"
     db12_hypothesis = "m4 normalized force chain with dependent m2 sqrt/div island"
     dep_matrix_kind = "dependency_matrix_m4_m2_m4"
+    alias_transfer_kind = "alias_transfer_m4_m2_m4"
 
     def dep_matrix_case(
         *,
@@ -245,6 +249,82 @@ def make_catalog_manifest() -> tuple[CaseSpec, ...]:
                     hypothesis=hypothesis,
                     extra_defines=(dep_define,),
                     extra_params=extra_params,
+                ),
+            ),
+        )
+
+    def alias_transfer_case(
+        *,
+        case_name: str,
+        alias_mode: str,
+        preserve_original_phase1: bool,
+        phase2_output_groups: int,
+        hypothesis: str,
+        dyn_asm_patterns: tuple[str, ...],
+    ) -> CaseSpec:
+        extra_params = {
+            "alias_mode": alias_mode,
+            "preserve_original_phase1": preserve_original_phase1,
+            "phase2_output_groups": phase2_output_groups,
+        }
+        alias_define = f"DLB_ALIAS_MODE={'DLB_ALIAS_BAD' if preserve_original_phase1 else 'DLB_ALIAS_OK'}"
+        return db_case(
+            root=root,
+            case_name=case_name,
+            source_name="alias_transfer",
+            variants=(
+                db_variant(
+                    root=root,
+                    source_name="alias_transfer",
+                    name="fixed_m1",
+                    define_value="DLB_VARIANT_FIXED_M1",
+                    kind=alias_transfer_kind,
+                    phase_lmuls=("m1", "m1", "m1"),
+                    phase_totals=(192, 192, 192),
+                    outer_iters=40,
+                    hypothesis=hypothesis,
+                    extra_defines=(alias_define,),
+                    extra_params=extra_params,
+                ),
+                db_variant(
+                    root=root,
+                    source_name="alias_transfer",
+                    name="fixed_m2",
+                    define_value="DLB_VARIANT_FIXED_M2",
+                    kind=alias_transfer_kind,
+                    phase_lmuls=("m2", "m2", "m2"),
+                    phase_totals=(192, 192, 192),
+                    outer_iters=40,
+                    hypothesis=hypothesis,
+                    extra_defines=(alias_define,),
+                    extra_params=extra_params,
+                ),
+                db_variant(
+                    root=root,
+                    source_name="alias_transfer",
+                    name="fixed_m4",
+                    define_value="DLB_VARIANT_FIXED_M4",
+                    kind=alias_transfer_kind,
+                    phase_lmuls=("m4", "m4", "m4"),
+                    phase_totals=(192, 192, 192),
+                    outer_iters=40,
+                    hypothesis=hypothesis,
+                    extra_defines=(alias_define,),
+                    extra_params=extra_params,
+                ),
+                db_variant(
+                    root=root,
+                    source_name="alias_transfer",
+                    name="dyn_m4_m2_m4",
+                    define_value="DLB_VARIANT_DYN_M4_M2_M4",
+                    kind=alias_transfer_kind,
+                    phase_lmuls=("m4", "m2", "m4"),
+                    phase_totals=(192, 192, 192),
+                    outer_iters=40,
+                    hypothesis=hypothesis,
+                    extra_defines=(alias_define,),
+                    extra_params=extra_params,
+                    asm_patterns=dyn_asm_patterns,
                 ),
             ),
         )
@@ -536,6 +616,22 @@ def make_catalog_manifest() -> tuple[CaseSpec, ...]:
             dependency_signature="1-3,1-2",
             phase2_depends_on_phase1=True,
             phase3_depends_on_phase1=True,
+        ),
+        alias_transfer_case(
+            case_name="alias-ok",
+            alias_mode="alias_ok",
+            preserve_original_phase1=False,
+            phase2_output_groups=1,
+            hypothesis="phase2 rewrites the m4 producer in place through m2 halves; phase3 only needs the updated m4 value",
+            dyn_asm_patterns=(r"vsetvli.*m4\b", r"vsetvli.*m2\b", r"vsetvli.*m4\b"),
+        ),
+        alias_transfer_case(
+            case_name="alias-bad",
+            alias_mode="alias_bad",
+            preserve_original_phase1=True,
+            phase2_output_groups=3,
+            hypothesis="phase2 needs m2 chunks derived from the m4 producer while phase3 still needs the original m4 value, so copy-like transfer should appear",
+            dyn_asm_patterns=(r"vsetvli.*m4\b", r"vsetvli.*m2\b", r"vmv[0-9]+r\.v", r"vsetvli.*m4\b"),
         ),
     )
 

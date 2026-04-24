@@ -30,7 +30,7 @@ class DlmulBenchTest(unittest.TestCase):
             for case in manifest
         }
 
-        self.assertEqual(len(jobs), 36)
+        self.assertEqual(len(jobs), 44)
         self.assertTrue(dyn_sources["db1"].endswith("emulator/run/src/bench/dlmul/db1.c"))
         self.assertTrue(dyn_sources["db11"].endswith("emulator/run/src/bench/dlmul/db11.c"))
         self.assertTrue(dyn_sources["db12"].endswith("emulator/run/src/bench/dlmul/db12.c"))
@@ -40,6 +40,8 @@ class DlmulBenchTest(unittest.TestCase):
         self.assertTrue(dyn_sources["dep-1-3"].endswith("emulator/run/src/bench/dlmul/dep_matrix.c"))
         self.assertTrue(dyn_sources["dep-1-2"].endswith("emulator/run/src/bench/dlmul/dep_matrix.c"))
         self.assertTrue(dyn_sources["dep-1-3-1-2"].endswith("emulator/run/src/bench/dlmul/dep_matrix.c"))
+        self.assertTrue(dyn_sources["alias-ok"].endswith("emulator/run/src/bench/dlmul/alias_transfer.c"))
+        self.assertTrue(dyn_sources["alias-bad"].endswith("emulator/run/src/bench/dlmul/alias_transfer.c"))
 
     def test_each_workload_has_expected_db_variants(self):
         manifest = dlmul_bench.make_manifest()
@@ -56,6 +58,8 @@ class DlmulBenchTest(unittest.TestCase):
                 "dep-1-3",
                 "dep-1-2",
                 "dep-1-3-1-2",
+                "alias-ok",
+                "alias-bad",
             ],
         )
         self.assertEqual(
@@ -78,7 +82,7 @@ class DlmulBenchTest(unittest.TestCase):
             [variant.name for variant in manifest[4].variants],
             ["fixed_m2", "fixed_m4", "fixed_m8", "dyn_m8_m2_m4"],
         )
-        for index in range(5, 9):
+        for index in range(5, 11):
             self.assertEqual(
                 [variant.name for variant in manifest[index].variants],
                 ["fixed_m1", "fixed_m2", "fixed_m4", "dyn_m4_m2_m4"],
@@ -116,6 +120,27 @@ class DlmulBenchTest(unittest.TestCase):
             self.assertEqual(variant.params["phase2_depends_on_phase1"], phase2_depends_on_phase1)
             self.assertEqual(variant.params["phase3_depends_on_phase1"], phase3_depends_on_phase1)
             self.assertEqual(variant.asm_patterns, (r"vsetvli.*m4\b", r"vsetvli.*m2\b", r"vsetvli.*m4\b"))
+
+    def test_alias_transfer_cases_encode_copy_expectation(self):
+        manifest = {case.case_name: case for case in dlmul_bench.make_manifest()}
+
+        alias_ok = next(variant for variant in manifest["alias-ok"].variants if variant.name == "dyn_m4_m2_m4")
+        alias_bad = next(variant for variant in manifest["alias-bad"].variants if variant.name == "dyn_m4_m2_m4")
+
+        self.assertEqual(alias_ok.params["kind"], "alias_transfer_m4_m2_m4")
+        self.assertEqual(alias_ok.params["alias_mode"], "alias_ok")
+        self.assertFalse(alias_ok.params["preserve_original_phase1"])
+        self.assertEqual(alias_ok.params["phase2_output_groups"], 1)
+        self.assertEqual(alias_ok.asm_patterns, (r"vsetvli.*m4\b", r"vsetvli.*m2\b", r"vsetvli.*m4\b"))
+
+        self.assertEqual(alias_bad.params["kind"], "alias_transfer_m4_m2_m4")
+        self.assertEqual(alias_bad.params["alias_mode"], "alias_bad")
+        self.assertTrue(alias_bad.params["preserve_original_phase1"])
+        self.assertEqual(alias_bad.params["phase2_output_groups"], 3)
+        self.assertEqual(
+            alias_bad.asm_patterns,
+            (r"vsetvli.*m4\b", r"vsetvli.*m2\b", r"vmv[0-9]+r\.v", r"vsetvli.*m4\b"),
+        )
 
     def test_db_sources_keep_kernel_local_explicit_rvv_style(self):
         manifest = dlmul_bench.make_manifest()
