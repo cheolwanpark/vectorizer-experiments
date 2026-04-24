@@ -53,7 +53,17 @@ DEFAULT_LOG_ROOT = "artifacts/dlmul-bench"
 DEFAULT_CONCURRENCY = dlmul_runner.DEFAULT_CONCURRENCY
 DEFAULT_TIMEOUT = dlmul_runner.DEFAULT_TIMEOUT
 CATALOG_ROOT = Path("emulator") / "run" / "src" / "bench" / "dlmul"
-DEFAULT_CASE_NAMES = ("db1", "db11", "db12", "db8-medium", "db9")
+DEFAULT_CASE_NAMES = (
+    "db1",
+    "db11",
+    "db12",
+    "db8-medium",
+    "db9",
+    "no-data-dep",
+    "dep-1-3",
+    "dep-1-2",
+    "dep-1-3-1-2",
+)
 DEFAULT_SUITE = "dynamic_lmul_workload"
 
 
@@ -98,23 +108,28 @@ def db_variant(
     outer_iters: int,
     hypothesis: str,
     extra_defines: tuple[str, ...] = (),
+    extra_params: dict[str, object] | None = None,
 ) -> VariantSpec:
+    params: dict[str, object] = {
+        "kind": kind,
+        "hypothesis": hypothesis,
+        "phase1_lmul": phase_lmuls[0],
+        "phase2_lmul": phase_lmuls[1],
+        "phase3_lmul": phase_lmuls[2],
+        "phase1_total_elems": phase_totals[0],
+        "phase2_total_elems": phase_totals[1],
+        "phase3_total_elems": phase_totals[2],
+        "outer_iters": outer_iters,
+        "len_1d": 256,
+        "source_case_name": source_name,
+    }
+    if extra_params:
+        params.update(extra_params)
+
     return VariantSpec(
         name=name,
         defines=(f"DLB_BENCH_VARIANT={define_value}",) + extra_defines,
-        params={
-            "kind": kind,
-            "hypothesis": hypothesis,
-            "phase1_lmul": phase_lmuls[0],
-            "phase2_lmul": phase_lmuls[1],
-            "phase3_lmul": phase_lmuls[2],
-            "phase1_total_elems": phase_totals[0],
-            "phase2_total_elems": phase_totals[1],
-            "phase3_total_elems": phase_totals[2],
-            "outer_iters": outer_iters,
-            "len_1d": 256,
-            "source_case_name": source_name,
-        },
+        params=params,
         asm_patterns=lmul_patterns(*phase_lmuls),
         source_path=str(root / f"{source_name}.c"),
     )
@@ -154,6 +169,85 @@ def make_catalog_manifest() -> tuple[CaseSpec, ...]:
     db9_hypothesis = "m8 color load with m2 polynomial pressure and m4 store"
     db11_hypothesis = "m4 color polynomial chain with a dependent m2 pressure island"
     db12_hypothesis = "m4 normalized force chain with dependent m2 sqrt/div island"
+    dep_matrix_kind = "dependency_matrix_m4_m2_m4"
+
+    def dep_matrix_case(
+        *,
+        case_name: str,
+        dep_mode: int,
+        dependency_signature: str,
+        phase2_depends_on_phase1: bool,
+        phase3_depends_on_phase1: bool,
+    ) -> CaseSpec:
+        hypothesis = (
+            "matched m4->m2->m4 three-phase bench with identical phase2 pressure; "
+            f"only dependency edges differ ({dependency_signature})"
+        )
+        extra_params = {
+            "dependency_signature": dependency_signature,
+            "phase2_depends_on_phase1": phase2_depends_on_phase1,
+            "phase3_depends_on_phase1": phase3_depends_on_phase1,
+        }
+        dep_define = f"DLB_DEPENDENCY_MODE={dep_mode}"
+        return db_case(
+            root=root,
+            case_name=case_name,
+            source_name="dep_matrix",
+            variants=(
+                db_variant(
+                    root=root,
+                    source_name="dep_matrix",
+                    name="fixed_m1",
+                    define_value="DLB_VARIANT_FIXED_M1",
+                    kind=dep_matrix_kind,
+                    phase_lmuls=("m1", "m1", "m1"),
+                    phase_totals=(192, 192, 192),
+                    outer_iters=32,
+                    hypothesis=hypothesis,
+                    extra_defines=(dep_define,),
+                    extra_params=extra_params,
+                ),
+                db_variant(
+                    root=root,
+                    source_name="dep_matrix",
+                    name="fixed_m2",
+                    define_value="DLB_VARIANT_FIXED_M2",
+                    kind=dep_matrix_kind,
+                    phase_lmuls=("m2", "m2", "m2"),
+                    phase_totals=(192, 192, 192),
+                    outer_iters=32,
+                    hypothesis=hypothesis,
+                    extra_defines=(dep_define,),
+                    extra_params=extra_params,
+                ),
+                db_variant(
+                    root=root,
+                    source_name="dep_matrix",
+                    name="fixed_m4",
+                    define_value="DLB_VARIANT_FIXED_M4",
+                    kind=dep_matrix_kind,
+                    phase_lmuls=("m4", "m4", "m4"),
+                    phase_totals=(192, 192, 192),
+                    outer_iters=32,
+                    hypothesis=hypothesis,
+                    extra_defines=(dep_define,),
+                    extra_params=extra_params,
+                ),
+                db_variant(
+                    root=root,
+                    source_name="dep_matrix",
+                    name="dyn_m4_m2_m4",
+                    define_value="DLB_VARIANT_DYN_M4_M2_M4",
+                    kind=dep_matrix_kind,
+                    phase_lmuls=("m4", "m2", "m4"),
+                    phase_totals=(192, 192, 192),
+                    outer_iters=32,
+                    hypothesis=hypothesis,
+                    extra_defines=(dep_define,),
+                    extra_params=extra_params,
+                ),
+            ),
+        )
 
     return (
         db_case(
@@ -414,6 +508,34 @@ def make_catalog_manifest() -> tuple[CaseSpec, ...]:
                     hypothesis=db12_hypothesis,
                 ),
             ),
+        ),
+        dep_matrix_case(
+            case_name="no-data-dep",
+            dep_mode=0,
+            dependency_signature="none",
+            phase2_depends_on_phase1=False,
+            phase3_depends_on_phase1=False,
+        ),
+        dep_matrix_case(
+            case_name="dep-1-3",
+            dep_mode=1,
+            dependency_signature="1-3",
+            phase2_depends_on_phase1=False,
+            phase3_depends_on_phase1=True,
+        ),
+        dep_matrix_case(
+            case_name="dep-1-2",
+            dep_mode=2,
+            dependency_signature="1-2",
+            phase2_depends_on_phase1=True,
+            phase3_depends_on_phase1=False,
+        ),
+        dep_matrix_case(
+            case_name="dep-1-3-1-2",
+            dep_mode=3,
+            dependency_signature="1-3,1-2",
+            phase2_depends_on_phase1=True,
+            phase3_depends_on_phase1=True,
         ),
     )
 

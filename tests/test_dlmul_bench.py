@@ -30,12 +30,16 @@ class DlmulBenchTest(unittest.TestCase):
             for case in manifest
         }
 
-        self.assertEqual(len(jobs), 20)
+        self.assertEqual(len(jobs), 36)
         self.assertTrue(dyn_sources["db1"].endswith("emulator/run/src/bench/dlmul/db1.c"))
         self.assertTrue(dyn_sources["db11"].endswith("emulator/run/src/bench/dlmul/db11.c"))
         self.assertTrue(dyn_sources["db12"].endswith("emulator/run/src/bench/dlmul/db12.c"))
         self.assertTrue(dyn_sources["db8-medium"].endswith("emulator/run/src/bench/dlmul/db8.c"))
         self.assertTrue(dyn_sources["db9"].endswith("emulator/run/src/bench/dlmul/db9.c"))
+        self.assertTrue(dyn_sources["no-data-dep"].endswith("emulator/run/src/bench/dlmul/dep_matrix.c"))
+        self.assertTrue(dyn_sources["dep-1-3"].endswith("emulator/run/src/bench/dlmul/dep_matrix.c"))
+        self.assertTrue(dyn_sources["dep-1-2"].endswith("emulator/run/src/bench/dlmul/dep_matrix.c"))
+        self.assertTrue(dyn_sources["dep-1-3-1-2"].endswith("emulator/run/src/bench/dlmul/dep_matrix.c"))
 
     def test_each_workload_has_expected_db_variants(self):
         manifest = dlmul_bench.make_manifest()
@@ -48,6 +52,10 @@ class DlmulBenchTest(unittest.TestCase):
                 "db12",
                 "db8-medium",
                 "db9",
+                "no-data-dep",
+                "dep-1-3",
+                "dep-1-2",
+                "dep-1-3-1-2",
             ],
         )
         self.assertEqual(
@@ -70,6 +78,11 @@ class DlmulBenchTest(unittest.TestCase):
             [variant.name for variant in manifest[4].variants],
             ["fixed_m2", "fixed_m4", "fixed_m8", "dyn_m8_m2_m4"],
         )
+        for index in range(5, 9):
+            self.assertEqual(
+                [variant.name for variant in manifest[index].variants],
+                ["fixed_m1", "fixed_m2", "fixed_m4", "dyn_m4_m2_m4"],
+            )
 
     def test_new_dependent_cases_and_control_are_classified(self):
         manifest = {case.case_name: case for case in dlmul_bench.make_manifest()}
@@ -83,6 +96,26 @@ class DlmulBenchTest(unittest.TestCase):
         self.assertEqual(db12_dyn.params["kind"], "dependent_normalized_force_m4_m2_m4")
         self.assertEqual(db11_dyn.asm_patterns, (r"vsetvli.*m4\b", r"vsetvli.*m2\b", r"vsetvli.*m4\b"))
         self.assertEqual(db12_dyn.asm_patterns, (r"vsetvli.*m4\b", r"vsetvli.*m2\b", r"vsetvli.*m4\b"))
+
+    def test_dependency_matrix_cases_encode_expected_edges(self):
+        manifest = {case.case_name: case for case in dlmul_bench.make_manifest()}
+
+        cases = {
+            "no-data-dep": ("none", False, False),
+            "dep-1-3": ("1-3", False, True),
+            "dep-1-2": ("1-2", True, False),
+            "dep-1-3-1-2": ("1-3,1-2", True, True),
+        }
+
+        for case_name, expected in cases.items():
+            variant = next(variant for variant in manifest[case_name].variants if variant.name == "dyn_m4_m2_m4")
+            signature, phase2_depends_on_phase1, phase3_depends_on_phase1 = expected
+
+            self.assertEqual(variant.params["kind"], "dependency_matrix_m4_m2_m4")
+            self.assertEqual(variant.params["dependency_signature"], signature)
+            self.assertEqual(variant.params["phase2_depends_on_phase1"], phase2_depends_on_phase1)
+            self.assertEqual(variant.params["phase3_depends_on_phase1"], phase3_depends_on_phase1)
+            self.assertEqual(variant.asm_patterns, (r"vsetvli.*m4\b", r"vsetvli.*m2\b", r"vsetvli.*m4\b"))
 
     def test_db_sources_keep_kernel_local_explicit_rvv_style(self):
         manifest = dlmul_bench.make_manifest()
