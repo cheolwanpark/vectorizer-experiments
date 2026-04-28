@@ -302,6 +302,8 @@ def build_emulate_docker_command(
         "-v",
         f"{root / 'emulator' / 'sim-configs.yaml'}:{CONTAINER_EMULATOR_ROOT / 'sim-configs.yaml'}:ro",
         "-v",
+        f"{root / 'emulator' / 'run' / 'build-workload'}:{CONTAINER_EMULATOR_ROOT / 'run' / 'build-workload'}:ro",
+        "-v",
         f"{root / 'emulator' / 'run' / 'build-kernel'}:{CONTAINER_EMULATOR_ROOT / 'run' / 'build-kernel'}:ro",
         "-v",
         f"{root / 'emulator' / 'run' / 'common'}:{CONTAINER_EMULATOR_ROOT / 'run' / 'common'}:ro",
