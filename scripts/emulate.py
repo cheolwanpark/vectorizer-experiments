@@ -33,6 +33,7 @@ BUILD_ARTIFACT_SUFFIXES = {
     "asm_text": ".s",
 }
 SUPPORTED_SOURCE_SUFFIXES = {".c", ".s", ".S"}
+MANIFEST_FILENAME = "manifest.yaml"
 
 
 def parse_args() -> argparse.Namespace:
@@ -43,7 +44,7 @@ def parse_args() -> argparse.Namespace:
     source_group.add_argument("--bench", help="Benchmark name, for example s000")
     source_group.add_argument(
         "--source",
-        help="Repo-local .c, .s, or .S source path to build and emulate",
+        help="Repo-local workload input path to build and emulate (.c, .s, .S, or manifest.yaml)",
     )
     parser.add_argument("--image", default=DEFAULT_IMAGE, help="Docker image tag")
     parser.add_argument("--len", type=int, default=4096, help="LEN_1D value")
@@ -260,8 +261,17 @@ def resolve_source_path(root: Path, source: str | Path) -> Path:
 
 
 def validate_source_suffix(source: Path) -> None:
+    if source.name == MANIFEST_FILENAME:
+        return
     if source.suffix not in SUPPORTED_SOURCE_SUFFIXES:
-        fail(f"source must be a .c, .s, or .S file: {source}")
+        fail(f"source must be a .c, .s, .S, or manifest.yaml file: {source}")
+
+
+def benchmark_name_for_input(source: Path) -> str:
+    if source.name == MANIFEST_FILENAME:
+        data = benchmark_sources.load_mapping_file(source)
+        return str(data.get("name") or source.parent.name)
+    return source.stem
 
 
 def build_emulate_docker_command(
@@ -502,7 +512,7 @@ def main() -> None:
             source = resolve_source_path(repo_root(), args.source)
             validate_source_suffix(source)
             result = run_emulate_source(
-                benchmark=source.stem,
+                benchmark=benchmark_name_for_input(source),
                 source=source,
                 image=args.image,
                 len_1d=args.len,

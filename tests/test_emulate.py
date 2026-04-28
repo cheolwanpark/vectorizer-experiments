@@ -135,6 +135,52 @@ class EmulateDockerCommandTest(unittest.TestCase):
         self.assertEqual(kwargs["benchmark"], "kernel")
         self.assertEqual(kwargs["source"], source.resolve())
 
+    def test_main_accepts_manifest_source_path(self):
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            workload_dir = root / "emulator" / "run" / "src" / "npb" / "npb_is_s"
+            workload_dir.mkdir(parents=True, exist_ok=True)
+            manifest = workload_dir / "manifest.yaml"
+            manifest.write_text(
+                json.dumps(
+                    {
+                        "name": "npb-is-s-report",
+                        "entry": {"mode": "main", "symbol": "main"},
+                        "sources": ["is.c"],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            (workload_dir / "is.c").write_text("int main(void) { return 0; }\n", encoding="utf-8")
+            summary = {
+                "benchmark": "npb_is_s",
+                "simulator_target": emulate.SIM_TARGET,
+                "use_vf": "",
+                "effective_timeout_s": 1800,
+                "kernel_cycles": 1,
+                "total_cycles": 2,
+                "wall_time_s": 3.0,
+                "sim_speed_khz": 4.0,
+                "artifact_dir": str(root / "artifacts"),
+            }
+
+            with patch.object(emulate, "repo_root", return_value=root):
+                with patch.object(
+                    emulate,
+                    "run_emulate_source",
+                    return_value={"summary": summary, "failed": False},
+                ) as mocked:
+                    with patch(
+                        "sys.argv",
+                        ["emulate.py", "--source", "emulator/run/src/npb/npb_is_s/manifest.yaml"],
+                    ):
+                        with patch("sys.stdout", new_callable=StringIO):
+                            emulate.main()
+
+        kwargs = mocked.call_args.kwargs
+        self.assertEqual(kwargs["benchmark"], "npb-is-s-report")
+        self.assertEqual(kwargs["source"], manifest.resolve())
+
     def test_resolve_benchmark_input_prefers_manifest_for_manifest_workloads(self):
         with TemporaryDirectory() as tmp:
             root = Path(tmp)
