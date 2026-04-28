@@ -51,7 +51,12 @@ if [ -f "${ROOT_DIR}/env.sh" ]; then
     source "${ROOT_DIR}/env.sh" 2>/dev/null || true
 fi
 
-python3 -m pip install -U scons pyyaml >/dev/null
+if ! command -v scons >/dev/null 2>&1; then
+    python3 -m pip install -U scons >/dev/null
+fi
+if ! python3 -c "import yaml" >/dev/null 2>&1; then
+    python3 -m pip install -U pyyaml >/dev/null
+fi
 if [ -f "${GEM5_DIR}/requirements.txt" ]; then
     python3 -m pip install -r "${GEM5_DIR}/requirements.txt" >/dev/null
 fi

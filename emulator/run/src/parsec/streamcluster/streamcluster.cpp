@@ -100,14 +100,14 @@ static int parsec_streamcluster_fprintf(FILE *stream, const char *fmt, ...) {
 #undef fclose
 #undef fopen
 
-int workload_verify(void) {
+extern "C" int workload_verify(void) {
     return parsec_streamcluster_verify_ok;
 }
 
 #ifdef PARSEC_STREAMCLUSTER_RESTORE_MAIN
 #define main workload_main
 #endif
-int main(int argc, char **argv) {
+extern "C" int main(int argc, char **argv) {
     static char program[] = "streamcluster";
     static char kmin[] = "10";
     static char kmax[] = "20";

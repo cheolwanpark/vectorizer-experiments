@@ -3,6 +3,10 @@
 
 #include <stddef.h>
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 void *malloc(size_t size);
 void *calloc(size_t count, size_t size);
 void *realloc(void *ptr, size_t size);
@@ -12,5 +16,9 @@ void srand48(long seed);
 long lrand48(void);
 double drand48(void);
 void exit(int code);
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif

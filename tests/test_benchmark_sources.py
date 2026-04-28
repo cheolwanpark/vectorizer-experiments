@@ -219,7 +219,7 @@ class BenchmarkSourcesTest(unittest.TestCase):
         self.assertIsNone(workload.analysis_source_path)
         self.assertEqual(workload.analysis_failure, "unsupported_analysis_source")
 
-    def test_discover_catalog_workloads_accepts_cpp_manifest_sources(self):
+    def test_discover_catalog_workloads_uses_single_cpp_manifest_as_analysis_source(self):
         with TemporaryDirectory() as tmp:
             root = Path(tmp)
             workload_dir = root / "emulator" / "run" / "src" / "parsec" / "streamcluster"
@@ -239,8 +239,32 @@ class BenchmarkSourcesTest(unittest.TestCase):
             workload = benchmark_sources.resolve_catalog_workload(root, "streamcluster")
 
         self.assertEqual(workload.primary_source_path, (workload_dir / "streamcluster.cpp").resolve())
-        self.assertIsNone(workload.analysis_source_path)
-        self.assertEqual(workload.analysis_failure, "unsupported_analysis_source")
+        self.assertEqual(workload.analysis_source_path, (workload_dir / "streamcluster.cpp").resolve())
+        self.assertEqual(workload.analysis_failure, "")
+
+    def test_analysis_source_resolution_accepts_cpp_analysis_source(self):
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            workload_dir = root / "emulator" / "run" / "src" / "parsec" / "swaptions"
+            workload_dir.mkdir(parents=True, exist_ok=True)
+            (workload_dir / "driver.cpp").write_text("int main(void) { return 0; }\n", encoding="utf-8")
+            (workload_dir / "helper.c").write_text("void helper(void) {}\n", encoding="utf-8")
+            (workload_dir / "manifest.yaml").write_text(
+                json.dumps(
+                    {
+                        "name": "swaptions",
+                        "entry": {"mode": "main", "symbol": "main"},
+                        "sources": ["driver.cpp", "helper.c"],
+                        "build": {"analysis_source": "driver.cpp"},
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            workload = benchmark_sources.resolve_catalog_workload(root, "swaptions")
+
+        self.assertEqual(workload.analysis_source_path, (workload_dir / "driver.cpp").resolve())
+        self.assertEqual(workload.analysis_failure, "")
 
 
 if __name__ == "__main__":

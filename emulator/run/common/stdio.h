@@ -6,6 +6,10 @@
 
 typedef struct tsvc_emulate_file FILE;
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 extern FILE *stderr;
 
 int printf(const char *fmt, ...);
@@ -19,5 +23,9 @@ size_t fwrite(const void *ptr, size_t size, size_t count, FILE *stream);
 int ferror(FILE *stream);
 int feof(FILE *stream);
 void perror(const char *msg);
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif

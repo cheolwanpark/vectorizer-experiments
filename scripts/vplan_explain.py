@@ -26,6 +26,7 @@ VPLAN_EXPLAIN_ARGS = "-passes=loop-vectorize -vplan-explain -disable-output"
 VPLAN_LINE_RE = re.compile(r"^LV:\s+VF=(.+?)\s+cost=([^\s]+)(?:\s+compare=([^\s]+))?\s*$")
 VPLAN_PLAN_RE = re.compile(r"^LV:\s+VPlan\[(\d+)\]\s+VFs=\{(.+)\}\s*$")
 VPLAN_SELECTED_RE = re.compile(r"^LV:\s+selected VF=(.+?)\s+plan=(\d+)\s*$")
+CXX_SOURCE_SUFFIXES = {".cc", ".cpp", ".cxx"}
 
 
 def fail(message: str, exit_code: int = 2) -> "NoReturn":
@@ -146,6 +147,7 @@ def build_compile_flags(
     x86_march: str,
     extra_cflags: str,
 ) -> list[str]:
+    source_path = workload.analysis_source_path
     if workload.kind == "manifest":
         compile_flags = llvm_pipeline.build_vplan_compile_flags(
             run_common_include=CONTAINER_RUN_COMMON_ROOT,
@@ -160,6 +162,16 @@ def build_compile_flags(
         compile_flags.extend(workload.compile_flags)
         if extra_cflags:
             compile_flags.extend(extra_cflags.split())
+        if source_path is not None and source_path.suffix in CXX_SOURCE_SUFFIXES:
+            compile_flags.extend(
+                (
+                    "-std=gnu++17",
+                    "-fno-exceptions",
+                    "-fno-rtti",
+                    "-fno-threadsafe-statics",
+                    "-fno-use-cxa-atexit",
+                )
+            )
         return compile_flags
 
     return llvm_pipeline.build_vplan_compile_flags(

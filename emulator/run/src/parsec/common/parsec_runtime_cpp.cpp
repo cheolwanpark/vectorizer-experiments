@@ -1,8 +1,5 @@
-#include <stddef.h>
-
-void *malloc(size_t size);
-void free(void *ptr);
-void parsec_assert_fail(void);
+#include "assert.h"
+#include "stdlib.h"
 
 void *operator new(size_t size) {
     return malloc(size);

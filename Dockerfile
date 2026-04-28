@@ -42,7 +42,7 @@ WORKDIR /workspace/emulator
 COPY emulator/scripts/bootstrap-submodules.sh /workspace/emulator/scripts/bootstrap-submodules.sh
 
 RUN chmod +x /workspace/emulator/scripts/bootstrap-submodules.sh \
-    && BOOTSTRAP_PROFILE=xiangshan /workspace/emulator/scripts/bootstrap-submodules.sh
+    && BOOTSTRAP_PROFILE=emulate /workspace/emulator/scripts/bootstrap-submodules.sh
 
 FROM submodules AS emulator-src
 
@@ -68,7 +68,7 @@ ENV CC=clang \
     JAVA_HOME=/opt/java/openjdk \
     PATH=/opt/java/openjdk/bin:${PATH}
 
-# Keep the Docker image focused on the headless LLVM + XiangShan toolchain.
+# Keep the Docker image focused on the headless LLVM + emulator toolchain.
 RUN --mount=type=cache,id=apt-cache,target=/var/cache/apt,sharing=locked \
     --mount=type=cache,id=apt-lists,target=/var/lib/apt/lists,sharing=locked \
     apt-get -o Acquire::Retries=5 -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 -o Dpkg::Use-Pty=0 update \
@@ -94,9 +94,11 @@ RUN --mount=type=cache,id=apt-cache,target=/var/cache/apt,sharing=locked \
         ninja-build \
         numactl \
         pkg-config \
+        python3-yaml \
         python3-dev \
         python3-pip \
         python3-venv \
+        scons \
         linux-tools-common \
         linux-tools-generic \
         time \
@@ -168,7 +170,7 @@ RUN --mount=type=cache,id=llvm-ccache,target=/root/.cache/ccache,sharing=locked 
         -j "${JOBS}" \
     && ccache --show-stats
 
-FROM build-base AS xiangshan-ready
+FROM build-base AS emulator-ready
 
 ARG XIANGSHAN_JOBS=0
 ARG MILL_VERSION
@@ -215,9 +217,9 @@ RUN --mount=type=cache,id=xiangshan-ccache,target=/root/.cache/ccache,sharing=lo
         && make CCACHE= CC=gcc CXX=g++ -j "${JOBS}"; \
     fi \
     && cd /workspace/emulator \
-    && ./build-sim.sh xiangshan.KunminghuV2Config -j "${JOBS}" \
+    && ./build-sim.sh gem5 xiangshan.KunminghuV2Config -j "${JOBS}" \
     && ccache --show-stats
 
-FROM xiangshan-ready AS final
+FROM emulator-ready AS final
 
 CMD ["/bin/bash"]

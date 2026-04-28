@@ -14,6 +14,7 @@ TSVC_LOOP_ROOT = Path("emulator") / "benchmarks" / "TSVC_2" / "src" / "loops"
 GENERATED_MINIMAL_MARKER = "TSVC_EMULATE_GENERATED"
 KERNEL_FUNCTION_NAME = "kernel"
 SUPPORTED_SOURCE_SUFFIXES = {".c", ".cc", ".cpp", ".cxx", ".s", ".S"}
+ANALYZABLE_SOURCE_SUFFIXES = {".c", ".cc", ".cpp", ".cxx"}
 
 IGNORE_LINE_PATTERNS = (
     re.compile(r"^\s*initialise_arrays\s*\(__func__\);\s*$"),
@@ -135,9 +136,9 @@ def _analysis_source_result(
     analysis_source_raw = build.get("analysis_source")
     if analysis_source_raw is not None:
         analysis_source = resolve_relative(manifest_path.parent.resolve(), str(analysis_source_raw))
-        if analysis_source is None or analysis_source.suffix != ".c":
+        if analysis_source is None or analysis_source.suffix not in ANALYZABLE_SOURCE_SUFFIXES:
             raise RuntimeError(
-                f"build.analysis_source must point to a .c file in sources: {manifest_path}"
+                f"build.analysis_source must point to a C/C++ source in sources: {manifest_path}"
             )
         if analysis_source not in resolved_sources:
             raise RuntimeError(
@@ -145,19 +146,21 @@ def _analysis_source_result(
             )
         return analysis_source, "", ""
 
-    c_sources = [source for source in resolved_sources if source.suffix == ".c"]
-    if len(c_sources) == 1:
-        return c_sources[0], "", ""
-    if not c_sources:
+    analyzable_sources = [
+        source for source in resolved_sources if source.suffix in ANALYZABLE_SOURCE_SUFFIXES
+    ]
+    if len(analyzable_sources) == 1:
+        return analyzable_sources[0], "", ""
+    if not analyzable_sources:
         return (
             None,
             "unsupported_analysis_source",
-            "manifest does not declare an analyzable C source",
+            "manifest does not declare an analyzable C/C++ source",
         )
     return (
         None,
         "unsupported_analysis_source",
-        "manifest declares multiple C sources without build.analysis_source",
+        "manifest declares multiple analyzable C/C++ sources without build.analysis_source",
     )
 
 

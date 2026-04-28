@@ -1,5 +1,9 @@
 #include "HJM_type.h"
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 void     nrerror(const char *error_text);
 int      choldc(FTYPE **a, int n);
 void     gaussj(FTYPE **a, int n, FTYPE **b, int m);
@@ -9,3 +13,7 @@ FTYPE   *dvector( long nl, long nh );
 void     free_dvector( FTYPE *v, long nl, long nh );
 FTYPE   **dmatrix( long nrl, long nrh, long ncl, long nch );
 void     free_dmatrix( FTYPE **m, long nrl, long nrh, long ncl, long nch );
+
+#ifdef __cplusplus
+}
+#endif

@@ -12,14 +12,14 @@ static double parsec_swaptions_error_sum;
 #include "upstream/HJM_Securities.cpp"
 #undef main
 
-int workload_verify(void) {
+extern "C" int workload_verify(void) {
     return parsec_swaptions_verify_ok;
 }
 
 #ifdef PARSEC_SWAPTIONS_RESTORE_MAIN
 #define main workload_main
 #endif
-int main(int argc, char **argv) {
+extern "C" int main(int argc, char **argv) {
     static char program[] = "swaptions";
     static char opt_sm[] = "-sm";
     static char trials[] = "256";

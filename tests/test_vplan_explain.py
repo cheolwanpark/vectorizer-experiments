@@ -215,6 +215,48 @@ class VPlanExplainTest(unittest.TestCase):
         self.assertEqual(result["analysis_failure"], "unsupported_analysis_source")
         self.assertEqual(result["vf_candidates"], [])
 
+    def test_run_vplan_explain_uses_cpp_manifest_source_and_cxx_flags(self):
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            workload_dir = root / "emulator" / "run" / "src" / "parsec" / "streamcluster"
+            workload_dir.mkdir(parents=True, exist_ok=True)
+            (workload_dir / "streamcluster.cpp").write_text("int main(void) { return 0; }\n", encoding="utf-8")
+            (workload_dir / "manifest.yaml").write_text(
+                json.dumps(
+                    {
+                        "name": "streamcluster",
+                        "entry": {"mode": "main", "symbol": "main"},
+                        "sources": ["streamcluster.cpp"],
+                        "build": {"include_dirs": ["."]},
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            captured_command = {}
+
+            def fake_run_container(command, log_path, *, echo_output=False):
+                del log_path, echo_output
+                captured_command["command"] = command
+                return 0, "LV: VPlan[0] VFs={4}\nLV: VF=4 cost=8 compare=2000\nLV: selected VF=4 plan=0\n"
+
+            with patch.object(vplan_explain, "repo_root", return_value=root):
+                with patch.object(vplan_explain, "run_container_and_capture", side_effect=fake_run_container):
+                    result = vplan_explain.run_vplan_explain(
+                        bench="streamcluster",
+                        image="example:latest",
+                        ensure_image=False,
+                        output_root=str(root / "artifacts" / "vplan"),
+                    )
+
+        inner_command = captured_command["command"][-1]
+        self.assertIn("--source /workspace/host-project/emulator/run/src/parsec/streamcluster/streamcluster.cpp", inner_command)
+        self.assertIn("--compile-flag=-std=gnu++17", inner_command)
+        self.assertIn("--compile-flag=-fno-exceptions", inner_command)
+        self.assertIn("--compile-flag=-fno-rtti", inner_command)
+        self.assertEqual(result["analysis_failure"], "")
+        self.assertEqual(result["source_kind"], "manifest")
+
 
 if __name__ == "__main__":
     unittest.main()

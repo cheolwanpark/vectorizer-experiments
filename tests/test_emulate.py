@@ -9,6 +9,14 @@ from scripts import emulate
 
 
 class EmulateDockerCommandTest(unittest.TestCase):
+    def make_sim_config(self) -> emulate.SimulatorConfig:
+        return emulate.SimulatorConfig(
+            simul="gem5",
+            simulator_target="gem5",
+            gem5_target="xiangshan",
+            rtl_target=emulate.DEFAULT_RTL_TARGET,
+        )
+
     def test_build_emulate_docker_command_mounts_host_dependencies(self):
         root = Path("/repo")
         out_dir = root / "artifacts" / "emulate" / "s111" / "stamp"
@@ -18,6 +26,7 @@ class EmulateDockerCommandTest(unittest.TestCase):
             root=root,
             out_dir=out_dir,
             source=source,
+            sim_config=self.make_sim_config(),
             image="example:latest",
             len_1d=4096,
             lmul=1,
@@ -56,6 +65,7 @@ class EmulateDockerCommandTest(unittest.TestCase):
             root=root,
             out_dir=out_dir,
             source=source,
+            sim_config=self.make_sim_config(),
             image="example:latest",
             len_1d=4096,
             lmul=1,

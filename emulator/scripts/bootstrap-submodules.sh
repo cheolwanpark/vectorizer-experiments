@@ -48,6 +48,12 @@ main() {
             ensure_repo "third-party/NEMU" "https://github.com/OpenXiangShan/NEMU.git"
             ensure_repo "third-party/nexus-am" "https://github.com/OpenXiangShan/nexus-am.git"
             ;;
+        emulate)
+            ensure_repo "gem5" "https://github.com/gem5/gem5.git"
+            ensure_repo "XiangShan" "https://github.com/OpenXiangShan/XiangShan.git"
+            ensure_repo "third-party/NEMU" "https://github.com/OpenXiangShan/NEMU.git"
+            ensure_repo "third-party/nexus-am" "https://github.com/OpenXiangShan/nexus-am.git"
+            ;;
         xiangshan)
             ensure_repo "XiangShan" "https://github.com/OpenXiangShan/XiangShan.git"
             ensure_repo "third-party/NEMU" "https://github.com/OpenXiangShan/NEMU.git"
