@@ -37,6 +37,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--log-root", default=profile_mod.DEFAULT_LOG_ROOT, help="Host output root")
     parser.add_argument("--concurrency", type=int, default=DEFAULT_CONCURRENCY, help="Parallel job count")
     parser.add_argument("--db-dir", default=DEFAULT_DB_DIR, help="Directory for profile-result-*.sqlite")
+    parser.add_argument("--db-path", default="", help="Optional aggregate SQLite output path")
     parser.add_argument("--vfs-db", default=DEFAULT_VFS_DB, help="Path to vfs.db from vplan-explain-all")
     parser.add_argument("--extra-cflags", default="", help="Extra flags passed to clang")
     parser.add_argument("--extra-opt-flags", default="", help="Extra flags passed to opt")
@@ -113,9 +114,24 @@ def main() -> None:
 
     root = emulate.repo_root()
     run_id = datetime.now().strftime("%Y%m%d%H%M")
-    db_path = emulate_all.resolve_db_path(root, args.db_dir, run_id).with_name(
-        f"profile-result-{run_id}.sqlite"
-    )
+    if args.db_path:
+        db_path = emulate_all.resolve_db_path(
+            root,
+            args.db_path,
+            run_id,
+            prefix="profile-result",
+            arch="INTEL",
+            bench_label="tsvc",
+        )
+    else:
+        db_dir = emulate_all.resolve_existing_dir(root, args.db_dir)
+        db_dir.mkdir(parents=True, exist_ok=True)
+        db_path = db_dir / emulate_all.aggregate_db_filename(
+            prefix="profile-result",
+            arch="INTEL",
+            bench_label="tsvc",
+            run_id=run_id,
+        )
     benches = benchmark_sources.discover_tsvc_benches(root)
 
     emulate.ensure_image_exists(args.image)

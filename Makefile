@@ -224,7 +224,7 @@ $(VFS_DB): FORCE
 		$(if $(strip $(LLVM_CUSTOM)),--llvm-custom "$(LLVM_CUSTOM)",) \
 		--output-root "$(VPLAN_LOG_ROOT)" \
 		--db-dir "$(VFS_DB_DIR)" \
-		--db-path "$(VFS_DB)" \
+		--compat-db-path "$(VFS_DB)" \
 		$(if $(strip $(DIR)),--catalog-dir "$(DIR)",) \
 		$(_EXTRA_CFLAGS_ARG) \
 		$(_EXTRA_OPT_FLAGS_ARG)
@@ -243,7 +243,7 @@ vplan-explain-all: FORCE
 		$(if $(strip $(LLVM_CUSTOM)),--llvm-custom "$(LLVM_CUSTOM)",) \
 		--output-root "$(VPLAN_LOG_ROOT)" \
 		--db-dir "$(VFS_DB_DIR)" \
-		--db-path "$(VFS_DB)" \
+		--compat-db-path "$(VFS_DB)" \
 		$(if $(strip $(DIR)),--catalog-dir "$(DIR)",) \
 		$(_EXTRA_CFLAGS_ARG) \
 		$(_EXTRA_OPT_FLAGS_ARG)

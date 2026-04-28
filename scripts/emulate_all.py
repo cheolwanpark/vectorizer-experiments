@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import re
 import sqlite3
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
@@ -143,16 +144,72 @@ def resolve_existing_dir(root: Path, path_text: str) -> Path:
     return path
 
 
-def resolve_db_path(root: Path, db_path: str, run_id: str) -> Path:
+def normalize_result_name_component(value: str, fallback: str) -> str:
+    tokens = re.findall(r"[A-Za-z0-9]+", value.lower())
+    return "-".join(tokens) if tokens else fallback
+
+
+def result_scope_label(catalog_dir: str, default_label: str) -> str:
+    if not catalog_dir.strip():
+        return default_label
+    return normalize_result_name_component(catalog_dir, fallback=default_label)
+
+
+def aggregate_db_filename(
+    *,
+    prefix: str,
+    arch: str,
+    bench_label: str,
+    run_id: str,
+) -> str:
+    return (
+        f"{prefix}-"
+        f"{normalize_result_name_component(arch, fallback='unknown')}-"
+        f"{normalize_result_name_component(bench_label, fallback='all')}-"
+        f"{run_id}.sqlite"
+    )
+
+
+def default_aggregate_db_path(
+    root: Path,
+    *,
+    prefix: str,
+    arch: str,
+    bench_label: str,
+    run_id: str,
+) -> Path:
+    path = (root / "artifacts" / aggregate_db_filename(
+        prefix=prefix,
+        arch=arch,
+        bench_label=bench_label,
+        run_id=run_id,
+    )).resolve()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    return path
+
+
+def resolve_db_path(
+    root: Path,
+    db_path: str,
+    run_id: str,
+    *,
+    prefix: str,
+    arch: str,
+    bench_label: str,
+) -> Path:
     if db_path:
         path = Path(db_path)
         if not path.is_absolute():
             path = (root / db_path).resolve()
         path.parent.mkdir(parents=True, exist_ok=True)
         return path
-    path = (root / "artifacts" / f"emulate-result-{run_id}.sqlite").resolve()
-    path.parent.mkdir(parents=True, exist_ok=True)
-    return path
+    return default_aggregate_db_path(
+        root,
+        prefix=prefix,
+        arch=arch,
+        bench_label=bench_label,
+        run_id=run_id,
+    )
 
 
 def resolve_input_path(root: Path, value: str) -> Path:
@@ -493,7 +550,14 @@ def main() -> None:
     root = emulate.repo_root()
     run_id = datetime.now().strftime("%Y%m%d%H%M")
     db_dir = resolve_db_dir(root, args.db_dir)
-    aggregate_db_path = resolve_db_path(root, args.db_path, run_id)
+    aggregate_db_path = resolve_db_path(
+        root,
+        args.db_path,
+        run_id,
+        prefix="emulate-result",
+        arch=args.arch,
+        bench_label=result_scope_label(args.catalog_dir, default_label="all"),
+    )
     benches = discover_benches(root, args.catalog_dir)
 
     emulate.ensure_image_exists(args.image)

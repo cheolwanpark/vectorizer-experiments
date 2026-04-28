@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import shutil
 import sqlite3
 from datetime import datetime
 from pathlib import Path
@@ -9,9 +10,10 @@ from pathlib import Path
 try:
     import benchmark_sources
     import emulate
+    import emulate_all
     import vplan_explain
 except ModuleNotFoundError:
-    from scripts import benchmark_sources, emulate, vplan_explain
+    from scripts import benchmark_sources, emulate, emulate_all, vplan_explain
 
 
 DEFAULT_DB_DIR = "artifacts/vfs"
@@ -57,6 +59,11 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--db-path",
+        default="",
+        help="Optional aggregate SQLite output path",
+    )
+    parser.add_argument(
+        "--compat-db-path",
         default=DEFAULT_COMPAT_DB_PATH,
         help="Compatibility aggregate SQLite output path",
     )
@@ -276,9 +283,18 @@ def export_aggregate_db(workload_dbs: list[Path], aggregate_db_path: Path) -> No
 def main() -> None:
     args = parse_args()
     root = emulate.repo_root()
+    run_id = datetime.now().strftime("%Y%m%d%H%M")
     workloads = discover_workloads(root, args.catalog_dir)
     db_dir = resolve_db_dir(root, args.db_dir)
-    aggregate_db_path = resolve_db_path(root, args.db_path)
+    aggregate_db_path = emulate_all.resolve_db_path(
+        root,
+        args.db_path,
+        run_id,
+        prefix="vfs",
+        arch=args.arch,
+        bench_label=emulate_all.result_scope_label(args.catalog_dir, default_label="all"),
+    )
+    compat_db_path = resolve_db_path(root, args.compat_db_path) if args.compat_db_path else None
 
     vplan_explain.validate_args(args)
     vplan_explain.ensure_image_exists(args.image)
@@ -324,6 +340,8 @@ def main() -> None:
         print(f"[vplan {index}/{len(workloads)}] {workload.workload_id} {status}")
 
     export_aggregate_db(workload_dbs, aggregate_db_path)
+    if compat_db_path is not None and compat_db_path != aggregate_db_path:
+        shutil.copyfile(aggregate_db_path, compat_db_path)
     print(
         f"done: rows={total_rows} failures={failures} no_vf={no_vf_rows} "
         f"aggregate={aggregate_db_path}"

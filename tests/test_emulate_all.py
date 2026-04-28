@@ -122,6 +122,24 @@ class EmulateAllTest(unittest.TestCase):
             },
         )
 
+    def test_resolve_db_path_uses_arch_and_catalog_in_default_name(self):
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+
+            db_path = emulate_all.resolve_db_path(
+                root,
+                "",
+                "202604281234",
+                prefix="emulate-result",
+                arch="RVV",
+                bench_label=emulate_all.result_scope_label("dlmul-synthesis/bench", default_label="all"),
+            )
+
+        self.assertEqual(
+            db_path,
+            (root / "artifacts" / "emulate-result-rvv-dlmul-synthesis-bench-202604281234.sqlite").resolve(),
+        )
+
     def test_create_table_uses_artifact_columns_without_sample_index(self):
         conn = sqlite3.connect(":memory:")
         self.addCleanup(conn.close)

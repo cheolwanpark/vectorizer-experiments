@@ -44,7 +44,16 @@ class VPlanExplainAllTest(unittest.TestCase):
                 kind="manifest",
             )
 
-            with patch("sys.argv", ["vplan_explain_all.py", "--db-dir", "artifacts/vfs", "--db-path", "artifacts/vfs.db"]):
+            with patch(
+                "sys.argv",
+                [
+                    "vplan_explain_all.py",
+                    "--db-dir",
+                    "artifacts/vfs",
+                    "--compat-db-path",
+                    "artifacts/vfs.db",
+                ],
+            ):
                 with patch.object(vplan_explain_all.emulate, "repo_root", return_value=root):
                     with patch.object(vplan_explain_all, "discover_workloads", return_value=[workload]):
                         with patch.object(vplan_explain_all.vplan_explain, "ensure_image_exists"):
@@ -75,9 +84,11 @@ class VPlanExplainAllTest(unittest.TestCase):
                                 vplan_explain_all.main()
 
             per_workload_db = root / "artifacts" / "vfs" / "vfs-npb_is_s.sqlite"
-            aggregate_db = root / "artifacts" / "vfs.db"
+            aggregate_dbs = list(root.glob("artifacts/vfs-rvv-all-*.sqlite"))
+            compat_db = root / "artifacts" / "vfs.db"
             self.assertTrue(per_workload_db.exists())
-            self.assertTrue(aggregate_db.exists())
+            self.assertEqual(len(aggregate_dbs), 1)
+            self.assertTrue(compat_db.exists())
 
             conn = sqlite3.connect(per_workload_db)
             rows = conn.execute(
