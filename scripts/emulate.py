@@ -3,10 +3,12 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import re
 import shlex
 import subprocess
 import sys
+from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 
@@ -19,6 +21,8 @@ except ModuleNotFoundError:
 DEFAULT_IMAGE = "vplan-cost-measure:latest"
 DEFAULT_PLATFORM = "linux/amd64"
 DEFAULT_LOG_ROOT = "artifacts/emulate"
+DEFAULT_SIMUL = "gem5"
+DEFAULT_GEM5_TARGET = "xiangshan"
 CONTAINER_PROJECT_ROOT = Path("/workspace/host-project")
 CONTAINER_OUTPUT_ROOT = Path("/workspace/output")
 CONTAINER_BUILD_OUTPUT_ROOT = CONTAINER_OUTPUT_ROOT / "build"
@@ -26,6 +30,7 @@ CONTAINER_EMULATOR_ROOT = Path("/workspace/emulator")
 CONTAINER_TSVC_SRC_ROOT = CONTAINER_EMULATOR_ROOT / "benchmarks" / "TSVC_2" / "src"
 RUN_SIM_PATH = Path("/workspace/emulator/run-sim.sh")
 SIM_TARGET = "xiangshan.KunminghuV2Config"
+DEFAULT_RTL_TARGET = SIM_TARGET
 LEGACY_TIMEOUT_S = 120
 XIANSHAN_DEFAULT_TIMEOUT_S = 1800
 BUILD_ARTIFACT_SUFFIXES = {
@@ -34,11 +39,21 @@ BUILD_ARTIFACT_SUFFIXES = {
 }
 SUPPORTED_SOURCE_SUFFIXES = {".c", ".cc", ".cpp", ".cxx", ".s", ".S"}
 MANIFEST_FILENAME = "manifest.yaml"
+VALID_SIMULATORS = frozenset({"gem5", "rtl"})
+VALID_GEM5_TARGETS = frozenset({"gem5", "xiangshan"})
+
+
+@dataclass(frozen=True)
+class SimulatorConfig:
+    simul: str
+    simulator_target: str
+    gem5_target: str
+    rtl_target: str
 
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Run one kernel through XiangShan in Docker and write a host-side report."
+        description="Run one workload through the selected emulator backend in Docker and write a host-side report."
     )
     source_group = parser.add_mutually_exclusive_group(required=True)
     source_group.add_argument("--bench", help="Benchmark name, for example s000")
@@ -62,6 +77,22 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--extra-cflags", default="", help="Extra flags passed to clang via --cflags")
     parser.add_argument("--extra-opt-flags", default="", help="Extra flags passed to opt via --optflags")
+    parser.add_argument(
+        "--simul",
+        choices=sorted(VALID_SIMULATORS),
+        default=None,
+        help=f"Execution backend (env: SIMUL, default: {DEFAULT_SIMUL})",
+    )
+    parser.add_argument(
+        "--gem5-target",
+        default=None,
+        help=f"gem5 build profile token (env: GEM5_TARGET, default: {DEFAULT_GEM5_TARGET})",
+    )
+    parser.add_argument(
+        "--rtl-target",
+        default=None,
+        help=f"RTL simulator target (env: RTL_TARGET, default: {DEFAULT_RTL_TARGET})",
+    )
     return parser.parse_args()
 
 
@@ -125,8 +156,37 @@ def validate_vplan_use_vf(text: str) -> None:
             fail("use-vf widths must be positive powers of two")
 
 
-def resolve_timeout(timeout_s: int) -> int:
-    if timeout_s == LEGACY_TIMEOUT_S:
+def resolve_simulator_config(
+    *,
+    simul: str | None = None,
+    gem5_target: str | None = None,
+    rtl_target: str | None = None,
+) -> SimulatorConfig:
+    resolved_simul = (simul or os.environ.get("SIMUL", DEFAULT_SIMUL)).strip().lower()
+    if resolved_simul not in VALID_SIMULATORS:
+        allowed = ", ".join(sorted(VALID_SIMULATORS))
+        fail(f"SIMUL must be one of: {allowed}")
+
+    resolved_gem5_target = (gem5_target or os.environ.get("GEM5_TARGET", DEFAULT_GEM5_TARGET)).strip().lower()
+    if resolved_gem5_target not in VALID_GEM5_TARGETS:
+        allowed = ", ".join(sorted(VALID_GEM5_TARGETS))
+        fail(f"GEM5_TARGET must be one of: {allowed}")
+
+    resolved_rtl_target = (rtl_target or os.environ.get("RTL_TARGET", DEFAULT_RTL_TARGET)).strip()
+    if not resolved_rtl_target:
+        fail("RTL_TARGET must not be empty")
+
+    simulator_target = "gem5" if resolved_simul == "gem5" else resolved_rtl_target
+    return SimulatorConfig(
+        simul=resolved_simul,
+        simulator_target=simulator_target,
+        gem5_target=resolved_gem5_target,
+        rtl_target=resolved_rtl_target,
+    )
+
+
+def resolve_timeout(timeout_s: int, sim_config: SimulatorConfig) -> int:
+    if timeout_s == LEGACY_TIMEOUT_S and sim_config.simul == "rtl" and sim_config.rtl_target == DEFAULT_RTL_TARGET:
         return XIANSHAN_DEFAULT_TIMEOUT_S
     return timeout_s
 
@@ -198,12 +258,18 @@ def load_build_artifact_texts(
 def build_markdown_report(summary: dict[str, object]) -> str:
     forced_vf = summary.get("use_vf") or "default"
     trace_file = summary.get("trace_file", "n/a")
+    backend = str(summary.get("simul", "unknown"))
+    gem5_profile = summary.get("gem5_target", "n/a") if backend == "gem5" else "n/a"
+    rtl_target = summary.get("rtl_target", "n/a") if backend == "rtl" else "n/a"
     lines = [
         f"# Emulate Report: `{summary['benchmark']}`",
         "",
         "| Field | Value |",
         "| --- | --- |",
+        f"| Backend | `{backend}` |",
         f"| Simulator target | `{summary['simulator_target']}` |",
+        f"| gem5 profile | `{gem5_profile}` |",
+        f"| RTL target | `{rtl_target}` |",
         f"| Status | `{summary.get('status', 'unknown')}` |",
         f"| Exit code | `{summary.get('exit_code', 'n/a')}` |",
         f"| LEN | `{summary['len_1d']}` |",
@@ -234,9 +300,13 @@ def build_markdown_report(summary: dict[str, object]) -> str:
 def print_summary(summary: dict[str, object]) -> None:
     forced_vf = summary.get("use_vf") or "default"
     timeout_s = summary.get("effective_timeout_s", summary.get("timeout_s", "n/a"))
+    backend = str(summary.get("simul", "unknown"))
+    profile_value = summary.get("gem5_target", "n/a") if backend == "gem5" else summary.get("rtl_target", "n/a")
     lines = [
         f"Benchmark:  {summary['benchmark']}",
+        f"Backend:    {backend}",
         f"Target:     {summary['simulator_target']}",
+        f"Profile:    {profile_value}",
         f"Status:     {summary.get('status', 'unknown')}",
         f"Forced VF:  {forced_vf}",
         f"Timeout:    {timeout_s}s",
@@ -299,6 +369,7 @@ def build_emulate_docker_command(
     root: Path,
     out_dir: Path,
     source: Path,
+    sim_config: SimulatorConfig,
     image: str,
     len_1d: int,
     lmul: int,
@@ -343,7 +414,10 @@ def build_emulate_docker_command(
             "-lc",
             (
                 f"cd {shlex.quote(str(CONTAINER_EMULATOR_ROOT))} && "
-                f"python3 {shlex.quote(str(RUN_SIM_PATH))} {SIM_TARGET} "
+                f"python3 {shlex.quote(str(RUN_SIM_PATH))} "
+                f"--simul={shlex.quote(sim_config.simul)} "
+                f"--gem5-target={shlex.quote(sim_config.gem5_target)} "
+                f"--rtl-target={shlex.quote(sim_config.rtl_target)} "
                 f"{shlex.quote(str(CONTAINER_PROJECT_ROOT / source.relative_to(root)))} "
                 f"--len={len_1d} --lmul={lmul} "
                 f"{f'--use-vf={shlex.quote(use_vf)} ' if use_vf else ''}"
@@ -370,6 +444,9 @@ def run_emulate(
     ensure_image: bool = True,
     extra_cflags: str = "",
     extra_opt_flags: str = "",
+    simul: str | None = None,
+    gem5_target: str | None = None,
+    rtl_target: str | None = None,
 ) -> dict[str, object]:
     validate_positive_int("len", len_1d)
     validate_positive_int("lmul", lmul)
@@ -392,6 +469,9 @@ def run_emulate(
         ensure_image=ensure_image,
         extra_cflags=extra_cflags,
         extra_opt_flags=extra_opt_flags,
+        simul=simul,
+        gem5_target=gem5_target,
+        rtl_target=rtl_target,
     )
 
 
@@ -408,10 +488,18 @@ def run_emulate_source(
     ensure_image: bool = True,
     extra_cflags: str = "",
     extra_opt_flags: str = "",
+    simul: str | None = None,
+    gem5_target: str | None = None,
+    rtl_target: str | None = None,
 ) -> dict[str, object]:
     validate_positive_int("len", len_1d)
     validate_positive_int("lmul", lmul)
     validate_vplan_use_vf(use_vf)
+    sim_config = resolve_simulator_config(
+        simul=simul,
+        gem5_target=gem5_target,
+        rtl_target=rtl_target,
+    )
 
     root = repo_root()
     try:
@@ -421,7 +509,7 @@ def run_emulate_source(
     validate_source_suffix(resolved_source)
     if ensure_image:
         ensure_image_exists(image)
-    effective_timeout = resolve_timeout(timeout_s)
+    effective_timeout = resolve_timeout(timeout_s, sim_config)
 
     resolved_log_root = resolve_log_root(root, log_root)
     out_dir = timestamp_dir(resolved_log_root, benchmark)
@@ -437,6 +525,7 @@ def run_emulate_source(
         root=root,
         out_dir=out_dir,
         source=resolved_source,
+        sim_config=sim_config,
         image=image,
         len_1d=len_1d,
         lmul=lmul,
@@ -488,7 +577,10 @@ def run_emulate_source(
     summary: dict[str, object] = {
         "benchmark": benchmark,
         "image": image,
-        "simulator_target": SIM_TARGET,
+        "simul": sim_config.simul,
+        "simulator_target": sim_config.simulator_target,
+        "gem5_target": sim_config.gem5_target,
+        "rtl_target": sim_config.rtl_target,
         "len_1d": len_1d,
         "lmul": lmul,
         "use_vf": use_vf,
@@ -542,6 +634,9 @@ def main() -> None:
                 log_root=args.log_root,
                 extra_cflags=args.extra_cflags,
                 extra_opt_flags=args.extra_opt_flags,
+                simul=args.simul,
+                gem5_target=args.gem5_target,
+                rtl_target=args.rtl_target,
             )
         else:
             source = resolve_source_path(repo_root(), args.source)
@@ -557,6 +652,9 @@ def main() -> None:
                 log_root=args.log_root,
                 extra_cflags=args.extra_cflags,
                 extra_opt_flags=args.extra_opt_flags,
+                simul=args.simul,
+                gem5_target=args.gem5_target,
+                rtl_target=args.rtl_target,
             )
     except (FileNotFoundError, RuntimeError) as exc:
         fail(str(exc))

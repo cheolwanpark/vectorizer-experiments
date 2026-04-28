@@ -32,7 +32,10 @@ TABLE_COLUMNS = [
     "use_vf",
     "benchmark",
     "image",
+    "simul",
     "simulator_target",
+    "gem5_target",
+    "rtl_target",
     "len_1d",
     "lmul",
     "timeout_s",
@@ -109,6 +112,22 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--extra-cflags", default="", help="Extra flags passed to clang")
     parser.add_argument("--extra-opt-flags", default="", help="Extra flags passed to opt")
+    parser.add_argument(
+        "--simul",
+        choices=sorted(emulate.VALID_SIMULATORS),
+        default=None,
+        help=f"Execution backend (env: SIMUL, default: {emulate.DEFAULT_SIMUL})",
+    )
+    parser.add_argument(
+        "--gem5-target",
+        default=None,
+        help=f"gem5 build profile token (env: GEM5_TARGET, default: {emulate.DEFAULT_GEM5_TARGET})",
+    )
+    parser.add_argument(
+        "--rtl-target",
+        default=None,
+        help=f"RTL simulator target (env: RTL_TARGET, default: {emulate.DEFAULT_RTL_TARGET})",
+    )
     return parser.parse_args()
 
 
@@ -119,6 +138,15 @@ def validate_args(args: argparse.Namespace) -> None:
     emulate.validate_positive_int("concurrency", args.concurrency)
     if args.arch == "RVV" and args.vlen <= 0:
         emulate.fail("vlen must be a positive integer")
+    resolve_simulator_config(args)
+
+
+def resolve_simulator_config(args: argparse.Namespace) -> emulate.SimulatorConfig:
+    return emulate.resolve_simulator_config(
+        simul=getattr(args, "simul", None),
+        gem5_target=getattr(args, "gem5_target", None),
+        rtl_target=getattr(args, "rtl_target", None),
+    )
 
 
 def discover_workloads(root: Path, catalog_dir: str = "") -> list[benchmark_sources.CatalogWorkload]:
@@ -357,7 +385,10 @@ def create_table(conn: sqlite3.Connection) -> None:
             use_vf TEXT NOT NULL,
             benchmark TEXT,
             image TEXT,
+            simul TEXT,
             simulator_target TEXT,
+            gem5_target TEXT,
+            rtl_target TEXT,
             len_1d INTEGER,
             lmul INTEGER,
             timeout_s INTEGER,
@@ -431,6 +462,7 @@ def make_vplan_failure_row(
     vplan_result: dict[str, Any],
 ) -> dict[str, Any]:
     row = make_empty_row(run_id, bench, "")
+    sim_config = resolve_simulator_config(args)
     row.update(
         {
             "stage": "vplan",
@@ -438,6 +470,10 @@ def make_vplan_failure_row(
             "failure_message": message,
             "benchmark": bench,
             "image": getattr(args, "image", ""),
+            "simul": sim_config.simul,
+            "simulator_target": sim_config.simulator_target,
+            "gem5_target": sim_config.gem5_target,
+            "rtl_target": sim_config.rtl_target,
             "len_1d": args.len_1d,
             "lmul": args.lmul,
             "timeout_s": getattr(args, "timeout", None),
@@ -463,6 +499,7 @@ def make_emulate_row(
     failure_message: str = "",
 ) -> dict[str, Any]:
     row = make_empty_row(run_id, bench, use_vf)
+    sim_config = resolve_simulator_config(args)
     row.update(
         {
             "stage": "emulate",
@@ -470,6 +507,10 @@ def make_emulate_row(
             "failure_message": failure_message,
             "benchmark": bench,
             "image": args.image,
+            "simul": sim_config.simul,
+            "simulator_target": sim_config.simulator_target,
+            "gem5_target": sim_config.gem5_target,
+            "rtl_target": sim_config.rtl_target,
             "len_1d": args.len_1d,
             "lmul": args.lmul,
             "timeout_s": args.timeout,
@@ -510,6 +551,9 @@ def run_emulate_job(
         ensure_image=False,
         extra_cflags=args.extra_cflags,
         extra_opt_flags=args.extra_opt_flags,
+        simul=args.simul,
+        gem5_target=args.gem5_target,
+        rtl_target=args.rtl_target,
     )
 
 
@@ -573,8 +617,11 @@ def main() -> None:
         if aggregate_db.exists():
             aggregate_vfs = load_vfs_data(aggregate_db)
 
+    sim_config = resolve_simulator_config(args)
+
     print(
         f"emulate-all: workloads={len(benches)} catalog_dir={args.catalog_dir or '.'} "
+        f"simul={sim_config.simul} target={sim_config.simulator_target} "
         f"parallel={args.concurrency} db_dir={db_dir.name} aggregate={aggregate_db_path.name}"
     )
 

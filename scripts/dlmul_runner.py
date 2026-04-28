@@ -316,6 +316,8 @@ def run_job(
         ensure_image=False,
         extra_cflags=build_extra_cflags(variant),
         extra_opt_flags="",
+        simul="rtl",
+        rtl_target=emulate.SIM_TARGET,
     )
 
 

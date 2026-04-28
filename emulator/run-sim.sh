@@ -57,6 +57,12 @@ GROUP_TO_BUILD_TARGET = {
     "vicuna": "vicuna",
 }
 
+DEFAULT_SIMUL = "gem5"
+DEFAULT_GEM5_TARGET = "xiangshan"
+DEFAULT_RTL_TARGET = "xiangshan.KunminghuV2Config"
+VALID_SIMULATORS = frozenset({"gem5", "rtl"})
+VALID_GEM5_TARGETS = frozenset({"gem5", "xiangshan"})
+
 
 def _parse_target(token: str) -> TargetSpec:
     token = token.strip()
@@ -108,6 +114,23 @@ def _resolve_group(group_name: str, config: dict[str, Any]) -> dict[str, Any]:
         known = ", ".join(sorted(groups.keys()))
         raise ValueError(f"unknown group '{group_name}' (known: {known})")
     return _require_mapping(group, f"groups.{group_name}")
+
+
+def _validate_gem5_target(profile: str) -> str:
+    resolved = profile.strip().lower()
+    if resolved not in VALID_GEM5_TARGETS:
+        known = ", ".join(sorted(VALID_GEM5_TARGETS))
+        raise ValueError(f"unsupported gem5 target '{profile}' (known: {known})")
+    return resolved
+
+
+def _looks_like_target(token: str, config: dict[str, Any]) -> bool:
+    try:
+        spec = _parse_target(token)
+        _resolve_group(spec.group, config)
+        return True
+    except Exception:
+        return False
 
 
 def _find_simulator(kind: str, spec: TargetSpec, config: dict[str, Any], root_dir: Path) -> Path:
@@ -1118,6 +1141,38 @@ def format_result(result: SimResult, verbose: bool = False) -> str:
     return "\n".join(lines)
 
 
+def _split_cli_positionals(
+    *,
+    explicit_target: str | None,
+    positionals: list[str],
+    simul: str | None,
+    config: dict[str, Any],
+) -> tuple[str | None, list[str]]:
+    if explicit_target:
+        return explicit_target, positionals
+    if not positionals:
+        return None, []
+    if simul and not _looks_like_target(positionals[0], config):
+        return None, positionals
+    return positionals[0], positionals[1:]
+
+
+def _resolve_requested_target(
+    *,
+    target_token: str | None,
+    simul: str | None,
+    rtl_target: str,
+    config: dict[str, Any],
+) -> TargetSpec:
+    if target_token:
+        return _parse_target(target_token)
+    if simul == "gem5":
+        return TargetSpec("gem5", None)
+    if simul == "rtl":
+        return _parse_target(rtl_target)
+    raise ValueError("target is required unless --simul is provided")
+
+
 def main(argv: list[str]) -> int:
     prog_name = Path(sys.argv[0]).name
     default_all_mode = prog_name == "emulate-all"
@@ -1128,6 +1183,7 @@ def main(argv: list[str]) -> int:
 Examples:
   %(prog)s saturn test.elf                        Run ELF on Saturn
   %(prog)s saturn run/src/tsvc/s271/manifest.yaml Build and run a manifest workload
+  %(prog)s --simul=gem5 run/src/tsvc/s271/manifest.yaml
   %(prog)s saturn run/src/tsvc/s271/s271.c --lmul=2 Auto-detect manifest from source path
   %(prog)s saturn a.c helper.S helper.o           Link one workload from multiple inputs
   %(prog)s --list                                 List available simulators
@@ -1140,8 +1196,9 @@ Verbose Mode (default: ON):
   Use --no-sim-verbose to disable trace output for faster simulation.
 """,
     )
-    parser.add_argument("target", nargs="?", help="Simulator target (e.g., 'saturn', 'xiangshan.MinimalConfig')")
-    parser.add_argument("inputs", nargs="*", help="ELF/binary, workload directory, manifest, or source/object files")
+    parser.add_argument("positionals", nargs="*", help="Optional <target> followed by workload inputs")
+    parser.add_argument("--target", dest="target_name", default=None,
+                        help="Simulator target (e.g., 'saturn', 'xiangshan.MinimalConfig')")
     parser.add_argument("--config-file", default="sim-configs.yaml", help="Config file path")
     parser.add_argument("--max-cycles", type=int, default=100_000_000, help="Maximum simulation cycles")
     parser.add_argument("--timeout", type=int, default=600, help="Timeout in seconds")
@@ -1167,8 +1224,15 @@ Verbose Mode (default: ON):
     parser.add_argument("--optflags", type=str, default=None, help="Additional opt flags for kernel build (e.g., -precise-mem-cost)")
     parser.add_argument("--sim-out-dir", type=str, default=None, help="Simulation output directory for backends that produce extra artifacts")
     parser.add_argument("--build-out-dir", type=str, default=None, help="Workload build output directory")
+    parser.add_argument("--simul", choices=sorted(VALID_SIMULATORS), default=None,
+                        help=f"Execution backend when no target is provided (default: {DEFAULT_SIMUL})")
+    parser.add_argument("--gem5-target", type=str, default=DEFAULT_GEM5_TARGET,
+                        help=f"gem5 build profile token (default: {DEFAULT_GEM5_TARGET})")
+    parser.add_argument("--rtl-target", type=str, default=DEFAULT_RTL_TARGET,
+                        help=f"RTL simulator target when using --simul=rtl (default: {DEFAULT_RTL_TARGET})")
 
-    args, unknown = parser.parse_known_args(argv)
+    parse_known = getattr(parser, "parse_known_intermixed_args", parser.parse_known_args)
+    args, unknown = parse_known(argv)
     args.extra_args = unknown
     root_dir = Path(__file__).resolve().parent
     config_path = Path(args.config_file)
@@ -1176,6 +1240,7 @@ Verbose Mode (default: ON):
         config_path = root_dir / config_path
 
     config = _load_config(config_path)
+    gem5_target = _validate_gem5_target(args.gem5_target)
 
     if args.list:
         groups = _require_mapping(config.get("groups"), "groups")
@@ -1204,13 +1269,36 @@ Verbose Mode (default: ON):
                     print(f"    t1 (default)              {status}")
         return 0
 
-    if not args.target or not args.inputs:
+    if not args.positionals and not args.target_name:
         parser.print_help(sys.stderr)
         return 2
 
-    spec = _parse_target(args.target)
+    target_token, input_tokens = _split_cli_positionals(
+        explicit_target=args.target_name,
+        positionals=args.positionals,
+        simul=args.simul,
+        config=config,
+    )
+    spec = _resolve_requested_target(
+        target_token=target_token,
+        simul=args.simul,
+        rtl_target=args.rtl_target,
+        config=config,
+    )
+
+    if spec.group != "gem5" and target_token is None and args.simul == "rtl":
+        group = _resolve_group(spec.group, config)
+        resolved_kind = str(group.get("kind", "")).strip()
+        if resolved_kind == "gem5":
+            raise ValueError("rtl target must resolve to a non-gem5 backend")
+
+    if not input_tokens:
+        parser.print_help(sys.stderr)
+        return 2
     group = _resolve_group(spec.group, config)
     kind = str(group.get("kind", "")).strip()
+    if kind == "gem5" and spec.config:
+        raise ValueError("gem5 does not take a config suffix (use: gem5)")
 
     sim_path = _find_simulator(kind, spec, config, root_dir)
 
@@ -1222,7 +1310,7 @@ Verbose Mode (default: ON):
     if sim_out_dir is not None and not sim_out_dir.is_absolute():
         sim_out_dir = root_dir / sim_out_dir
 
-    input_paths = [Path(value).resolve() for value in args.inputs]
+    input_paths = [Path(value).resolve() for value in input_tokens]
     if args.all:
         if len(input_paths) != 1 or not input_paths[0].is_dir():
             print("error: --all requires exactly one directory input", file=sys.stderr)
@@ -1235,7 +1323,7 @@ Verbose Mode (default: ON):
 
     for group_inputs in workload_groups:
         if any(_is_build_input(path) for path in group_inputs):
-            build_target = GROUP_TO_BUILD_TARGET.get(spec.group, spec.group)
+            build_target = "gem5" if kind == "gem5" else GROUP_TO_BUILD_TARGET.get(spec.group, spec.group)
             workload = build_workload(
                 root_dir,
                 group_inputs,
@@ -1257,6 +1345,8 @@ Verbose Mode (default: ON):
 
         label = group_inputs[0].parent.name if group_inputs[0].name == "manifest.yaml" else workload.stem
         print(f"Simulator: {sim_path}")
+        if kind == "gem5":
+            print(f"gem5 target: {gem5_target}")
         print(f"Workload:  {workload}")
         print(f"Max cycles: {args.max_cycles:,}")
         print(f"Timeout:   {args.timeout}s")
