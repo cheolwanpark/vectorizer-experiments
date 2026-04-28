@@ -85,6 +85,9 @@ RUN --mount=type=cache,id=apt-cache,target=/var/cache/apt,sharing=locked \
         bison \
         bc \
         lld \
+        gcc-riscv64-linux-gnu \
+        libc6-dev-riscv64-cross \
+        linux-libc-dev-riscv64-cross \
         libsqlite3-dev \
         libzstd-dev \
         mold \

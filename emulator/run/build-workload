@@ -507,7 +507,53 @@ def resolve_target(target_name: str, root_dir: Path) -> tuple[TargetConfig, str,
         extra_compile.append(f"-I{Path(emurt_path) / 'include'}")
         extra_link.extend((f"-I{Path(emurt_path) / 'include'}", f"-L{Path(emurt_path) / 'lib'}", "-lemurt"))
 
+    if target_name == "gem5":
+        sysroot = resolve_gem5_sysroot(root_dir)
+        gcc_toolchain = resolve_gem5_gcc_toolchain(root_dir, sysroot)
+        extra_compile.append(f"--sysroot={sysroot}")
+        extra_link.append(f"--sysroot={sysroot}")
+        if gcc_toolchain is not None:
+            extra_compile.append(f"--gcc-toolchain={gcc_toolchain}")
+            extra_link.append(f"--gcc-toolchain={gcc_toolchain}")
+
     return target, cc, extra_compile, extra_link
+
+
+def first_existing_path(candidates: list[Path | None]) -> Path | None:
+    for candidate in candidates:
+        if candidate is not None and candidate.exists():
+            return candidate.resolve()
+    return None
+
+
+def resolve_gem5_sysroot(root_dir: Path) -> Path:
+    env_sysroot = os.environ.get("GEM5_SYSROOT") or os.environ.get("SYSROOT")
+    candidates: list[Path | None] = [
+        Path(env_sysroot).expanduser() if env_sysroot else None,
+        root_dir / "riscv-tools-install" / "riscv64-unknown-linux-gnu" / "sysroot",
+        root_dir / "chipyard" / ".conda-env" / "riscv-tools" / "riscv64-unknown-linux-gnu" / "sysroot",
+        Path("/usr/riscv64-linux-gnu"),
+    ]
+    sysroot = first_existing_path(candidates)
+    if sysroot is None:
+        die(
+            "gem5 target requires a RISC-V Linux sysroot. "
+            "Set GEM5_SYSROOT/SYSROOT or install one at /usr/riscv64-linux-gnu."
+        )
+    return sysroot
+
+
+def resolve_gem5_gcc_toolchain(root_dir: Path, sysroot: Path) -> Path | None:
+    env_toolchain = os.environ.get("GEM5_GCC_TOOLCHAIN") or os.environ.get("GCC_TOOLCHAIN")
+    candidates: list[Path | None] = [
+        Path(env_toolchain).expanduser() if env_toolchain else None,
+        root_dir / "riscv-tools-install",
+        root_dir / "chipyard" / ".conda-env" / "riscv-tools",
+    ]
+    if sysroot == Path("/usr/riscv64-linux-gnu"):
+        candidates.append(Path("/usr"))
+    toolchain = first_existing_path(candidates)
+    return toolchain
 
 
 def default_wrapper(target_name: str, entry_mode: str) -> str | None:

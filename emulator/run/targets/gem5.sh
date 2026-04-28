@@ -1,6 +1,6 @@
 TARGET_ARCH="rv64gcv"
 TARGET_ABI="lp64d"
 TARGET_CC="clang"
-TARGET_CC_FLAGS="--target=riscv64-unknown-linux-gnu -DTSVC_NO_STDLIB -fno-pie -no-pie"
+TARGET_CC_FLAGS="--target=riscv64-unknown-linux-gnu -DTSVC_NO_STDLIB -fno-pie -no-pie --sysroot=\${GEM5_SYSROOT:-\${SYSROOT:-/usr/riscv64-linux-gnu}}"
 TARGET_CRT="crt/crt_gem5.S"
 TARGET_LD=""
