@@ -94,7 +94,7 @@ static int parsec_streamcluster_fprintf(FILE *stream, const char *fmt, ...) {
 #undef main
 #endif
 #define main parsec_streamcluster_upstream_main
-#include "../../../../../parsec-benchmark/pkgs/kernels/streamcluster/src/streamcluster.cpp"
+#include "upstream/streamcluster.cpp"
 #undef main
 #undef fprintf
 #undef fclose

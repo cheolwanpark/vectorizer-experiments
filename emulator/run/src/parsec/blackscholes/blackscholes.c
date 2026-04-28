@@ -22,7 +22,7 @@ typedef struct {
 #define PARSEC_BLACKSCHOLES_DEFAULT_OPTIONS 1024
 
 static const ParsecBlackscholesSeed parsec_blackscholes_seed[] = {
-#include "../../../../../parsec-benchmark/pkgs/apps/blackscholes/src/optionData.txt"
+#include "upstream/optionData.txt"
 };
 
 typedef struct {
@@ -107,7 +107,7 @@ static int parsec_blackscholes_fscanf(FILE *stream, const char *fmt, ...) {
 #undef main
 #endif
 #define main parsec_blackscholes_upstream_main
-#include "../../../../../parsec-benchmark/pkgs/apps/blackscholes/src/blackscholes.c"
+#include "upstream/blackscholes.c"
 #undef main
 #undef fscanf
 #undef fclose

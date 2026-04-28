@@ -22,7 +22,8 @@
     "prevec_passes": "mem2reg,simplifycfg,loop-simplify,lcssa,indvars,loop-rotate,simplifycfg",
     "support_sources": [
       "../common/parsec_runtime.c",
-      "../common/parsec_runtime_cpp.cpp"
+      "../common/parsec_runtime_cpp.cpp",
+      "upstream/parsec_barrier.cpp"
     ]
   }
 }

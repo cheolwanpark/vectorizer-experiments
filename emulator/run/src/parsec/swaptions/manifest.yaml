@@ -6,13 +6,13 @@
   },
   "sources": [
     "swaptions_main.cpp",
-    "../../../../../parsec-benchmark/pkgs/apps/swaptions/src/CumNormalInv.cpp",
-    "../../../../../parsec-benchmark/pkgs/apps/swaptions/src/MaxFunction.cpp",
-    "../../../../../parsec-benchmark/pkgs/apps/swaptions/src/RanUnif.cpp",
-    "../../../../../parsec-benchmark/pkgs/apps/swaptions/src/nr_routines.c",
-    "../../../../../parsec-benchmark/pkgs/apps/swaptions/src/HJM_SimPath_Forward_Blocking.cpp",
-    "../../../../../parsec-benchmark/pkgs/apps/swaptions/src/HJM.cpp",
-    "../../../../../parsec-benchmark/pkgs/apps/swaptions/src/HJM_Swaption_Blocking.cpp"
+    "upstream/CumNormalInv.cpp",
+    "upstream/MaxFunction.cpp",
+    "upstream/RanUnif.cpp",
+    "upstream/nr_routines.c",
+    "upstream/HJM_SimPath_Forward_Blocking.cpp",
+    "upstream/HJM.cpp",
+    "upstream/HJM_Swaption_Blocking.cpp"
   ],
   "metadata": {
     "suite": "parsec",

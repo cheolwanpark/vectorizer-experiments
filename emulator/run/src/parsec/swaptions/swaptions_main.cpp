@@ -9,7 +9,7 @@ static double parsec_swaptions_error_sum;
 #undef main
 #endif
 #define main parsec_swaptions_upstream_main
-#include "../../../../../parsec-benchmark/pkgs/apps/swaptions/src/HJM_Securities.cpp"
+#include "upstream/HJM_Securities.cpp"
 #undef main
 
 int workload_verify(void) {
