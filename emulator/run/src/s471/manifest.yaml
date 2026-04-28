@@ -1,0 +1,21 @@
+{
+  "name": "s471",
+  "entry": {
+    "mode": "kernel",
+    "symbol": "kernel"
+  },
+  "sources": [
+    "s471.c"
+  ],
+  "metadata": {
+    "suite": "generated",
+    "tags": [
+      "generated"
+    ]
+  },
+  "build": {
+    "support_sources": [
+      "../../common/tsvc_runtime.c"
+    ]
+  }
+}

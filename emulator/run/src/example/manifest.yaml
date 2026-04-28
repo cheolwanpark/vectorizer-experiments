@@ -1,0 +1,16 @@
+{
+  "name": "example",
+  "entry": {
+    "mode": "kernel",
+    "symbol": "kernel"
+  },
+  "sources": [
+    "example.c"
+  ],
+  "metadata": {
+    "suite": "hand",
+    "tags": [
+      "example"
+    ]
+  }
+}

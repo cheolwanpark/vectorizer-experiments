@@ -1,0 +1,14 @@
+{
+  "name": "s443",
+  "entry": {
+    "mode": "kernel",
+    "symbol": "kernel"
+  },
+  "sources": [
+    "s443.c"
+  ],
+  "metadata": {
+    "suite": "hand",
+    "tags": []
+  }
+}

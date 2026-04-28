@@ -1,0 +1,21 @@
+{
+  "name": "mb11_masked_execution",
+  "entry": {
+    "mode": "kernel",
+    "symbol": "kernel"
+  },
+  "sources": [
+    "mb11_masked_execution.c"
+  ],
+  "metadata": {
+    "suite": "microbench",
+    "tags": [
+      "dlmul"
+    ]
+  },
+  "build": {
+    "include_dirs": [
+      "../shared/dlmul"
+    ]
+  }
+}

@@ -41,10 +41,10 @@ After it completes, `source env.sh` and then `./build-sim.sh` to build the RTL s
 
 ### Step 1: Write (or pick) a kernel
 
-Kernel files go in `run/src/`. A kernel is a single C function:
+Kernel workloads live under `run/src/<bench>/` with a `manifest.yaml` and local sources. A simple kernel source still looks like:
 
 ```c
-// run/src/s351.c
+// run/src/s351/s351.c
 #include "common.h"
 
 void kernel(void) {
@@ -55,13 +55,13 @@ void kernel(void) {
 }
 ```
 
-Existing kernels: `s000`, `s111`, `s112`, `s121`, `s251`, `s271`, `s311`, `s4112`, etc.
+Existing workloads: `run/src/s000/`, `run/src/s111/`, `run/src/s112/`, `run/src/s271/`, `run/src/mb1_switch/`, etc.
 
 ### Step 2: Run simulation
 
 ```bash
 # Basic: one target, one LMUL
-./run-sim.sh saturn run/src/example.c --lmul=2 --len=4096
+./run-sim.sh saturn run/src/example/manifest.yaml --lmul=2 --len=4096
 
 # Output:
 #   Building: example (target=saturn, lmul=2)
@@ -77,7 +77,7 @@ Existing kernels: `s000`, `s111`, `s112`, `s121`, `s251`, `s271`, `s311`, `s4112
 ```bash
 for target in saturn xiangshan t1; do
     for lmul in 1 2 4 8; do
-        ./run-sim.sh $target run/src/s351.c --lmul=$lmul --len=4096
+        ./run-sim.sh $target run/src/s351/manifest.yaml --lmul=$lmul --len=4096
     done
 done
 ```
@@ -87,7 +87,7 @@ done
 ### `run-sim.sh` — Build + Simulate + Parse cycles
 
 ```
-./run-sim.sh <target> <source.c | elf> [options]
+./run-sim.sh <target> <manifest.yaml | source.c | elf> [options]
 ```
 
 | Option | Description | Default |
@@ -102,7 +102,7 @@ done
 | `--list` | Show available simulators | - |
 
 **What it does internally:**
-1. Calls `run/build-kernel` to compile `.c` → `.elf`
+1. Calls `run/build-kernel` / `run/build-workload` to compile the workload sources → `.elf`
 2. Launches the RTL Verilator simulator
 3. Parses kernel cycles from trace output
 4. Reports results
@@ -111,7 +111,7 @@ done
 
 ```
 cd run
-./build-kernel <target> <source.c> [options]
+./build-kernel <target> <manifest.yaml | source.c> [options]
 ```
 
 | Option | Description | Default |
@@ -125,11 +125,11 @@ cd run
 **Useful for inspection:**
 ```bash
 # Check vectorization — does it use the expected instructions?
-cd run && ./build-kernel saturn src/s351.c --lmul=4 --asm
+cd run && ./build-kernel saturn src/s351/manifest.yaml --lmul=4 --asm
 # → run/out/s351_saturn_lmul4.s
 
 # Use -ffast-math to allow vfredusum instead of vfredosum
-cd run && ./build-kernel saturn src/s311.c --lmul=2 --cflags="-ffast-math" --asm
+cd run && ./build-kernel saturn src/s311/manifest.yaml --lmul=2 --cflags="-ffast-math" --asm
 ```
 
 ### Using extra compiler flags (e.g. `-ffast-math`)
@@ -138,7 +138,7 @@ cd run && ./build-kernel saturn src/s311.c --lmul=2 --cflags="-ffast-math" --asm
 
 ```bash
 # Step 1: build with --cflags
-cd run && ./build-kernel xiangshan src/s311.c --lmul=2 --len=4096 \
+cd run && ./build-kernel xiangshan src/s311/manifest.yaml --lmul=2 --len=4096 \
     --cflags="-ffast-math" --output=out/s311_ffast_xiangshan_lmul2.elf && cd ..
 
 # Step 2: simulate the pre-built ELF
@@ -148,7 +148,7 @@ cd run && ./build-kernel xiangshan src/s311.c --lmul=2 --len=4096 \
 Loop version:
 ```bash
 for lmul in 1 2 4 8; do
-    cd run && ./build-kernel xiangshan src/s311.c --lmul=$lmul --len=4096 \
+    cd run && ./build-kernel xiangshan src/s311/manifest.yaml --lmul=$lmul --len=4096 \
         --cflags="-ffast-math" --output=out/s311_ffast_xiangshan_lmul${lmul}.elf && cd ..
     ./run-sim.sh xiangshan run/out/s311_ffast_xiangshan_lmul${lmul}.elf
 done
@@ -160,7 +160,7 @@ done
 #!/bin/bash
 # Run s351 on saturn, xiangshan, t1 with LEN=4096, LMUL=1,2,4,8
 
-KERNEL="run/src/s351.c"
+KERNEL="run/src/s351/manifest.yaml"
 LEN=4096
 
 for target in saturn xiangshan t1; do
@@ -199,10 +199,10 @@ Each simulation produces files in `sim-logs/`:
 
 ## Writing New Kernels
 
-1. Create `run/src/<name>.c`
-2. Include `"common.h"` and define `void kernel(void)`
+1. Create `run/src/<name>/manifest.yaml`
+2. Add `run/src/<name>/<name>.c` with `#include "common.h"` and `void kernel(void)`
 3. Use predefined arrays (`a[]`, `b[]`, `c[]`, `d[]`, `e[]`) and `LEN_1D`
-4. No `main()`, no `printf`, no `#include <stdio.h>` — the harness handles everything
+4. No `main()`, no `printf`, no `#include <stdio.h>` for kernel-mode workloads — the harness handles everything
 
 ```c
 #include "common.h"
@@ -239,8 +239,9 @@ rvv-poc/
 ├── run-sim.sh          # Main entry point: build + simulate + report
 ├── sim-configs.yaml    # Simulator paths and configurations
 ├── run/
-│   ├── build-kernel    # Kernel compiler
-│   ├── src/            # Kernel source files
+│   ├── build-kernel    # Compatibility build wrapper
+│   ├── build-workload  # Manifest-driven workload builder
+│   ├── src/            # Workload directories
 │   ├── common/         # Shared headers, arrays, harness
 │   ├── targets/        # Per-target build config
 │   ├── crt/            # C runtime startup

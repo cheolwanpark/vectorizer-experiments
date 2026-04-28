@@ -1,0 +1,14 @@
+{
+  "name": "s442",
+  "entry": {
+    "mode": "kernel",
+    "symbol": "kernel"
+  },
+  "sources": [
+    "s442.c"
+  ],
+  "metadata": {
+    "suite": "hand",
+    "tags": []
+  }
+}

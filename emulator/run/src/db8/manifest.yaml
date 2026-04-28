@@ -1,0 +1,21 @@
+{
+  "name": "db8",
+  "entry": {
+    "mode": "kernel",
+    "symbol": "kernel"
+  },
+  "sources": [
+    "db8.c"
+  ],
+  "metadata": {
+    "suite": "bench",
+    "tags": [
+      "dlmul"
+    ]
+  },
+  "build": {
+    "include_dirs": [
+      "../shared/dlmul"
+    ]
+  }
+}

@@ -1,0 +1,14 @@
+{
+  "name": "s4112",
+  "entry": {
+    "mode": "kernel",
+    "symbol": "kernel"
+  },
+  "sources": [
+    "s4112.c"
+  ],
+  "metadata": {
+    "suite": "hand",
+    "tags": []
+  }
+}

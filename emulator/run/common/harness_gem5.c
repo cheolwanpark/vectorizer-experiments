@@ -1,7 +1,11 @@
 #include "types.h"
 #include "arrays.h"
 
-extern void kernel(void);
+#ifndef WORKLOAD_ENTRY
+#define WORKLOAD_ENTRY kernel
+#endif
+
+extern void WORKLOAD_ENTRY(void);
 
 static inline uint64_t rdcycle(void) {
     uint64_t value;
@@ -51,11 +55,11 @@ int main(void) {
     uint64_t end;
 
     init_arrays();
-    kernel();
+    WORKLOAD_ENTRY();
 
     init_arrays();
     start = rdcycle();
-    kernel();
+    WORKLOAD_ENTRY();
     end = rdcycle();
 
     for (size_t i = 0; i < LEN_1D; ++i) {

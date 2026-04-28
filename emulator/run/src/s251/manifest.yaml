@@ -1,0 +1,14 @@
+{
+  "name": "s251",
+  "entry": {
+    "mode": "kernel",
+    "symbol": "kernel"
+  },
+  "sources": [
+    "s251.c"
+  ],
+  "metadata": {
+    "suite": "hand",
+    "tags": []
+  }
+}

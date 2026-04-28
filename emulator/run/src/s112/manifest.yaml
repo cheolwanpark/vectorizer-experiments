@@ -1,0 +1,14 @@
+{
+  "name": "s112",
+  "entry": {
+    "mode": "kernel",
+    "symbol": "kernel"
+  },
+  "sources": [
+    "s112.c"
+  ],
+  "metadata": {
+    "suite": "hand",
+    "tags": []
+  }
+}

@@ -11,10 +11,11 @@ A directory for running simple RVV micro-benchmarks on various hardware targets 
 ```
 run/
 ├── CLAUDE.md           # This file
-├── build-kernel        # Main build/run script
+├── build-kernel        # Compatibility build wrapper
+├── build-workload      # Manifest-driven workload builder
 ├── Makefile            # Alternative make-based build
-├── src/                # Kernel source files
-│   └── example.c       # Example kernel (s271-based)
+├── src/                # Workload directories
+│   └── example/        # Example workload (manifest + local sources)
 ├── common/             # Shared code
 │   ├── common.h        # Kernel include header
 │   ├── types.h         # Type definitions
@@ -39,9 +40,9 @@ run/
 
 ## Kernel Writing Convention
 
-Kernel sources (`src/*.c`) must contain **only pure kernel logic**.
+Kernel-mode workload sources (`src/<bench>/<bench>.c`) must contain **only pure kernel logic**.
 
-### Example: src/example.c
+### Example: src/example/example.c
 
 ```c
 #include "common.h"
@@ -67,7 +68,7 @@ void kernel(void) {
 ### build-kernel Script (Recommended)
 
 ```bash
-./build-kernel <target> <source.c> [options]
+./build-kernel <target> <manifest.yaml | source.c> [options]
 ```
 
 **Targets**: spike, saturn, ara, xiangshan, t1, c910
@@ -86,13 +87,13 @@ void kernel(void) {
 
 ```bash
 # Build only
-./build-kernel saturn src/example.c --lmul=2
+./build-kernel saturn src/example/manifest.yaml --lmul=2
 
 # Generate assembly to check vectorization
-./build-kernel saturn src/example.c --lmul=4 --asm
+./build-kernel saturn src/example/manifest.yaml --lmul=4 --asm
 
 # Different array size
-./build-kernel saturn src/example.c --lmul=2 --len=10000
+./build-kernel saturn src/example/manifest.yaml --lmul=2 --len=10000
 ```
 
 ## Running Simulations
@@ -104,14 +105,14 @@ After building, use `run-sim.sh` for simulation execution:
 ./run-sim.sh saturn run/out/example_saturn_lmul2.elf
 
 # Build+run from source file (internally calls build-kernel)
-./run-sim.sh saturn run/src/example.c --lmul=2
+./run-sim.sh saturn run/src/example/manifest.yaml --lmul=2
 
 # With options
-./run-sim.sh saturn src/example.c --lmul=4 --len=10000 --timeout=300
+./run-sim.sh saturn src/example/manifest.yaml --lmul=4 --len=10000 --timeout=300
 
 # Compare multiple LMULs
 for lmul in 1 2 4 8; do
-    ./run-sim.sh saturn run/src/example.c --lmul=$lmul
+    ./run-sim.sh saturn run/src/example/manifest.yaml --lmul=$lmul
 done
 
 # List available simulators
@@ -225,7 +226,7 @@ Example comparing 4 targets across LMULs (32 data points):
 for target in saturn ara t1 xiangshan; do
     for lmul in 1 2 4 8; do
         echo "=== $target lmul=$lmul ==="
-        ./run-sim.sh $target run/src/example.c --lmul=$lmul
+        ./run-sim.sh $target run/src/example/manifest.yaml --lmul=$lmul
     done
 done
 ```
@@ -244,7 +245,7 @@ done
 1. Create new kernel file in `src/` (e.g., `src/s271.c`)
 2. Add `#include "common.h"`
 3. Implement `void kernel(void)` function
-4. Test: `./build-kernel spike src/s271.c --run`
+4. Test: `./build-kernel spike src/s271/manifest.yaml`
 
 ## Adding New Targets
 
@@ -259,7 +260,7 @@ done
 
 ### Verify vectorization
 ```bash
-./build-kernel saturn src/example.c --asm
+./build-kernel saturn src/example/manifest.yaml --asm
 # Check for vsetvli, vadd, vmul, etc.
 ```
 

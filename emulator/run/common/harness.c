@@ -1,7 +1,11 @@
 #include "types.h"
 #include "arrays.h"
 
-extern void kernel(void);
+#ifndef WORKLOAD_ENTRY
+#define WORKLOAD_ENTRY kernel
+#endif
+
+extern void WORKLOAD_ENTRY(void);
 
 extern volatile uint64_t tohost;
 extern volatile uint64_t fromhost;
@@ -44,12 +48,12 @@ static void dummy(void) {
 
 int main(void) {
     init_arrays();
-    kernel();
+    WORKLOAD_ENTRY();
     dummy();
 
     init_arrays();
     uint64_t start = rdcycle();
-    kernel();
+    WORKLOAD_ENTRY();
     uint64_t end = rdcycle();
     dummy();
 

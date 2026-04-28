@@ -1,0 +1,14 @@
+{
+  "name": "vas",
+  "entry": {
+    "mode": "kernel",
+    "symbol": "kernel"
+  },
+  "sources": [
+    "vas.c"
+  ],
+  "metadata": {
+    "suite": "hand",
+    "tags": []
+  }
+}

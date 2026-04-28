@@ -1,0 +1,14 @@
+{
+  "name": "s271",
+  "entry": {
+    "mode": "kernel",
+    "symbol": "kernel"
+  },
+  "sources": [
+    "s271.c"
+  ],
+  "metadata": {
+    "suite": "hand",
+    "tags": []
+  }
+}

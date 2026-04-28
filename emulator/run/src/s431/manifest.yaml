@@ -1,0 +1,21 @@
+{
+  "name": "s431",
+  "entry": {
+    "mode": "kernel",
+    "symbol": "kernel"
+  },
+  "sources": [
+    "s431.c"
+  ],
+  "metadata": {
+    "suite": "generated",
+    "tags": [
+      "generated"
+    ]
+  },
+  "build": {
+    "support_sources": [
+      "../../common/tsvc_runtime.c"
+    ]
+  }
+}

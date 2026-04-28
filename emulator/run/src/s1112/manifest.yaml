@@ -1,0 +1,21 @@
+{
+  "name": "s1112",
+  "entry": {
+    "mode": "kernel",
+    "symbol": "kernel"
+  },
+  "sources": [
+    "s1112.c"
+  ],
+  "metadata": {
+    "suite": "generated",
+    "tags": [
+      "generated"
+    ]
+  },
+  "build": {
+    "support_sources": [
+      "../../common/tsvc_runtime.c"
+    ]
+  }
+}

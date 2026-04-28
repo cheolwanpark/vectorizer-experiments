@@ -134,7 +134,7 @@ source env.sh
 ./scripts/build_chipyard.sh
 
 # 3. Run a benchmark (from project root)
-./run-sim.sh saturn run/src/s271.c --lmul=2 --len=4096
+./run-sim.sh saturn run/src/s271/manifest.yaml --lmul=2 --len=4096
 ```
 
 ## Agent Instructions
@@ -185,7 +185,7 @@ When working on this project:
     - `run/crt/crt_vicuna.S` - RV32 CRT startup
     - `run/link/link_vicuna.ld` - Linker script
     - `run/common/harness_vicuna.c` - Simulation harness
-    - `run/src/s271_int.c` - Integer-only test kernel
+  - `run/src/s271/` - Example hand-written kernel workload
   - `sim-configs.yaml` and `run-sim.sh` updated with Vicuna support
 - **Solution Required**: Install Verilator 4.210+ from source
   ```bash

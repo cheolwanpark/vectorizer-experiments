@@ -1,0 +1,21 @@
+{
+  "name": "mb9_phase_length_sweep",
+  "entry": {
+    "mode": "kernel",
+    "symbol": "kernel"
+  },
+  "sources": [
+    "mb9_phase_length_sweep.c"
+  ],
+  "metadata": {
+    "suite": "microbench",
+    "tags": [
+      "dlmul"
+    ]
+  },
+  "build": {
+    "include_dirs": [
+      "../shared/dlmul"
+    ]
+  }
+}

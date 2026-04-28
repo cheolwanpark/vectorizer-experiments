@@ -1,0 +1,21 @@
+{
+  "name": "db9",
+  "entry": {
+    "mode": "kernel",
+    "symbol": "kernel"
+  },
+  "sources": [
+    "db9.c"
+  ],
+  "metadata": {
+    "suite": "bench",
+    "tags": [
+      "dlmul"
+    ]
+  },
+  "build": {
+    "include_dirs": [
+      "../shared/dlmul"
+    ]
+  }
+}

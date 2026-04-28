@@ -1,0 +1,14 @@
+{
+  "name": "s276",
+  "entry": {
+    "mode": "kernel",
+    "symbol": "kernel"
+  },
+  "sources": [
+    "s276.c"
+  ],
+  "metadata": {
+    "suite": "hand",
+    "tags": []
+  }
+}

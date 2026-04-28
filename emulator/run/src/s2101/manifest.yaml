@@ -1,0 +1,14 @@
+{
+  "name": "s2101",
+  "entry": {
+    "mode": "kernel",
+    "symbol": "kernel"
+  },
+  "sources": [
+    "s2101.c"
+  ],
+  "metadata": {
+    "suite": "hand",
+    "tags": []
+  }
+}

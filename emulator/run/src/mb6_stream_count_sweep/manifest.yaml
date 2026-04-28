@@ -1,0 +1,21 @@
+{
+  "name": "mb6_stream_count_sweep",
+  "entry": {
+    "mode": "kernel",
+    "symbol": "kernel"
+  },
+  "sources": [
+    "mb6_stream_count_sweep.c"
+  ],
+  "metadata": {
+    "suite": "microbench",
+    "tags": [
+      "dlmul"
+    ]
+  },
+  "build": {
+    "include_dirs": [
+      "../shared/dlmul"
+    ]
+  }
+}

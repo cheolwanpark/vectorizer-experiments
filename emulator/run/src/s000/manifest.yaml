@@ -1,0 +1,14 @@
+{
+  "name": "s000",
+  "entry": {
+    "mode": "kernel",
+    "symbol": "kernel"
+  },
+  "sources": [
+    "s000.c"
+  ],
+  "metadata": {
+    "suite": "hand",
+    "tags": []
+  }
+}

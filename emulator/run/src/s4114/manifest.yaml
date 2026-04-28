@@ -1,0 +1,21 @@
+{
+  "name": "s4114",
+  "entry": {
+    "mode": "kernel",
+    "symbol": "kernel"
+  },
+  "sources": [
+    "s4114.c"
+  ],
+  "metadata": {
+    "suite": "generated",
+    "tags": [
+      "generated"
+    ]
+  },
+  "build": {
+    "support_sources": [
+      "../../common/tsvc_runtime.c"
+    ]
+  }
+}

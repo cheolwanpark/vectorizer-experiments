@@ -1,0 +1,14 @@
+{
+  "name": "s421",
+  "entry": {
+    "mode": "kernel",
+    "symbol": "kernel"
+  },
+  "sources": [
+    "s421.c"
+  ],
+  "metadata": {
+    "suite": "hand",
+    "tags": []
+  }
+}

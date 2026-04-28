@@ -1,0 +1,22 @@
+{
+  "name": "db3",
+  "entry": {
+    "mode": "kernel",
+    "symbol": "kernel"
+  },
+  "sources": [
+    "db3.c"
+  ],
+  "metadata": {
+    "suite": "bench",
+    "tags": [
+      "dlmul",
+      "legacy"
+    ]
+  },
+  "build": {
+    "include_dirs": [
+      "../shared/dlmul"
+    ]
+  }
+}

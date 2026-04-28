@@ -1,7 +1,11 @@
 #include "types.h"
 #include "arrays.h"
 
-extern void kernel(void);
+#ifndef WORKLOAD_ENTRY
+#define WORKLOAD_ENTRY kernel
+#endif
+
+extern void WORKLOAD_ENTRY(void);
 
 static inline uint32_t rdcycle(void) {
     uint32_t c;
@@ -38,12 +42,12 @@ static void dummy(void) {
 /* T1 expects 'test' as the entry point, not 'main' */
 void test(void) {
     init_arrays();
-    kernel();
+    WORKLOAD_ENTRY();
     dummy();
 
     init_arrays();
     uint32_t start = rdcycle();
-    kernel();
+    WORKLOAD_ENTRY();
     uint32_t end = rdcycle();
     dummy();
 

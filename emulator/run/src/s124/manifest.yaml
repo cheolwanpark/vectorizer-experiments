@@ -1,0 +1,14 @@
+{
+  "name": "s124",
+  "entry": {
+    "mode": "kernel",
+    "symbol": "kernel"
+  },
+  "sources": [
+    "s124.c"
+  ],
+  "metadata": {
+    "suite": "hand",
+    "tags": []
+  }
+}

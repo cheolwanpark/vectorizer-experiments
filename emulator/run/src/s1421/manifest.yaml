@@ -1,0 +1,14 @@
+{
+  "name": "s1421",
+  "entry": {
+    "mode": "kernel",
+    "symbol": "kernel"
+  },
+  "sources": [
+    "s1421.c"
+  ],
+  "metadata": {
+    "suite": "hand",
+    "tags": []
+  }
+}

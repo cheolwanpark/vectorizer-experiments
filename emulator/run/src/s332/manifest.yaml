@@ -1,0 +1,14 @@
+{
+  "name": "s332",
+  "entry": {
+    "mode": "kernel",
+    "symbol": "kernel"
+  },
+  "sources": [
+    "s332.c"
+  ],
+  "metadata": {
+    "suite": "hand",
+    "tags": []
+  }
+}

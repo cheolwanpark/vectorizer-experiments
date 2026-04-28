@@ -1,0 +1,14 @@
+{
+  "name": "s331",
+  "entry": {
+    "mode": "kernel",
+    "symbol": "kernel"
+  },
+  "sources": [
+    "s331.c"
+  ],
+  "metadata": {
+    "suite": "hand",
+    "tags": []
+  }
+}

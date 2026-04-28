@@ -4,7 +4,7 @@ Unified simulator runner.
 
 Examples:
   ./run-sim.sh saturn my-test.elf
-  ./run-sim.sh saturn src/kernel.c --lmul=2
+  ./run-sim.sh saturn run/src/s271/manifest.yaml --lmul=2
   ./run-sim.sh xiangshan.KunminghuV2Config out/kernel.s --lmul=1
   ./run-sim.sh xiangshan.MinimalConfig workloads/hello.bin
   ./run-sim.sh t1 tests/rvv-test.elf
@@ -364,9 +364,9 @@ def _parse_status_from_log(log_content: str, exit_code: int) -> str:
     return f"EXIT:{exit_code}"
 
 
-def build_kernel(
+def build_workload(
     root_dir: Path,
-    source: Path,
+    inputs: list[Path],
     target: str,
     *,
     lmul: int = 1,
@@ -375,27 +375,21 @@ def build_kernel(
     cflags: str | None = None,
     optflags: str | None = None,
     build_out_dir: Path | None = None,
+    dry_run: bool = False,
 ) -> Path:
-    """Build a .c/.s/.S kernel using run/build-kernel and return the ELF path."""
-    build_script = root_dir / "run" / "build-kernel"
+    """Build a workload using run/build-workload and return the ELF path."""
+    build_script = root_dir / "run" / "build-workload"
     if not build_script.exists():
-        raise FileNotFoundError(f"build-kernel not found: {build_script}")
-
-    # Determine output path
-    kernel_name = source.stem
-    out_dir = build_out_dir if build_out_dir is not None else root_dir / "run" / "out"
-    out_dir.mkdir(parents=True, exist_ok=True)
-    vf_suffix = f"_vf{use_vf}" if use_vf is not None else ""
-    output_elf = out_dir / f"{kernel_name}_{target}_lmul{lmul}{vf_suffix}.elf"
+        raise FileNotFoundError(f"build-workload not found: {build_script}")
 
     cmd = [
-        "bash",
+        sys.executable,
         str(build_script),
         target,
-        str(source),
+        *[str(path) for path in inputs],
         f"--lmul={lmul}",
         f"--len={len_1d}",
-        f"--output={output_elf}",
+        "--quiet",
     ]
     if use_vf is not None:
         cmd.append(f"--use-vf={use_vf}")
@@ -403,20 +397,48 @@ def build_kernel(
         cmd.append(f"--cflags={cflags}")
     if optflags:
         cmd.append(f"--optflags={optflags}")
+    if build_out_dir is not None:
+        cmd.append(f"--build-out-dir={build_out_dir}")
+    if dry_run:
+        cmd.append("--dry-run")
 
+    input_label = inputs[0].name if len(inputs) == 1 else ", ".join(path.name for path in inputs)
     vf_text = f", use_vf={use_vf}" if use_vf is not None else ""
-    print(f"Building kernel: {source.name} (target={target}, lmul={lmul}{vf_text})")
+    print(f"Building workload: {input_label} (target={target}, lmul={lmul}{vf_text})")
     result = subprocess.run(cmd, capture_output=True, text=True)
-
     if result.returncode != 0:
-        print(f"Build failed:\n{result.stderr}", file=sys.stderr)
-        raise RuntimeError(f"build-kernel failed with exit code {result.returncode}")
+        print("Build failed:", file=sys.stderr)
+        if result.stderr:
+            print(result.stderr, file=sys.stderr, end="")
+        if result.stdout:
+            print(result.stdout, file=sys.stderr, end="")
+        raise RuntimeError(f"build-workload failed with exit code {result.returncode}")
 
-    if not output_elf.exists():
-        raise FileNotFoundError(f"Build succeeded but ELF not found: {output_elf}")
+    payload = json.loads(result.stdout)
+    output = payload.get("output")
+    if not output:
+        raise RuntimeError("build-workload did not produce an ELF output")
+    output_path = Path(output)
+    if not dry_run and not output_path.exists():
+        raise FileNotFoundError(f"Build succeeded but ELF not found: {output_path}")
 
-    print(f"Built: {output_elf}")
-    return output_elf
+    print(f"Built: {output_path}")
+    return output_path
+
+
+def _is_build_input(path: Path) -> bool:
+    if path.is_dir():
+        return True
+    if path.name == "manifest.yaml":
+        return True
+    return path.suffix in {".c", ".s", ".S", ".o"}
+
+
+def _discover_workload_manifests(root: Path) -> list[Path]:
+    manifests = sorted(path for path in root.rglob("manifest.yaml") if path.is_file())
+    if not manifests:
+        raise FileNotFoundError(f"No manifest.yaml files found under {root}")
+    return manifests
 
 
 def _find_spike_dasm(root_dir: Path) -> Path | None:
@@ -475,11 +497,6 @@ def run_chipyard_sim(
     When verbose=True (default), uses spike-dasm to decode instruction trace.
     Logs are saved to log_dir (default: sim-logs/).
     """
-    if not sim_path.exists():
-        raise FileNotFoundError(f"Simulator not found: {sim_path}")
-    if not workload.exists():
-        raise FileNotFoundError(f"Workload not found: {workload}")
-
     # Setup log directory and files
     if log_dir is None:
         log_dir = (root_dir or Path.cwd()) / "sim-logs"
@@ -488,6 +505,12 @@ def run_chipyard_sim(
     log_base = log_dir / workload.stem
     log_file = Path(f"{log_base}.log")
     out_file = Path(f"{log_base}.out")
+
+    if not dry_run:
+        if not sim_path.exists():
+            raise FileNotFoundError(f"Simulator not found: {sim_path}")
+        if not workload.exists():
+            raise FileNotFoundError(f"Workload not found: {workload}")
 
     # Ara uses rdtime for timeout, which doesn't match actual simulation cycles
     # Setting max_core_cycles=0 disables the timeout for Ara
@@ -633,11 +656,6 @@ def run_xiangshan_sim(
       -b/--log-begin=NUM   - display log from NUM th cycle
       -e/--log-end=NUM     - stop display log at NUM th cycle
     """
-    if not sim_path.exists():
-        raise FileNotFoundError(f"Simulator not found: {sim_path}")
-    if not workload.exists():
-        raise FileNotFoundError(f"Workload not found: {workload}")
-
     # Setup log directory
     if log_dir is None:
         log_dir = (root_dir or Path.cwd()) / "sim-logs"
@@ -646,6 +664,12 @@ def run_xiangshan_sim(
     log_base = log_dir / workload.stem
     log_file = Path(f"{log_base}.log")
     trace_file = Path(f"{log_base}.trace") if verbose else None
+
+    if not dry_run:
+        if not sim_path.exists():
+            raise FileNotFoundError(f"Simulator not found: {sim_path}")
+        if not workload.exists():
+            raise FileNotFoundError(f"Workload not found: {workload}")
 
     base_cmd = [
         str(sim_path),
@@ -729,11 +753,6 @@ def run_t1_sim(
 
     When verbose=True (default), sets RUST_LOG=TRACE for detailed instruction trace.
     """
-    if not sim_path.exists():
-        raise FileNotFoundError(f"Simulator not found: {sim_path}")
-    if not workload.exists():
-        raise FileNotFoundError(f"Workload not found: {workload}")
-
     # Setup log directory
     if log_dir is None:
         log_dir = (root_dir or Path.cwd()) / "sim-logs"
@@ -744,6 +763,12 @@ def run_t1_sim(
     trace_file = Path(f"{log_base}.trace") if verbose else None
     rtl_event_file = log_dir / f"{workload.stem}-rtl-event.jsonl"
     sim_result_file = log_dir / f"{workload.stem}-sim_result.json"
+
+    if not dry_run:
+        if not sim_path.exists():
+            raise FileNotFoundError(f"Simulator not found: {sim_path}")
+        if not workload.exists():
+            raise FileNotFoundError(f"Workload not found: {workload}")
 
     # T1 uses plusarg format, not standard CLI args
     cmd = [
@@ -873,11 +898,6 @@ def run_vicuna_sim(
     UART output at 0xFF000000 goes to stdout.
     Simulation ends when program fetches address 0 (jr x0).
     """
-    if not sim_path.exists():
-        raise FileNotFoundError(f"Simulator not found: {sim_path}")
-    if not workload.exists():
-        raise FileNotFoundError(f"Workload not found: {workload}")
-
     # Setup log directory
     if log_dir is None:
         log_dir = (root_dir or Path.cwd()) / "sim-logs"
@@ -886,6 +906,12 @@ def run_vicuna_sim(
     log_base = log_dir / workload.stem
     log_file = Path(f"{log_base}.log")
     trace_file = log_dir / f"{workload.stem}_trace.csv"
+
+    if not dry_run:
+        if not sim_path.exists():
+            raise FileNotFoundError(f"Simulator not found: {sim_path}")
+        if not workload.exists():
+            raise FileNotFoundError(f"Workload not found: {workload}")
 
     # Vicuna needs VMEM format - check if we need to convert
     vmem_path = workload
@@ -977,11 +1003,6 @@ def run_gem5_sim(
     sim_out_dir: Path | None = None,
 ) -> SimResult:
     """Run a gem5 simulation."""
-    if not sim_path.exists():
-        raise FileNotFoundError(f"Simulator not found: {sim_path}")
-    if not workload.exists():
-        raise FileNotFoundError(f"Workload not found: {workload}")
-
     gem5_dir = sim_path.parent.parent.parent
     se_script = gem5_dir / "configs" / "deprecated" / "example" / "se.py"
     if not se_script.exists():
@@ -995,6 +1016,12 @@ def run_gem5_sim(
     if sim_out_dir is None:
         sim_out_dir = log_dir / f"{workload.stem}-gem5"
     sim_out_dir.mkdir(parents=True, exist_ok=True)
+
+    if not dry_run:
+        if not sim_path.exists():
+            raise FileNotFoundError(f"Simulator not found: {sim_path}")
+        if not workload.exists():
+            raise FileNotFoundError(f"Workload not found: {workload}")
 
     if mode == "se":
         cmd = [
@@ -1090,17 +1117,18 @@ def format_result(result: SimResult, verbose: bool = False) -> str:
 
 
 def main(argv: list[str]) -> int:
+    prog_name = Path(sys.argv[0]).name
+    default_all_mode = prog_name == "emulate-all"
     parser = argparse.ArgumentParser(
         description="Unified simulator runner",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  %(prog)s saturn test.elf                 Run ELF on Saturn (verbose ON by default)
-  %(prog)s saturn src/kernel.c --lmul=2    Build and run .c file
-  %(prog)s xiangshan test.bin              Run on XiangShan with commit trace
-  %(prog)s t1 test.elf                     Run on T1 with instruction trace (RUST_LOG=TRACE)
-  %(prog)s t1 test.elf --no-sim-verbose    Run on T1 without trace (faster)
-  %(prog)s --list                          List available simulators
+  %(prog)s saturn test.elf                        Run ELF on Saturn
+  %(prog)s saturn run/src/s271/manifest.yaml      Build and run a manifest workload
+  %(prog)s saturn run/src/s271/s271.c --lmul=2    Auto-detect manifest from source path
+  %(prog)s saturn a.c helper.S helper.o           Link one workload from multiple inputs
+  %(prog)s --list                                 List available simulators
 
 Verbose Mode (default: ON):
   - Saturn/Ara:   +verbose with spike-dasm for instruction decode
@@ -1111,7 +1139,7 @@ Verbose Mode (default: ON):
 """,
     )
     parser.add_argument("target", nargs="?", help="Simulator target (e.g., 'saturn', 'xiangshan.MinimalConfig')")
-    parser.add_argument("workload", nargs="?", help="Path to ELF/binary or .c/.s/.S source file")
+    parser.add_argument("inputs", nargs="*", help="ELF/binary, workload directory, manifest, or source/object files")
     parser.add_argument("--config-file", default="sim-configs.yaml", help="Config file path")
     parser.add_argument("--max-cycles", type=int, default=100_000_000, help="Maximum simulation cycles")
     parser.add_argument("--timeout", type=int, default=600, help="Timeout in seconds")
@@ -1123,6 +1151,8 @@ Verbose Mode (default: ON):
         default="",
         help="Force loop vectorization with LLVM -vplan-use-vf syntax, for example fixed:4 or scalable:2",
     )
+    parser.add_argument("--all", action="store_true", default=default_all_mode,
+                        help="Treat the input as a directory tree and run every discovered manifest.yaml")
     parser.add_argument("--list", action="store_true", help="List available simulators")
     parser.add_argument("--dry-run", action="store_true", help="Print command without executing")
     parser.add_argument("--log-dir", type=str, default="sim-logs", help="Directory for simulation logs (default: sim-logs)")
@@ -1134,11 +1164,10 @@ Verbose Mode (default: ON):
     parser.add_argument("--cflags", type=str, default=None, help="Additional C flags for kernel build (e.g., -ffast-math)")
     parser.add_argument("--optflags", type=str, default=None, help="Additional opt flags for kernel build (e.g., -precise-mem-cost)")
     parser.add_argument("--sim-out-dir", type=str, default=None, help="Simulation output directory for backends that produce extra artifacts")
-    parser.add_argument("--build-out-dir", type=str, default=None, help="Kernel build output directory")
-    parser.add_argument("extra_args", nargs="*", help="Additional simulator arguments")
+    parser.add_argument("--build-out-dir", type=str, default=None, help="Workload build output directory")
 
     args, unknown = parser.parse_known_args(argv)
-    args.extra_args = (args.extra_args or []) + unknown
+    args.extra_args = unknown
     root_dir = Path(__file__).resolve().parent
     config_path = Path(args.config_file)
     if not config_path.is_absolute():
@@ -1173,7 +1202,7 @@ Verbose Mode (default: ON):
                     print(f"    t1 (default)              {status}")
         return 0
 
-    if not args.target or not args.workload:
+    if not args.target or not args.inputs:
         parser.print_help(sys.stderr)
         return 2
 
@@ -1181,33 +1210,7 @@ Verbose Mode (default: ON):
     group = _resolve_group(spec.group, config)
     kind = str(group.get("kind", "")).strip()
 
-    workload = Path(args.workload)
-    if not workload.is_absolute():
-        workload = Path.cwd() / workload
-
-    # If workload is a source file, build it first.
-    if workload.suffix in (".c", ".s", ".S"):
-        build_target = GROUP_TO_BUILD_TARGET.get(spec.group, spec.group)
-        workload = build_kernel(
-            root_dir,
-            workload,
-            build_target,
-            lmul=args.lmul,
-            len_1d=args.len,
-            use_vf=args.use_vf,
-            cflags=args.cflags,
-            optflags=args.optflags,
-            build_out_dir=Path(args.build_out_dir) if args.build_out_dir else None,
-        )
-        print("-" * 40)
-
     sim_path = _find_simulator(kind, spec, config, root_dir)
-
-    print(f"Simulator: {sim_path}")
-    print(f"Workload:  {workload}")
-    print(f"Max cycles: {args.max_cycles:,}")
-    print(f"Timeout:   {args.timeout}s")
-    print("-" * 40)
 
     log_dir = Path(args.log_dir)
     if not log_dir.is_absolute():
@@ -1217,73 +1220,118 @@ Verbose Mode (default: ON):
     if sim_out_dir is not None and not sim_out_dir.is_absolute():
         sim_out_dir = root_dir / sim_out_dir
 
-    if kind == "chipyard-verilator":
-        result = run_chipyard_sim(
-            sim_path, workload,
-            max_cycles=args.max_cycles,
-            timeout=args.timeout,
-            extra_args=args.extra_args or None,
-            dry_run=args.dry_run,
-            log_dir=log_dir,
-            root_dir=root_dir,
-            verbose=not args.no_sim_verbose,
-        )
-    elif kind == "xiangshan":
-        # XiangShan: kernel cycles come from UART output, not commit trace.
-        # Commit trace (verbose) is only needed for waveform/debug analysis.
-        # Use --sim-verbose to explicitly enable commit trace.
-        xs_verbose = hasattr(args, 'sim_verbose') and args.sim_verbose
-        result = run_xiangshan_sim(
-            sim_path, workload,
-            max_cycles=args.max_cycles,
-            timeout=args.timeout,
-            extra_args=args.extra_args or None,
-            dry_run=args.dry_run,
-            log_dir=log_dir,
-            root_dir=root_dir,
-            verbose=xs_verbose,
-        )
-    elif kind == "t1":
-        result = run_t1_sim(
-            sim_path, workload,
-            max_cycles=args.max_cycles,
-            timeout=args.timeout,
-            extra_args=args.extra_args or None,
-            dry_run=args.dry_run,
-            log_dir=log_dir,
-            root_dir=root_dir,
-            verbose=not args.no_sim_verbose,
-        )
-    elif kind == "gem5":
-        result = run_gem5_sim(
-            sim_path, workload,
-            timeout=args.timeout,
-            extra_args=args.extra_args or None,
-            dry_run=args.dry_run,
-            log_dir=log_dir,
-            sim_out_dir=sim_out_dir,
-        )
-    elif kind == "vicuna":
-        result = run_vicuna_sim(
-            sim_path, workload,
-            max_cycles=args.max_cycles,
-            timeout=args.timeout,
-            extra_args=args.extra_args or None,
-            dry_run=args.dry_run,
-            log_dir=log_dir,
-            root_dir=root_dir,
-            verbose=not args.no_sim_verbose,
-        )
+    input_paths = [Path(value).resolve() for value in args.inputs]
+    if args.all:
+        if len(input_paths) != 1 or not input_paths[0].is_dir():
+            print("error: --all requires exactly one directory input", file=sys.stderr)
+            return 2
+        workload_groups = [[manifest] for manifest in _discover_workload_manifests(input_paths[0])]
     else:
-        print(f"error: unsupported kind '{kind}' for group '{spec.group}'", file=sys.stderr)
-        return 1
+        workload_groups = [input_paths]
 
-    if args.dry_run:
-        return 0
+    results: list[tuple[str, SimResult]] = []
 
-    print(format_result(result, verbose=args.verbose))
+    for group_inputs in workload_groups:
+        if any(_is_build_input(path) for path in group_inputs):
+            build_target = GROUP_TO_BUILD_TARGET.get(spec.group, spec.group)
+            workload = build_workload(
+                root_dir,
+                group_inputs,
+                build_target,
+                lmul=args.lmul,
+                len_1d=args.len,
+                use_vf=args.use_vf or None,
+                cflags=args.cflags,
+                optflags=args.optflags,
+                build_out_dir=Path(args.build_out_dir) if args.build_out_dir else None,
+                dry_run=args.dry_run,
+            )
+            print("-" * 40)
+        elif len(group_inputs) == 1:
+            workload = group_inputs[0]
+        else:
+            print("error: multiple non-build inputs are not supported", file=sys.stderr)
+            return 2
 
-    return 0 if result.status in ("OK", "PASS") else 1
+        label = group_inputs[0].parent.name if group_inputs[0].name == "manifest.yaml" else workload.stem
+        print(f"Simulator: {sim_path}")
+        print(f"Workload:  {workload}")
+        print(f"Max cycles: {args.max_cycles:,}")
+        print(f"Timeout:   {args.timeout}s")
+        print("-" * 40)
+
+        if kind == "chipyard-verilator":
+            result = run_chipyard_sim(
+                sim_path, workload,
+                max_cycles=args.max_cycles,
+                timeout=args.timeout,
+                extra_args=args.extra_args or None,
+                dry_run=args.dry_run,
+                log_dir=log_dir,
+                root_dir=root_dir,
+                verbose=not args.no_sim_verbose,
+            )
+        elif kind == "xiangshan":
+            xs_verbose = hasattr(args, "sim_verbose") and args.sim_verbose
+            result = run_xiangshan_sim(
+                sim_path, workload,
+                max_cycles=args.max_cycles,
+                timeout=args.timeout,
+                extra_args=args.extra_args or None,
+                dry_run=args.dry_run,
+                log_dir=log_dir,
+                root_dir=root_dir,
+                verbose=xs_verbose,
+            )
+        elif kind == "t1":
+            result = run_t1_sim(
+                sim_path, workload,
+                max_cycles=args.max_cycles,
+                timeout=args.timeout,
+                extra_args=args.extra_args or None,
+                dry_run=args.dry_run,
+                log_dir=log_dir,
+                root_dir=root_dir,
+                verbose=not args.no_sim_verbose,
+            )
+        elif kind == "gem5":
+            result = run_gem5_sim(
+                sim_path, workload,
+                timeout=args.timeout,
+                extra_args=args.extra_args or None,
+                dry_run=args.dry_run,
+                log_dir=log_dir,
+                sim_out_dir=sim_out_dir,
+            )
+        elif kind == "vicuna":
+            result = run_vicuna_sim(
+                sim_path, workload,
+                max_cycles=args.max_cycles,
+                timeout=args.timeout,
+                extra_args=args.extra_args or None,
+                dry_run=args.dry_run,
+                log_dir=log_dir,
+                root_dir=root_dir,
+                verbose=not args.no_sim_verbose,
+            )
+        else:
+            print(f"error: unsupported kind '{kind}' for group '{spec.group}'", file=sys.stderr)
+            return 1
+
+        if not args.dry_run:
+            print(format_result(result, verbose=args.verbose))
+        results.append((label, result))
+        if args.all:
+            print("=" * 60)
+
+    if args.all and not args.dry_run and results:
+        print("Summary:")
+        for label, result in results:
+            kernel = f"{result.kernel_cycles:,}" if result.kernel_cycles is not None else "-"
+            total = f"{result.cycles:,}" if result.cycles is not None else "-"
+            print(f"  {label:20} {result.status:8} kernel={kernel:>10} total={total:>10}")
+
+    return 0 if all(result.status in ("OK", "PASS", "DRY-RUN") for _, result in results) else 1
 
 
 if __name__ == "__main__":

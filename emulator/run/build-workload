@@ -1,0 +1,845 @@
+#!/usr/bin/env python3
+from __future__ import annotations
+
+import argparse
+import copy
+import hashlib
+import json
+import os
+import shlex
+import shutil
+import subprocess
+import sys
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Any
+
+TSVC_GENERATED_MARKER = "TSVC_EMULATE_GENERATED"
+
+
+@dataclass(frozen=True)
+class TargetConfig:
+    name: str
+    arch: str
+    abi: str
+    cc: str
+    cc_flags: tuple[str, ...]
+    crt: str | None
+    linker_script: str | None
+    vlen: int
+    use_nix: bool = False
+    t1_root: str | None = None
+
+
+@dataclass
+class BuildOptions:
+    lmul: int = 1
+    len_1d: int = 1000
+    use_vf: str | None = None
+    asm_only: bool = False
+    output: Path | None = None
+    build_out_dir: Path | None = None
+    dry_run: bool = False
+    cli_cflags: list[str] = field(default_factory=list)
+    cli_llvm_flags: list[str] = field(default_factory=list)
+    cli_opt_flags: list[str] = field(default_factory=list)
+    quiet: bool = False
+
+
+@dataclass
+class WorkloadSpec:
+    name: str
+    base_dir: Path
+    manifest_path: Path | None
+    entry_mode: str
+    entry_symbol: str
+    sources: list[Path]
+    include_dirs: list[Path] = field(default_factory=list)
+    compile_flags: list[str] = field(default_factory=list)
+    llvm_flags: list[str] = field(default_factory=list)
+    opt_flags: list[str] = field(default_factory=list)
+    link_flags: list[str] = field(default_factory=list)
+    support: str = "default"
+    support_sources: list[Path] = field(default_factory=list)
+    crt: str | Path | None = "default"
+    linker_script: str | Path | None = "default"
+    metadata: dict[str, Any] = field(default_factory=dict)
+    target_overrides: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass
+class BuildResult:
+    output: Path | None
+    asm_outputs: list[Path]
+    ir_outputs: list[Path]
+    object_outputs: list[Path]
+    build_dir: Path
+
+
+TARGETS = {
+    "ara": TargetConfig(
+        name="ara",
+        arch="rv64gcv",
+        abi="lp64d",
+        cc="clang",
+        cc_flags=("--target=riscv64-unknown-elf",),
+        crt="crt/crt_rv64.S",
+        linker_script="link/link_rv64.ld",
+        vlen=4096,
+    ),
+    "c910": TargetConfig(
+        name="c910",
+        arch="rv64gc",
+        abi="lp64d",
+        cc="clang",
+        cc_flags=("--target=riscv64-unknown-elf",),
+        crt="crt/crt_c910.S",
+        linker_script="link/link_c910.ld",
+        vlen=0,
+    ),
+    "gem5": TargetConfig(
+        name="gem5",
+        arch="rv64gcv",
+        abi="lp64d",
+        cc="clang",
+        cc_flags=("--target=riscv64-unknown-linux-gnu", "-DTSVC_NO_STDLIB", "-fno-pie", "-no-pie"),
+        crt="crt/crt_gem5.S",
+        linker_script=None,
+        vlen=128,
+    ),
+    "saturn": TargetConfig(
+        name="saturn",
+        arch="rv64gcv",
+        abi="lp64d",
+        cc="clang",
+        cc_flags=("--target=riscv64-unknown-elf",),
+        crt="crt/crt_rv64.S",
+        linker_script="link/link_rv64.ld",
+        vlen=512,
+    ),
+    "spike": TargetConfig(
+        name="spike",
+        arch="rv64gcv",
+        abi="lp64d",
+        cc="clang",
+        cc_flags=("--target=riscv64-unknown-elf",),
+        crt="crt/crt_rv64.S",
+        linker_script="link/link_rv64.ld",
+        vlen=128,
+    ),
+    "t1": TargetConfig(
+        name="t1",
+        arch="rv32gc_zve32f_zvl2048b",
+        abi="ilp32f",
+        cc="nix-clang",
+        cc_flags=(),
+        crt=None,
+        linker_script="link/link_t1.ld",
+        vlen=2048,
+        use_nix=True,
+        t1_root="t1-micro58ae",
+    ),
+    "vicuna": TargetConfig(
+        name="vicuna",
+        arch="rv32im_zve32x",
+        abi="ilp32",
+        cc="clang",
+        cc_flags=("--target=riscv32-unknown-elf", "-menable-experimental-extensions"),
+        crt="crt/crt_vicuna.S",
+        linker_script="link/link_vicuna.ld",
+        vlen=512,
+    ),
+    "xiangshan": TargetConfig(
+        name="xiangshan",
+        arch="rv64gcv",
+        abi="lp64d",
+        cc="clang",
+        cc_flags=("--target=riscv64-unknown-elf",),
+        crt="crt/crt_rv64.S",
+        linker_script="link/link_rv64.ld",
+        vlen=128,
+    ),
+}
+
+
+def die(message: str) -> None:
+    print(message, file=sys.stderr)
+    raise SystemExit(1)
+
+
+def split_flags(raw: str | None) -> list[str]:
+    if not raw:
+        return []
+    return shlex.split(raw)
+
+
+def validate_positive_int(name: str, value: int) -> None:
+    if value <= 0:
+        die(f"{name} must be a positive integer")
+
+
+def validate_vplan_use_vf(value: str | None) -> None:
+    if not value:
+        return
+    for entry in value.split(","):
+        if entry == "-":
+            continue
+        parts = entry.split(":")
+        if len(parts) != 2 or parts[0] not in {"fixed", "scalable"}:
+            die("USE_VF must match LLVM -vplan-use-vf syntax (e.g. fixed:4,-,scalable:2)")
+        try:
+            width = int(parts[1])
+        except ValueError:
+            die("USE_VF widths must be positive powers of two")
+        if width <= 0 or width & (width - 1):
+            die("USE_VF widths must be positive powers of two")
+
+
+def resolve_opt(root_dir: Path) -> str:
+    candidates: list[Path] = []
+    if os.environ.get("OPT"):
+        candidates.append(Path(os.environ["OPT"]))
+    if os.environ.get("LLVM_BIN_DIR"):
+        candidates.append(Path(os.environ["LLVM_BIN_DIR"]) / "opt")
+    if os.environ.get("LLVM_BUILD_DIR"):
+        build_dir = Path(os.environ["LLVM_BUILD_DIR"])
+        candidates.extend((build_dir / "bin" / "opt", build_dir / "opt"))
+    candidates.extend((root_dir / "llvm-build" / "bin" / "opt", root_dir / "llvm-build" / "opt"))
+    for candidate in candidates:
+        if candidate.is_file() and os.access(candidate, os.X_OK):
+            return str(candidate)
+    for name in ("opt-vplan", "opt"):
+        path = shutil.which(name)
+        if path:
+            return path
+    die("opt not found. Set OPT or ensure an LLVM build with opt is available.")
+
+
+def resolve_llc(root_dir: Path) -> str:
+    candidates: list[Path] = []
+    if os.environ.get("LLC"):
+        candidates.append(Path(os.environ["LLC"]))
+    if os.environ.get("LLVM_BIN_DIR"):
+        candidates.append(Path(os.environ["LLVM_BIN_DIR"]) / "llc")
+    if os.environ.get("LLVM_BUILD_DIR"):
+        build_dir = Path(os.environ["LLVM_BUILD_DIR"])
+        candidates.extend((build_dir / "bin" / "llc", build_dir / "llc"))
+    candidates.extend((root_dir / "llvm-build" / "bin" / "llc", root_dir / "llvm-build" / "llc"))
+    for candidate in candidates:
+        if candidate.is_file() and os.access(candidate, os.X_OK):
+            return str(candidate)
+    for name in ("llc-vplan", "llc"):
+        path = shutil.which(name)
+        if path:
+            return path
+    die("llc not found. Set LLC or ensure an LLVM build with llc is available.")
+
+
+def resolve_pipeline_helper(root_dir: Path, script_dir: Path) -> Path:
+    candidates: list[Path] = []
+    if os.environ.get("HOST_PROJECT_ROOT"):
+        candidates.append(Path(os.environ["HOST_PROJECT_ROOT"]) / "scripts" / "llvm_pipeline.py")
+    candidates.extend(
+        (
+            root_dir.parent / "host-project" / "scripts" / "llvm_pipeline.py",
+            script_dir.parent.parent / "scripts" / "llvm_pipeline.py",
+        )
+    )
+    for candidate in candidates:
+        if candidate.is_file():
+            return candidate
+    die("llvm_pipeline.py not found")
+
+
+def resolve_manifest_path(path: Path) -> Path | None:
+    if path.is_dir():
+        manifest = path / "manifest.yaml"
+        return manifest if manifest.is_file() else None
+    if path.name == "manifest.yaml":
+        return path
+    candidate = path.parent / "manifest.yaml"
+    return candidate if candidate.is_file() else None
+
+
+def resolve_relative(base_dir: Path, value: str | None) -> Path | None:
+    if value is None:
+        return None
+    path = Path(value)
+    if path.is_absolute():
+        return path
+    return (base_dir / path).resolve()
+
+
+def ensure_list(value: Any, field_name: str) -> list[Any]:
+    if value is None:
+        return []
+    if not isinstance(value, list):
+        die(f"{field_name} must be a list")
+    return value
+
+
+def load_mapping_file(path: Path) -> dict[str, Any]:
+    text = path.read_text(encoding="utf-8")
+    stripped = text.lstrip()
+
+    if stripped.startswith("{") or stripped.startswith("["):
+        data = json.loads(text)
+        if not isinstance(data, dict):
+            die(f"Manifest root must be a mapping: {path}")
+        return data
+
+    try:
+        import yaml  # type: ignore
+    except ImportError as exc:
+        raise RuntimeError(
+            f"Failed to parse {path}. Install PyYAML or keep the file in strict JSON syntax."
+        ) from exc
+
+    data = yaml.safe_load(text)
+    if not isinstance(data, dict):
+        die(f"Manifest root must be a mapping: {path}")
+    return data
+
+
+def merge_target_override(spec: WorkloadSpec, target_name: str) -> WorkloadSpec:
+    overrides = spec.target_overrides.get(target_name)
+    if overrides is None:
+        return spec
+    if not isinstance(overrides, dict):
+        die(f"targets.{target_name} must be a mapping")
+
+    merged = copy.deepcopy(spec)
+    build_overrides = overrides.get("build", overrides)
+
+    for key in ("include_dirs", "compile_flags", "llvm_flags", "opt_flags", "link_flags", "support_sources"):
+        values = ensure_list(build_overrides.get(key), f"targets.{target_name}.{key}")
+        if not values:
+            continue
+        target_list = getattr(merged, key)
+        for value in values:
+            target_list.append(resolve_relative(merged.base_dir, value) if key in {"include_dirs", "support_sources"} else str(value))
+
+    if "support" in build_overrides:
+        merged.support = str(build_overrides["support"])
+    if "crt" in build_overrides:
+        merged.crt = build_overrides["crt"]
+    if "linker_script" in build_overrides:
+        merged.linker_script = build_overrides["linker_script"]
+    return merged
+
+
+def load_manifest(path: Path, target_name: str) -> WorkloadSpec:
+    data = load_mapping_file(path)
+    base_dir = path.parent.resolve()
+    entry = data.get("entry", {})
+    if entry is None:
+        entry = {}
+    if not isinstance(entry, dict):
+        die(f"entry must be a mapping: {path}")
+
+    build = data.get("build", {})
+    if build is None:
+        build = {}
+    if not isinstance(build, dict):
+        die(f"build must be a mapping: {path}")
+
+    sources = ensure_list(data.get("sources"), "sources")
+    if not sources:
+        die(f"Manifest must declare at least one source: {path}")
+
+    spec = WorkloadSpec(
+        name=str(data.get("name") or base_dir.name),
+        base_dir=base_dir,
+        manifest_path=path.resolve(),
+        entry_mode=str(entry.get("mode", "kernel")),
+        entry_symbol=str(entry.get("symbol", "kernel" if entry.get("mode", "kernel") == "kernel" else "main")),
+        sources=[resolve_relative(base_dir, str(source)) for source in sources],
+        include_dirs=[resolve_relative(base_dir, str(value)) for value in ensure_list(build.get("include_dirs"), "build.include_dirs")],
+        compile_flags=[str(value) for value in ensure_list(build.get("compile_flags"), "build.compile_flags")],
+        llvm_flags=[str(value) for value in ensure_list(build.get("llvm_flags"), "build.llvm_flags")],
+        opt_flags=[str(value) for value in ensure_list(build.get("opt_flags"), "build.opt_flags")],
+        link_flags=[str(value) for value in ensure_list(build.get("link_flags"), "build.link_flags")],
+        support=str(build.get("support", "default")),
+        support_sources=[resolve_relative(base_dir, str(value)) for value in ensure_list(build.get("support_sources"), "build.support_sources")],
+        crt=build.get("crt", "default"),
+        linker_script=build.get("linker_script", "default"),
+        metadata=data.get("metadata", {}) if isinstance(data.get("metadata", {}), dict) else {},
+        target_overrides=data.get("targets", {}) if isinstance(data.get("targets", {}), dict) else {},
+    )
+    for source in spec.sources:
+        if source is None or not source.exists():
+            die(f"Source not found for manifest {path}: {source}")
+    return merge_target_override(spec, target_name)
+
+
+def detect_generated_tsvc(sources: list[Path]) -> bool:
+    for source in sources:
+        if source.suffix != ".c":
+            continue
+        try:
+            text = source.read_text(encoding="utf-8", errors="ignore")
+        except OSError:
+            continue
+        if TSVC_GENERATED_MARKER in text:
+            return True
+    return False
+
+
+def synthesize_spec(inputs: list[Path]) -> WorkloadSpec:
+    common_parent = inputs[0].parent.resolve()
+    same_parent = all(path.parent.resolve() == common_parent for path in inputs)
+    name = common_parent.name if same_parent and common_parent.name != "src" else inputs[0].stem
+    support_sources: list[Path] = []
+    if detect_generated_tsvc(inputs):
+        support_sources.append((inputs[0].parents[2] / "common" / "tsvc_runtime.c").resolve())
+    return WorkloadSpec(
+        name=name,
+        base_dir=common_parent if same_parent else Path.cwd().resolve(),
+        manifest_path=None,
+        entry_mode="kernel",
+        entry_symbol="kernel",
+        sources=[path.resolve() for path in inputs],
+        support_sources=support_sources,
+    )
+
+
+def resolve_spec(target_name: str, raw_inputs: list[str]) -> WorkloadSpec:
+    paths = [Path(value).resolve() for value in raw_inputs]
+    if len(paths) == 1:
+        manifest = resolve_manifest_path(paths[0])
+        if manifest is not None:
+            return load_manifest(manifest, target_name)
+        if paths[0].suffix.lower() == ".elf":
+            die("build-workload does not accept prebuilt ELF input")
+    for path in paths:
+        if path.suffix not in {".c", ".s", ".S", ".o"}:
+            die(f"Unsupported workload input for build-workload: {path}")
+    return synthesize_spec(paths)
+
+
+def variant_name(spec: WorkloadSpec, options: BuildOptions) -> str:
+    parts = [f"lmul{options.lmul}", f"len{options.len_1d}"]
+    if options.use_vf:
+        safe_vf = options.use_vf.replace(":", "-").replace(",", "_")
+        parts.append(f"vf-{safe_vf}")
+    hash_material = json.dumps(
+        {
+            "compile": spec.compile_flags + options.cli_cflags,
+            "llvm": spec.llvm_flags + options.cli_llvm_flags,
+            "opt": spec.opt_flags + options.cli_opt_flags,
+            "link": spec.link_flags,
+            "entry": [spec.entry_mode, spec.entry_symbol],
+        },
+        sort_keys=True,
+    )
+    if any((spec.compile_flags, options.cli_cflags, spec.llvm_flags, options.cli_llvm_flags, spec.opt_flags, options.cli_opt_flags, spec.link_flags)):
+        parts.append(hashlib.sha1(hash_material.encode("utf-8")).hexdigest()[:10])
+    return "_".join(parts)
+
+
+def artifact_layout(root_dir: Path, script_dir: Path, spec: WorkloadSpec, target_name: str, options: BuildOptions) -> tuple[Path | None, Path, Path, Path]:
+    if options.output is not None:
+        output = options.output.resolve()
+        variant_dir = output.parent
+        build_dir = variant_dir / f"{output.stem}.build"
+        asm_dir = build_dir / "asm"
+        ir_dir = build_dir / "ir"
+        return output, build_dir, asm_dir, ir_dir
+
+    out_root = options.build_out_dir or (script_dir / "out")
+    variant_dir = out_root / target_name / spec.name / variant_name(spec, options)
+    build_dir = variant_dir / "build"
+    asm_dir = variant_dir / "asm"
+    ir_dir = variant_dir / "ir"
+    output = None if options.asm_only else (variant_dir / f"{spec.name}.elf")
+    return output, build_dir, asm_dir, ir_dir
+
+
+def resolve_target(target_name: str, root_dir: Path) -> tuple[TargetConfig, str, list[str], list[str]]:
+    if target_name not in TARGETS:
+        die(f"Unknown target: {target_name}")
+    target = TARGETS[target_name]
+    cc = target.cc
+    extra_compile: list[str] = []
+    extra_link: list[str] = []
+
+    if target.use_nix:
+        if not target.t1_root:
+            die("Missing T1 root configuration")
+        t1_root = root_dir / target.t1_root
+        cc_path = subprocess.run(
+            [
+                "nix",
+                "--extra-experimental-features",
+                "nix-command flakes",
+                "build",
+                f"{t1_root}/t1#rv32-stdenv.cc",
+                "--no-link",
+                "--print-out-paths",
+            ],
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout.strip()
+        cc = str(Path(cc_path) / "bin" / "riscv32-none-elf-clang")
+        emurt_path = subprocess.run(
+            [
+                "nix",
+                "--extra-experimental-features",
+                "nix-command flakes",
+                "build",
+                f"{t1_root}/t1#emurt",
+                "--no-link",
+                "--print-out-paths",
+            ],
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout.strip()
+        extra_compile.append(f"-I{Path(emurt_path) / 'include'}")
+        extra_link.extend((f"-I{Path(emurt_path) / 'include'}", f"-L{Path(emurt_path) / 'lib'}", "-lemurt"))
+
+    return target, cc, extra_compile, extra_link
+
+
+def default_wrapper(target_name: str, entry_mode: str) -> str | None:
+    if entry_mode == "raw-entry":
+        return None
+    if entry_mode == "kernel":
+        if target_name in {"saturn", "ara"}:
+            return "common/harness_rtl.c"
+        if target_name == "xiangshan":
+            return "common/harness_xiangshan.c"
+        if target_name == "t1":
+            return "common/harness_t1.c"
+        if target_name == "vicuna":
+            return "common/harness_vicuna.c"
+        if target_name == "gem5":
+            return "common/harness_gem5.c"
+        return "common/harness.c"
+    if entry_mode == "main":
+        if target_name in {"saturn", "ara"}:
+            return "common/main_harness_rtl.c"
+        if target_name == "xiangshan":
+            return "common/main_harness_xiangshan.c"
+        if target_name == "t1":
+            return "common/main_harness_t1.c"
+        if target_name == "vicuna":
+            return "common/main_harness_vicuna.c"
+        if target_name == "gem5":
+            return "common/main_harness_gem5.c"
+        return "common/main_harness.c"
+    die(f"Unsupported entry mode: {entry_mode}")
+
+
+def default_crt_source(root_dir: Path, target: TargetConfig) -> Path | None:
+    if target.use_nix and target.t1_root:
+        return root_dir / target.t1_root / "t1" / "tests" / "t1_main.S"
+    if target.crt is None:
+        return None
+    return (root_dir / "run" / target.crt).resolve()
+
+
+def maybe_path(value: str | Path | None, base_dir: Path) -> Path | None:
+    if value in {None, "default"}:
+        return None
+    if value == "none":
+        return None
+    path = Path(value)
+    if path.is_absolute():
+        return path
+    return (base_dir / path).resolve()
+
+
+def support_sources(root_dir: Path, spec: WorkloadSpec, target: TargetConfig, target_name: str) -> list[Path]:
+    sources: list[Path] = []
+    crt_path = default_crt_source(root_dir, target) if spec.crt == "default" else maybe_path(spec.crt, spec.base_dir)
+    if crt_path is not None:
+        sources.append(crt_path)
+
+    if spec.support == "default":
+        wrapper = default_wrapper(target_name, spec.entry_mode)
+        if spec.entry_mode == "kernel":
+            sources.append((root_dir / "run" / "common" / "arrays.c").resolve())
+        if wrapper is not None:
+            sources.append((root_dir / "run" / wrapper).resolve())
+    elif spec.support != "none":
+        die(f"Unsupported support mode: {spec.support}")
+
+    sources.extend(spec.support_sources)
+    return sources
+
+
+def linker_script(root_dir: Path, spec: WorkloadSpec, target: TargetConfig) -> Path | None:
+    if spec.linker_script == "default":
+        if target.linker_script is None:
+            return None
+        return (root_dir / "run" / target.linker_script).resolve()
+    return maybe_path(spec.linker_script, spec.base_dir)
+
+
+def run_command(cmd: list[str]) -> None:
+    result = subprocess.run(cmd, capture_output=True, text=True)
+    if result.returncode != 0:
+        if result.stderr:
+            print(result.stderr, file=sys.stderr, end="")
+        if result.stdout:
+            print(result.stdout, file=sys.stderr, end="")
+        raise RuntimeError(f"Command failed: {shlex.join(cmd)}")
+
+
+def maybe_lld_flag() -> list[str]:
+    if shutil.which("ld.lld") or shutil.which("lld"):
+        return ["-fuse-ld=lld"]
+    return []
+
+
+def compile_support_source(cc: str, compile_flags: list[str], source: Path, output: Path) -> None:
+    output.parent.mkdir(parents=True, exist_ok=True)
+    cmd = [cc, *compile_flags, "-c", str(source), "-o", str(output)]
+    run_command(cmd)
+
+
+def compile_pipeline_source(
+    root_dir: Path,
+    script_dir: Path,
+    cc: str,
+    compile_flags: list[str],
+    opt_flags: list[str],
+    source: Path,
+    obj_out: Path,
+    asm_out: Path,
+    ir_out: Path,
+    use_vf: str | None,
+) -> None:
+    obj_out.parent.mkdir(parents=True, exist_ok=True)
+    asm_out.parent.mkdir(parents=True, exist_ok=True)
+    ir_out.parent.mkdir(parents=True, exist_ok=True)
+
+    cmd = [
+        sys.executable,
+        str(resolve_pipeline_helper(root_dir, script_dir)),
+        "build-artifacts",
+        "--source",
+        str(source),
+        "--opt-ll",
+        str(ir_out),
+        "--asm-out",
+        str(asm_out),
+        "--obj-out",
+        str(obj_out),
+        "--clang-bin",
+        cc,
+        "--opt-bin",
+        resolve_opt(root_dir),
+        "--llc-bin",
+        resolve_llc(root_dir),
+        "--prevec-passes",
+        os.environ.get(
+            "PREVEC_PASSES",
+            "mem2reg,instcombine,simplifycfg,loop-simplify,lcssa,indvars,loop-rotate,instcombine,simplifycfg",
+        ),
+        "--opt-passes",
+        os.environ.get("FORCED_OPT_PASSES", "default<O3>"),
+    ]
+    for flag in compile_flags:
+        cmd.append(f"--compile-flag={flag}")
+    for flag in opt_flags:
+        cmd.append(f"--opt-flag={flag}")
+    if use_vf:
+        cmd.extend(("--use-vf", use_vf))
+    run_command(cmd)
+
+
+def source_object_name(source: Path) -> str:
+    return f"{source.stem}.o"
+
+
+def wrapper_flag(entry_symbol: str) -> str:
+    return f"-DWORKLOAD_ENTRY={entry_symbol}"
+
+
+def compile_workload(root_dir: Path, script_dir: Path, spec: WorkloadSpec, target_name: str, options: BuildOptions) -> BuildResult:
+    validate_positive_int("LMUL", options.lmul)
+    validate_positive_int("LEN_1D", options.len_1d)
+    validate_vplan_use_vf(options.use_vf)
+
+    target, cc, target_compile_extras, target_link_extras = resolve_target(target_name, root_dir)
+    output, build_dir, asm_dir, ir_dir = artifact_layout(root_dir, script_dir, spec, target_name, options)
+    if options.dry_run:
+        return BuildResult(output=output, asm_outputs=[], ir_outputs=[], object_outputs=[], build_dir=build_dir)
+
+    build_dir.mkdir(parents=True, exist_ok=True)
+    asm_dir.mkdir(parents=True, exist_ok=True)
+    ir_dir.mkdir(parents=True, exist_ok=True)
+
+    include_dirs = [(script_dir / "common").resolve(), *spec.include_dirs]
+    common_flags = [
+        f"-march={target.arch}",
+        f"-mabi={target.abi}",
+        "-mcmodel=medany",
+        "-static",
+        "-nostdlib",
+        "-fno-builtin",
+        "-fno-common",
+        f"-DLMUL={options.lmul}",
+        f"-DLEN_1D={options.len_1d}",
+        *target.cc_flags,
+        *target_compile_extras,
+    ]
+    for include_dir in include_dirs:
+        common_flags.append(f"-I{include_dir}")
+    if target.vlen > 0:
+        common_flags.extend(("-mllvm", f"-riscv-v-register-bit-width-lmul={options.lmul}"))
+    common_flags.extend(spec.llvm_flags)
+    common_flags.extend(options.cli_llvm_flags)
+
+    compile_flags = [*common_flags, *spec.compile_flags, *options.cli_cflags, "-O3"]
+    opt_flags = [*spec.opt_flags, *options.cli_opt_flags]
+
+    entry_mode = spec.entry_mode
+    entry_symbol = spec.entry_symbol
+    rename_main = entry_mode == "main" and entry_symbol == "main"
+    wrapper_symbol = "workload_main" if rename_main else entry_symbol
+
+    object_outputs: list[Path] = []
+    asm_outputs: list[Path] = []
+    ir_outputs: list[Path] = []
+
+    for source in spec.sources:
+        obj_out = build_dir / source_object_name(source)
+        asm_out = asm_dir / f"{source.stem}.s"
+        ir_out = ir_dir / f"{source.stem}.opt.ll"
+        if source.suffix == ".o":
+            shutil.copy2(source, obj_out)
+            object_outputs.append(obj_out)
+            continue
+        if source.suffix == ".c":
+            source_flags = list(compile_flags)
+            if rename_main:
+                source_flags.append("-Dmain=workload_main")
+            compile_pipeline_source(
+                root_dir,
+                script_dir,
+                cc,
+                source_flags,
+                opt_flags,
+                source,
+                obj_out,
+                asm_out,
+                ir_out,
+                options.use_vf,
+            )
+            object_outputs.append(obj_out)
+            asm_outputs.append(asm_out)
+            ir_outputs.append(ir_out)
+            continue
+
+        if source.suffix in {".s", ".S"}:
+            if options.asm_only and source.suffix == ".s":
+                shutil.copy2(source, asm_out)
+            else:
+                compile_support_source(cc, compile_flags, source, obj_out)
+            object_outputs.append(obj_out)
+            asm_outputs.append(asm_out if asm_out.exists() else source)
+            continue
+
+        die(f"Unsupported source suffix: {source}")
+
+    if options.asm_only:
+        return BuildResult(output=None, asm_outputs=asm_outputs, ir_outputs=ir_outputs, object_outputs=object_outputs, build_dir=build_dir)
+
+    support_objs: list[Path] = []
+    support_compile_flags = list(compile_flags)
+    if entry_mode in {"kernel", "main"}:
+        support_compile_flags.append(wrapper_flag(wrapper_symbol))
+
+    for source in support_sources(root_dir, spec, target, target_name):
+        obj_out = build_dir / f"{source.stem}.support.o"
+        compile_support_source(cc, support_compile_flags, source, obj_out)
+        support_objs.append(obj_out)
+
+    if output is None:
+        die("Expected an output path for linked workload")
+    output.parent.mkdir(parents=True, exist_ok=True)
+
+    link_cmd = [cc, *common_flags, *maybe_lld_flag(), *spec.link_flags]
+    linker_path = linker_script(root_dir, spec, target)
+    if linker_path is not None:
+        link_cmd.append(f"-T{linker_path}")
+    link_cmd.extend(str(path) for path in support_objs)
+    link_cmd.extend(str(path) for path in object_outputs)
+    link_cmd.extend(target_link_extras)
+    link_cmd.extend(("-o", str(output)))
+    run_command(link_cmd)
+
+    return BuildResult(output=output, asm_outputs=asm_outputs, ir_outputs=ir_outputs, object_outputs=[*support_objs, *object_outputs], build_dir=build_dir)
+
+
+def format_summary(result: BuildResult) -> list[str]:
+    lines: list[str] = []
+    if result.output is not None:
+        lines.append(f"Output: {result.output}")
+    if result.asm_outputs:
+        lines.append("Assembly:")
+        lines.extend(f"  {path}" for path in result.asm_outputs)
+    return lines
+
+
+def main(argv: list[str]) -> int:
+    parser = argparse.ArgumentParser(
+        description="Build a manifest-driven workload for the emulator targets.",
+    )
+    parser.add_argument("target", help="Build target")
+    parser.add_argument("inputs", nargs="+", help="Manifest, workload dir, or source/object files")
+    parser.add_argument("--lmul", type=int, default=1, help="LMUL value (1,2,4,8)")
+    parser.add_argument("--len", dest="len_1d", type=int, default=1000, help="LEN_1D array size")
+    parser.add_argument("--use-vf", type=str, default="", help="Force loop vectorization with LLVM -vplan-use-vf syntax")
+    parser.add_argument("--output", type=Path, default=None, help="Output ELF path")
+    parser.add_argument("--asm", action="store_true", help="Generate assembly output only")
+    parser.add_argument("--llvm", type=str, default="", help="Additional LLVM compile flags")
+    parser.add_argument("--cflags", type=str, default="", help="Additional C flags")
+    parser.add_argument("--optflags", type=str, default="", help="Additional opt flags")
+    parser.add_argument("--build-out-dir", type=Path, default=None, help="Structured build output directory")
+    parser.add_argument("--dry-run", action="store_true", help="Resolve paths and output layout without compiling")
+    parser.add_argument("--quiet", action="store_true", help="Print machine-readable output only")
+    args = parser.parse_args(argv)
+
+    script_dir = Path(__file__).resolve().parent
+    root_dir = script_dir.parent
+
+    spec = resolve_spec(args.target, args.inputs)
+    options = BuildOptions(
+        lmul=args.lmul,
+        len_1d=args.len_1d,
+        use_vf=args.use_vf or None,
+        asm_only=args.asm,
+        output=args.output,
+        build_out_dir=args.build_out_dir.resolve() if args.build_out_dir is not None else None,
+        dry_run=args.dry_run,
+        cli_cflags=split_flags(args.cflags),
+        cli_llvm_flags=split_flags(args.llvm),
+        cli_opt_flags=split_flags(args.optflags),
+        quiet=args.quiet,
+    )
+    result = compile_workload(root_dir, script_dir, spec, args.target, options)
+
+    if args.quiet:
+        payload = {
+            "workload": spec.name,
+            "output": str(result.output) if result.output is not None else None,
+            "build_dir": str(result.build_dir),
+            "asm_outputs": [str(path) for path in result.asm_outputs],
+            "ir_outputs": [str(path) for path in result.ir_outputs],
+            "object_outputs": [str(path) for path in result.object_outputs],
+        }
+        print(json.dumps(payload))
+        return 0
+
+    for line in format_summary(result):
+        print(line)
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main(sys.argv[1:]))

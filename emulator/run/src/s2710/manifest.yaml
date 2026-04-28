@@ -1,0 +1,14 @@
+{
+  "name": "s2710",
+  "entry": {
+    "mode": "kernel",
+    "symbol": "kernel"
+  },
+  "sources": [
+    "s2710.c"
+  ],
+  "metadata": {
+    "suite": "hand",
+    "tags": []
+  }
+}

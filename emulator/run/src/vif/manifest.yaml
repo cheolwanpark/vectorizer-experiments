@@ -1,0 +1,14 @@
+{
+  "name": "vif",
+  "entry": {
+    "mode": "kernel",
+    "symbol": "kernel"
+  },
+  "sources": [
+    "vif.c"
+  ],
+  "metadata": {
+    "suite": "hand",
+    "tags": []
+  }
+}

@@ -1,0 +1,14 @@
+{
+  "name": "vag",
+  "entry": {
+    "mode": "kernel",
+    "symbol": "kernel"
+  },
+  "sources": [
+    "vag.c"
+  ],
+  "metadata": {
+    "suite": "hand",
+    "tags": []
+  }
+}

@@ -1,0 +1,14 @@
+{
+  "name": "s278",
+  "entry": {
+    "mode": "kernel",
+    "symbol": "kernel"
+  },
+  "sources": [
+    "s278.c"
+  ],
+  "metadata": {
+    "suite": "hand",
+    "tags": []
+  }
+}

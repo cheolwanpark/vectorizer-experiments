@@ -9,7 +9,11 @@
  */
 #include "types.h"
 
-extern void kernel(void);
+#ifndef WORKLOAD_ENTRY
+#define WORKLOAD_ENTRY kernel
+#endif
+
+extern void WORKLOAD_ENTRY(void);
 extern void init_arrays(void);
 
 /* Vicuna UART addresses */
@@ -60,13 +64,13 @@ volatile unsigned int measured_cycles __attribute__((section(".data")));
 int main(void) {
     /* Warmup run */
     init_arrays();
-    kernel();
+    WORKLOAD_ENTRY();
     dummy();
 
     /* Timed run */
     init_arrays();
     unsigned int start = rdcycle();
-    kernel();
+    WORKLOAD_ENTRY();
     unsigned int end = rdcycle();
     dummy();
 

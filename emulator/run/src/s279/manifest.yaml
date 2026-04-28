@@ -1,0 +1,14 @@
+{
+  "name": "s279",
+  "entry": {
+    "mode": "kernel",
+    "symbol": "kernel"
+  },
+  "sources": [
+    "s279.c"
+  ],
+  "metadata": {
+    "suite": "hand",
+    "tags": []
+  }
+}

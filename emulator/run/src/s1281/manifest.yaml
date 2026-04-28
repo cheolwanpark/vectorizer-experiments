@@ -1,0 +1,14 @@
+{
+  "name": "s1281",
+  "entry": {
+    "mode": "kernel",
+    "symbol": "kernel"
+  },
+  "sources": [
+    "s1281.c"
+  ],
+  "metadata": {
+    "suite": "hand",
+    "tags": []
+  }
+}
