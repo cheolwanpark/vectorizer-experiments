@@ -9,5 +9,6 @@ extern FILE *stderr;
 
 int printf(const char *fmt, ...);
 int fprintf(FILE *stream, const char *fmt, ...);
+void perror(const char *msg);
 
 #endif

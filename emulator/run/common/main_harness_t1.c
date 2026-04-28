@@ -6,6 +6,11 @@
 
 extern int WORKLOAD_ENTRY(int argc, char **argv);
 
+__attribute__((weak))
+int workload_verify(void) {
+    return 1;
+}
+
 static inline uint32_t rdcycle(void) {
     uint32_t c;
     __asm__ volatile("csrr %0, mcycle" : "=r"(c));
@@ -47,12 +52,16 @@ static void dummy(void) {
 }
 
 void test(void) {
+    int rc;
+    int ok;
     uint32_t start = rdcycle();
-    (void)WORKLOAD_ENTRY(0, 0);
+    rc = WORKLOAD_ENTRY(0, 0);
     uint32_t end = rdcycle();
 
     dummy();
+    ok = (rc == 0) && workload_verify();
     print_str("cycles=");
     print_dec(end - start);
     print_str("\n");
+    print_str(ok ? "PASSED\n" : "FAILED\n");
 }

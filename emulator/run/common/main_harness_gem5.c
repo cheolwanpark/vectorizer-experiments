@@ -6,6 +6,11 @@
 
 extern int WORKLOAD_ENTRY(int argc, char **argv);
 
+__attribute__((weak))
+int workload_verify(void) {
+    return 1;
+}
+
 static inline uint64_t rdcycle(void) {
     uint64_t value;
     __asm__ volatile("rdcycle %0" : "=r"(value));
@@ -48,16 +53,20 @@ static void write_dec(uint64_t value) {
 
 int main(void) {
     static const char passed[] = "PASSED\n";
+    static const char failed[] = "FAILED\n";
     static const char cycles_prefix[] = "cycles=";
     uint64_t start = rdcycle();
     int rc = WORKLOAD_ENTRY(0, 0);
     uint64_t end = rdcycle();
+    int ok = (rc == 0) && workload_verify();
 
     write_str(cycles_prefix, sizeof(cycles_prefix) - 1);
     write_dec(end - start);
     write_str("\n", 1);
-    if (rc == 0) {
+    if (ok) {
         write_str(passed, sizeof(passed) - 1);
+    } else {
+        write_str(failed, sizeof(failed) - 1);
     }
-    return rc;
+    return ok ? 0 : 1;
 }

@@ -6,6 +6,11 @@
 
 extern int WORKLOAD_ENTRY(int argc, char **argv);
 
+__attribute__((weak))
+int workload_verify(void) {
+    return 1;
+}
+
 #define VICUNA_UART_DATA   (*(volatile unsigned int *)0xFF000000)
 #define VICUNA_UART_STATUS (*(volatile unsigned int *)0xFF000004)
 
@@ -54,11 +59,13 @@ int main(void) {
     unsigned int start = rdcycle();
     int rc = WORKLOAD_ENTRY(0, 0);
     unsigned int end = rdcycle();
+    int ok = (rc == 0) && workload_verify();
 
     dummy();
     measured_cycles = end - start;
     print_str("cycles=");
     print_dec(end - start);
     print_str("\n");
-    return rc;
+    print_str(ok ? "PASSED\n" : "FAILED\n");
+    return ok ? 0 : 1;
 }

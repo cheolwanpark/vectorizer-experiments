@@ -7,6 +7,11 @@
 extern volatile uint64_t tohost;
 extern int WORKLOAD_ENTRY(int argc, char **argv);
 
+__attribute__((weak))
+int workload_verify(void) {
+    return 1;
+}
+
 static inline uint64_t rdcycle(void) {
     uint64_t c;
     __asm__ volatile("csrr %0, mcycle" : "=r"(c));
@@ -21,13 +26,16 @@ static void dummy(void) {
 volatile uint64_t measured_cycles __attribute__((section(".data")));
 
 int main(void) {
+    int rc;
+    int ok;
     uint64_t start = rdcycle();
-    (void)WORKLOAD_ENTRY(0, 0);
+    rc = WORKLOAD_ENTRY(0, 0);
     uint64_t end = rdcycle();
 
     dummy();
     measured_cycles = end - start;
-    tohost = 1;
+    ok = (rc == 0) && workload_verify();
+    tohost = ok ? 1 : 3;
     while (1) {
     }
     return 0;

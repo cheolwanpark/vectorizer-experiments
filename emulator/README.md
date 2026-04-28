@@ -55,7 +55,7 @@ void kernel(void) {
 }
 ```
 
-Existing workloads: `run/src/s000/`, `run/src/s111/`, `run/src/s112/`, `run/src/s271/`, `run/src/mb1_switch/`, etc.
+Existing workloads: `run/src/s000/`, `run/src/s111/`, `run/src/s112/`, `run/src/s271/`, `run/src/mb1_switch/`, `run/src/npb_is_s/`, etc.
 
 ### Step 2: Run simulation
 
@@ -217,6 +217,8 @@ void kernel(void) {
 
 Available global arrays (all `real_t`, size >= `LEN_1D`):
 `a`, `b`, `c`, `d`, `e`, `aa` (2D), `bb` (2D), `cc` (2D)
+
+Whole-program workloads are also supported with `entry.mode: "main"` in the manifest. Those run through the `main_harness_*` entry path and report whole-program cycles instead of kernel-only cycles.
 
 ## Important Notes
 

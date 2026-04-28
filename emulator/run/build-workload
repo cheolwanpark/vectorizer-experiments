@@ -59,6 +59,7 @@ class WorkloadSpec:
     llvm_flags: list[str] = field(default_factory=list)
     opt_flags: list[str] = field(default_factory=list)
     link_flags: list[str] = field(default_factory=list)
+    prevec_passes: str | None = None
     support: str = "default"
     support_sources: list[Path] = field(default_factory=list)
     crt: str | Path | None = "default"
@@ -359,6 +360,7 @@ def load_manifest(path: Path, target_name: str) -> WorkloadSpec:
         llvm_flags=[str(value) for value in ensure_list(build.get("llvm_flags"), "build.llvm_flags")],
         opt_flags=[str(value) for value in ensure_list(build.get("opt_flags"), "build.opt_flags")],
         link_flags=[str(value) for value in ensure_list(build.get("link_flags"), "build.link_flags")],
+        prevec_passes=str(build.get("prevec_passes")) if build.get("prevec_passes") else None,
         support=str(build.get("support", "default")),
         support_sources=[resolve_relative(base_dir, str(value)) for value in ensure_list(build.get("support_sources"), "build.support_sources")],
         crt=build.get("crt", "default"),
@@ -428,6 +430,7 @@ def variant_name(spec: WorkloadSpec, options: BuildOptions) -> str:
             "llvm": spec.llvm_flags + options.cli_llvm_flags,
             "opt": spec.opt_flags + options.cli_opt_flags,
             "link": spec.link_flags,
+            "prevec": spec.prevec_passes,
             "entry": [spec.entry_mode, spec.entry_symbol],
         },
         sort_keys=True,
@@ -611,6 +614,7 @@ def compile_pipeline_source(
     asm_out: Path,
     ir_out: Path,
     use_vf: str | None,
+    prevec_passes: str | None,
 ) -> None:
     obj_out.parent.mkdir(parents=True, exist_ok=True)
     asm_out.parent.mkdir(parents=True, exist_ok=True)
@@ -635,7 +639,8 @@ def compile_pipeline_source(
         "--llc-bin",
         resolve_llc(root_dir),
         "--prevec-passes",
-        os.environ.get(
+        prevec_passes
+        or os.environ.get(
             "PREVEC_PASSES",
             "mem2reg,instcombine,simplifycfg,loop-simplify,lcssa,indvars,loop-rotate,instcombine,simplifycfg",
         ),
@@ -729,6 +734,7 @@ def compile_workload(root_dir: Path, script_dir: Path, spec: WorkloadSpec, targe
                 asm_out,
                 ir_out,
                 options.use_vf,
+                spec.prevec_passes,
             )
             object_outputs.append(obj_out)
             asm_outputs.append(asm_out)

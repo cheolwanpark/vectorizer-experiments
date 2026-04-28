@@ -6,6 +6,11 @@
 
 extern int WORKLOAD_ENTRY(int argc, char **argv);
 
+__attribute__((weak))
+int workload_verify(void) {
+    return 1;
+}
+
 #define UART_TX (*(volatile uint8_t *)0x40600004UL)
 
 static void uart_putchar(char c) {
@@ -56,15 +61,19 @@ static inline void nemu_trap(uint64_t exit_code) {
 }
 
 int main(void) {
+    int rc;
+    int ok;
     uint64_t start = rdcycle();
-    (void)WORKLOAD_ENTRY(0, 0);
+    rc = WORKLOAD_ENTRY(0, 0);
     uint64_t end = rdcycle();
 
     dummy();
+    ok = (rc == 0) && workload_verify();
     uart_puts("KC=");
     uart_print_u64(end - start);
     uart_putchar('\n');
-    nemu_trap(0);
+    uart_puts(ok ? "PASSED\n" : "FAILED\n");
+    nemu_trap(ok ? 0 : 1);
     while (1) {
     }
     return 0;
