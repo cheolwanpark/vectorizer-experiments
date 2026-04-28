@@ -4,7 +4,7 @@ Unified simulator runner.
 
 Examples:
   ./run-sim.sh saturn my-test.elf
-  ./run-sim.sh saturn run/src/s271/manifest.yaml --lmul=2
+  ./run-sim.sh saturn run/src/tsvc/s271/manifest.yaml --lmul=2
   ./run-sim.sh xiangshan.KunminghuV2Config out/kernel.s --lmul=1
   ./run-sim.sh xiangshan.MinimalConfig workloads/hello.bin
   ./run-sim.sh t1 tests/rvv-test.elf
@@ -1125,8 +1125,8 @@ def main(argv: list[str]) -> int:
         epilog="""
 Examples:
   %(prog)s saturn test.elf                        Run ELF on Saturn
-  %(prog)s saturn run/src/s271/manifest.yaml      Build and run a manifest workload
-  %(prog)s saturn run/src/s271/s271.c --lmul=2    Auto-detect manifest from source path
+  %(prog)s saturn run/src/tsvc/s271/manifest.yaml Build and run a manifest workload
+  %(prog)s saturn run/src/tsvc/s271/s271.c --lmul=2 Auto-detect manifest from source path
   %(prog)s saturn a.c helper.S helper.o           Link one workload from multiple inputs
   %(prog)s --list                                 List available simulators
 

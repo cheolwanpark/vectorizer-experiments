@@ -31,17 +31,17 @@ class DlmulBenchTest(unittest.TestCase):
         }
 
         self.assertEqual(len(jobs), 44)
-        self.assertTrue(dyn_sources["db1"].endswith("emulator/run/src/bench/dlmul/db1.c"))
-        self.assertTrue(dyn_sources["db11"].endswith("emulator/run/src/bench/dlmul/db11.c"))
-        self.assertTrue(dyn_sources["db12"].endswith("emulator/run/src/bench/dlmul/db12.c"))
-        self.assertTrue(dyn_sources["db8-medium"].endswith("emulator/run/src/bench/dlmul/db8.c"))
-        self.assertTrue(dyn_sources["db9"].endswith("emulator/run/src/bench/dlmul/db9.c"))
-        self.assertTrue(dyn_sources["no-data-dep"].endswith("emulator/run/src/bench/dlmul/dep_matrix.c"))
-        self.assertTrue(dyn_sources["dep-1-3"].endswith("emulator/run/src/bench/dlmul/dep_matrix.c"))
-        self.assertTrue(dyn_sources["dep-1-2"].endswith("emulator/run/src/bench/dlmul/dep_matrix.c"))
-        self.assertTrue(dyn_sources["dep-1-3-1-2"].endswith("emulator/run/src/bench/dlmul/dep_matrix.c"))
-        self.assertTrue(dyn_sources["alias-ok"].endswith("emulator/run/src/bench/dlmul/alias_transfer.c"))
-        self.assertTrue(dyn_sources["alias-bad"].endswith("emulator/run/src/bench/dlmul/alias_transfer.c"))
+        self.assertTrue(dyn_sources["db1"].endswith("emulator/run/src/dlmul-synthesis/bench/db1/db1.c"))
+        self.assertTrue(dyn_sources["db11"].endswith("emulator/run/src/dlmul-synthesis/bench/db11/db11.c"))
+        self.assertTrue(dyn_sources["db12"].endswith("emulator/run/src/dlmul-synthesis/bench/db12/db12.c"))
+        self.assertTrue(dyn_sources["db8-medium"].endswith("emulator/run/src/dlmul-synthesis/bench/db8/db8.c"))
+        self.assertTrue(dyn_sources["db9"].endswith("emulator/run/src/dlmul-synthesis/bench/db9/db9.c"))
+        self.assertTrue(dyn_sources["no-data-dep"].endswith("emulator/run/src/dlmul-synthesis/bench/dep_matrix/dep_matrix.c"))
+        self.assertTrue(dyn_sources["dep-1-3"].endswith("emulator/run/src/dlmul-synthesis/bench/dep_matrix/dep_matrix.c"))
+        self.assertTrue(dyn_sources["dep-1-2"].endswith("emulator/run/src/dlmul-synthesis/bench/dep_matrix/dep_matrix.c"))
+        self.assertTrue(dyn_sources["dep-1-3-1-2"].endswith("emulator/run/src/dlmul-synthesis/bench/dep_matrix/dep_matrix.c"))
+        self.assertTrue(dyn_sources["alias-ok"].endswith("emulator/run/src/dlmul-synthesis/bench/alias_transfer/alias_transfer.c"))
+        self.assertTrue(dyn_sources["alias-bad"].endswith("emulator/run/src/dlmul-synthesis/bench/alias_transfer/alias_transfer.c"))
 
     def test_each_workload_has_expected_db_variants(self):
         manifest = dlmul_bench.make_manifest()
@@ -198,7 +198,7 @@ class DlmulBenchTest(unittest.TestCase):
                 "total_cycles": 456,
                 "wall_time_s": 1.25,
                 "sim_speed_khz": 4.5,
-                "source": "/repo/emulator/run/src/bench/dlmul/db1.c",
+                "source": "/repo/emulator/run/src/dlmul-synthesis/bench/db1/db1.c",
                 "artifact_dir": "/repo/artifacts/dlmul-bench/db1",
                 "container_log": "/repo/artifacts/dlmul-bench/db1/container.log",
                 "run_detail_path": "/repo/artifacts/dlmul-bench/db1/log.txt",
@@ -240,7 +240,7 @@ class DlmulBenchTest(unittest.TestCase):
 
         kwargs = mocked.call_args.kwargs
         self.assertEqual(kwargs["benchmark"], "dlmul_db8_medium__dyn_m8_m2_m8")
-        self.assertTrue(kwargs["source"].endswith("emulator/run/src/bench/dlmul/db8.c"))
+        self.assertTrue(kwargs["source"].endswith("emulator/run/src/dlmul-synthesis/bench/db8/db8.c"))
         self.assertEqual(kwargs["use_vf"], "")
         self.assertIn("-fno-vectorize", kwargs["extra_cflags"])
         self.assertIn("-DDLB_BENCH_VARIANT=DLB_VARIANT_DYN_M8_M2_M8", kwargs["extra_cflags"])

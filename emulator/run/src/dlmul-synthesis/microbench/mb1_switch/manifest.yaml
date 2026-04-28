@@ -1,0 +1,21 @@
+{
+  "name": "mb1_switch",
+  "entry": {
+    "mode": "kernel",
+    "symbol": "kernel"
+  },
+  "sources": [
+    "mb1_switch.c"
+  ],
+  "metadata": {
+    "suite": "microbench",
+    "tags": [
+      "dlmul"
+    ]
+  },
+  "build": {
+    "include_dirs": [
+      "../../shared/dlmul"
+    ]
+  }
+}

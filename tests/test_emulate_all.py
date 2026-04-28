@@ -8,12 +8,35 @@ from unittest.mock import patch
 from scripts import emulate_all
 
 
+def create_vfs_table(conn: sqlite3.Connection) -> None:
+    conn.execute(
+        """
+        CREATE TABLE vfs (
+            bench TEXT NOT NULL,
+            use_vf TEXT NOT NULL,
+            raw_vf TEXT NOT NULL,
+            cost TEXT NOT NULL,
+            compare TEXT NOT NULL,
+            plan_index INTEGER,
+            selected INTEGER NOT NULL,
+            failure TEXT NOT NULL,
+            failure_message TEXT NOT NULL,
+            source TEXT NOT NULL,
+            vplan_log_path TEXT NOT NULL,
+            vplan_log_text TEXT NOT NULL,
+            created_at TEXT NOT NULL
+        )
+        """
+    )
+
+
 class EmulateAllTest(unittest.TestCase):
     def test_parse_args_defaults_to_concurrency_five_without_samples(self):
         with patch("sys.argv", ["emulate_all.py"]):
             args = emulate_all.parse_args()
 
         self.assertEqual(args.concurrency, 5)
+        self.assertEqual(args.vfs_db_dir, "artifacts/vfs")
         self.assertEqual(args.vfs_db, "artifacts/vfs.db")
         self.assertFalse(hasattr(args, "samples"))
 
@@ -21,25 +44,7 @@ class EmulateAllTest(unittest.TestCase):
         with TemporaryDirectory() as tmp:
             db_path = Path(tmp) / "vfs.sqlite"
             conn = sqlite3.connect(db_path)
-            conn.execute(
-                """
-                CREATE TABLE vfs (
-                    bench TEXT NOT NULL,
-                    use_vf TEXT NOT NULL,
-                    raw_vf TEXT NOT NULL,
-                    cost TEXT NOT NULL,
-                    compare TEXT NOT NULL,
-                    plan_index INTEGER,
-                    selected INTEGER NOT NULL,
-                    failure TEXT NOT NULL,
-                    failure_message TEXT NOT NULL,
-                    source TEXT NOT NULL,
-                    vplan_log_path TEXT NOT NULL,
-                    vplan_log_text TEXT NOT NULL,
-                    created_at TEXT NOT NULL
-                )
-                """
-            )
+            create_vfs_table(conn)
             conn.executemany(
                 """
                 INSERT INTO vfs (
@@ -177,32 +182,14 @@ class EmulateAllTest(unittest.TestCase):
 
         self.assertEqual(missing, ["opt_ll_text", "asm_text"])
 
-    def test_main_copies_vplan_failure_rows_from_vfs_db(self):
+    def test_main_records_vplan_failure_and_still_runs_baseline(self):
         with TemporaryDirectory() as tmp:
             root = Path(tmp)
             artifacts_dir = root / "artifacts"
             artifacts_dir.mkdir()
             vfs_db = artifacts_dir / "vfs.db"
             conn = sqlite3.connect(vfs_db)
-            conn.execute(
-                """
-                CREATE TABLE vfs (
-                    bench TEXT NOT NULL,
-                    use_vf TEXT NOT NULL,
-                    raw_vf TEXT NOT NULL,
-                    cost TEXT NOT NULL,
-                    compare TEXT NOT NULL,
-                    plan_index INTEGER,
-                    selected INTEGER NOT NULL,
-                    failure TEXT NOT NULL,
-                    failure_message TEXT NOT NULL,
-                    source TEXT NOT NULL,
-                    vplan_log_path TEXT NOT NULL,
-                    vplan_log_text TEXT NOT NULL,
-                    created_at TEXT NOT NULL
-                )
-                """
-            )
+            create_vfs_table(conn)
             conn.execute(
                 """
                 INSERT INTO vfs (
@@ -229,33 +216,51 @@ class EmulateAllTest(unittest.TestCase):
             conn.commit()
             conn.close()
 
+            fake_emulate_result = {
+                "summary": {"status": "PASS", "kernel_cycles": 10, "total_cycles": 20},
+                "container_log_text": "container",
+                "run_detail": "run",
+                "opt_ll_text": "opt",
+                "asm_text": "asm",
+                "failed": False,
+            }
+
             with patch("sys.argv", ["emulate_all.py", "--db-dir", str(artifacts_dir), "--vfs-db", str(vfs_db)]):
                 with patch.object(emulate_all.emulate, "repo_root", return_value=root):
                     with patch.object(emulate_all, "discover_benches", return_value=["s000"]):
                         with patch.object(emulate_all.emulate, "ensure_image_exists"):
-                            with self.assertRaises(SystemExit) as exc:
+                            with patch.object(emulate_all, "run_emulate_job", return_value=fake_emulate_result):
                                 emulate_all.main()
 
-            self.assertEqual(exc.exception.code, 1)
-            emulate_dbs = list(artifacts_dir.glob("emulate-result-*.sqlite"))
-            self.assertEqual(len(emulate_dbs), 1)
-            result_conn = sqlite3.connect(emulate_dbs[0])
+            per_workload_dbs = list(artifacts_dir.glob("emulate-result-s000-*.sqlite"))
+            aggregate_dbs = [
+                path
+                for path in artifacts_dir.glob("emulate-result-*.sqlite")
+                if path not in per_workload_dbs
+            ]
+            self.assertEqual(len(per_workload_dbs), 1)
+            self.assertEqual(len(aggregate_dbs), 1)
+            result_conn = sqlite3.connect(per_workload_dbs[0])
             rows = result_conn.execute(
-                "SELECT stage, bench, use_vf, failure, failure_message, status, vplan_log_text FROM emulate_results"
+                "SELECT stage, bench, use_vf, failure, failure_message, status, vplan_log_text "
+                "FROM emulate_results ORDER BY stage, use_vf"
             ).fetchall()
             result_conn.close()
 
         self.assertEqual(
             rows,
-            [(
-                "vplan",
-                "s000",
-                "",
-                "no_vf",
-                "no parseable VF entries found in vplan-explain output",
-                "SKIP",
-                "vplan log",
-            )],
+            [
+                ("emulate", "s000", "", "", "", "PASS", ""),
+                (
+                    "vplan",
+                    "s000",
+                    "",
+                    "no_vf",
+                    "no parseable VF entries found in vplan-explain output",
+                    "SKIP",
+                    "vplan log",
+                ),
+            ],
         )
 
     def test_main_uses_vfs_db_without_running_vplan_explain(self):
@@ -265,25 +270,7 @@ class EmulateAllTest(unittest.TestCase):
             artifacts_dir.mkdir()
             vfs_db = artifacts_dir / "vfs.db"
             conn = sqlite3.connect(vfs_db)
-            conn.execute(
-                """
-                CREATE TABLE vfs (
-                    bench TEXT NOT NULL,
-                    use_vf TEXT NOT NULL,
-                    raw_vf TEXT NOT NULL,
-                    cost TEXT NOT NULL,
-                    compare TEXT NOT NULL,
-                    plan_index INTEGER,
-                    selected INTEGER NOT NULL,
-                    failure TEXT NOT NULL,
-                    failure_message TEXT NOT NULL,
-                    source TEXT NOT NULL,
-                    vplan_log_path TEXT NOT NULL,
-                    vplan_log_text TEXT NOT NULL,
-                    created_at TEXT NOT NULL
-                )
-                """
-            )
+            create_vfs_table(conn)
             conn.execute(
                 """
                 INSERT INTO vfs (
@@ -332,9 +319,15 @@ class EmulateAllTest(unittest.TestCase):
                                     emulate_all.main()
 
             self.assertFalse(vplan_mock.called)
-            emulate_dbs = list(artifacts_dir.glob("emulate-result-*.sqlite"))
-            self.assertEqual(len(emulate_dbs), 1)
-            result_conn = sqlite3.connect(emulate_dbs[0])
+            per_workload_dbs = list(artifacts_dir.glob("emulate-result-s000-*.sqlite"))
+            aggregate_dbs = [
+                path
+                for path in artifacts_dir.glob("emulate-result-*.sqlite")
+                if path not in per_workload_dbs
+            ]
+            self.assertEqual(len(per_workload_dbs), 1)
+            self.assertEqual(len(aggregate_dbs), 1)
+            result_conn = sqlite3.connect(per_workload_dbs[0])
             rows = result_conn.execute(
                 "SELECT stage, bench, use_vf, failure, kernel_cycles, vplan_log_text "
                 "FROM emulate_results ORDER BY use_vf"

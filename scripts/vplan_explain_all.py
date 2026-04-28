@@ -14,12 +14,28 @@ except ModuleNotFoundError:
     from scripts import benchmark_sources, emulate, vplan_explain
 
 
-DEFAULT_DB_PATH = "artifacts/vfs.db"
+DEFAULT_DB_DIR = "artifacts/vfs"
+DEFAULT_COMPAT_DB_PATH = "artifacts/vfs.db"
+VFS_COLUMNS = [
+    "bench",
+    "use_vf",
+    "raw_vf",
+    "cost",
+    "compare",
+    "plan_index",
+    "selected",
+    "failure",
+    "failure_message",
+    "source",
+    "vplan_log_path",
+    "vplan_log_text",
+    "created_at",
+]
 
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Run vplan-explain across all TSVC loop benchmarks and save VF candidates to SQLite."
+        description="Run vplan-explain across all catalog workloads and save VF candidates to SQLite."
     )
     parser.add_argument("--image", default=vplan_explain.DEFAULT_IMAGE, help="Docker image tag")
     parser.add_argument("--platform", default=vplan_explain.DEFAULT_PLATFORM, help="Docker platform")
@@ -35,17 +51,35 @@ def parse_args() -> argparse.Namespace:
         help="Host output root for vplan-explain artifacts",
     )
     parser.add_argument(
+        "--db-dir",
+        default=DEFAULT_DB_DIR,
+        help="Directory for per-workload vfs-<workload_id>.sqlite files",
+    )
+    parser.add_argument(
         "--db-path",
-        default=DEFAULT_DB_PATH,
-        help="SQLite output path for flattened VF results",
+        default=DEFAULT_COMPAT_DB_PATH,
+        help="Compatibility aggregate SQLite output path",
+    )
+    parser.add_argument(
+        "--catalog-dir",
+        default="",
+        help=f"Optional workload subdirectory under {benchmark_sources.RUN_SRC_ROOT}",
     )
     parser.add_argument("--extra-cflags", default="", help="Extra flags passed to clang")
     parser.add_argument("--extra-opt-flags", default="", help="Extra flags passed to opt")
     return parser.parse_args()
 
 
-def discover_benches(root: Path) -> list[str]:
-    return benchmark_sources.discover_catalog_benches(root)
+def discover_workloads(root: Path, catalog_dir: str = "") -> list[benchmark_sources.CatalogWorkload]:
+    return benchmark_sources.discover_catalog_workloads(root, catalog_dir)
+
+
+def resolve_db_dir(root: Path, db_dir: str) -> Path:
+    path = Path(db_dir)
+    if not path.is_absolute():
+        path = (root / db_dir).resolve()
+    path.mkdir(parents=True, exist_ok=True)
+    return path
 
 
 def resolve_db_path(root: Path, db_path: str) -> Path:
@@ -54,6 +88,10 @@ def resolve_db_path(root: Path, db_path: str) -> Path:
         path = (root / db_path).resolve()
     path.parent.mkdir(parents=True, exist_ok=True)
     return path
+
+
+def workload_db_path(db_dir: Path, workload_id: str) -> Path:
+    return db_dir / f"vfs-{workload_id}.sqlite"
 
 
 def create_table(conn: sqlite3.Connection) -> None:
@@ -133,29 +171,131 @@ def insert_vf_row(
     conn.commit()
 
 
-def main() -> None:
-    args = parse_args()
-    root = emulate.repo_root()
-    benches = discover_benches(root)
-    db_path = resolve_db_path(root, args.db_path)
-
+def write_workload_db(db_path: Path, result: dict[str, object]) -> tuple[int, str]:
     if db_path.exists():
         db_path.unlink()
-
-    vplan_explain.validate_args(args)
-    vplan_explain.ensure_image_exists(args.image)
 
     conn = sqlite3.connect(db_path)
     create_table(conn)
 
-    print(f"vplan-explain-all: benches={len(benches)} db={db_path.name}")
+    bench = str(result["bench"])
+    log_text = str(result.get("vplan_log_text") or result.get("container_log_text") or "")
+    source = str(result.get("source") or "")
+    log_path = str(result.get("vplan_log") or "")
+
+    if int(result["exit_code"]) != 0:
+        insert_vf_row(
+            conn,
+            bench=bench,
+            use_vf="",
+            raw_vf="",
+            cost="",
+            compare="",
+            plan_index=None,
+            selected=False,
+            failure="vplan_failed",
+            failure_message="vplan-explain failed",
+            source=source,
+            vplan_log_path=log_path,
+            vplan_log_text=log_text,
+        )
+        conn.close()
+        return 1, "fail"
+
+    vf_candidates = list(result["vf_candidates"])
+    if not vf_candidates:
+        failure = str(result.get("analysis_failure") or "no_vf")
+        failure_message = str(
+            result.get("analysis_failure_message")
+            or "no parseable VF entries found in vplan-explain output"
+        )
+        insert_vf_row(
+            conn,
+            bench=bench,
+            use_vf="",
+            raw_vf="",
+            cost="",
+            compare="",
+            plan_index=None,
+            selected=False,
+            failure=failure,
+            failure_message=failure_message,
+            source=source,
+            vplan_log_path=log_path,
+            vplan_log_text=log_text,
+        )
+        conn.close()
+        return 1, "unsupported" if failure == "unsupported_analysis_source" else "no-vf"
+
+    for candidate in vf_candidates:
+        insert_vf_row(
+            conn,
+            bench=bench,
+            use_vf=str(candidate["use_vf"]),
+            raw_vf=str(candidate["raw_vf"]),
+            cost=str(candidate["cost"]),
+            compare=str(candidate.get("compare") or ""),
+            plan_index=int(candidate["plan_index"]) if candidate["plan_index"] is not None else None,
+            selected=bool(candidate["selected"]),
+            failure="",
+            failure_message="",
+            source=source,
+            vplan_log_path=log_path,
+            vplan_log_text=log_text,
+        )
+
+    conn.close()
+    return len(vf_candidates), f"vf={len(vf_candidates)}"
+
+
+def export_aggregate_db(workload_dbs: list[Path], aggregate_db_path: Path) -> None:
+    if aggregate_db_path.exists():
+        aggregate_db_path.unlink()
+
+    conn = sqlite3.connect(aggregate_db_path)
+    create_table(conn)
+    placeholders = ", ".join("?" for _ in VFS_COLUMNS)
+    columns = ", ".join(VFS_COLUMNS)
+
+    for workload_db in workload_dbs:
+        source_conn = sqlite3.connect(workload_db)
+        rows = source_conn.execute(
+            f"SELECT {columns} FROM vfs ORDER BY bench, use_vf"
+        ).fetchall()
+        source_conn.close()
+        if rows:
+            conn.executemany(
+                f"INSERT INTO vfs ({columns}) VALUES ({placeholders})",
+                rows,
+            )
+            conn.commit()
+
+    conn.close()
+
+
+def main() -> None:
+    args = parse_args()
+    root = emulate.repo_root()
+    workloads = discover_workloads(root, args.catalog_dir)
+    db_dir = resolve_db_dir(root, args.db_dir)
+    aggregate_db_path = resolve_db_path(root, args.db_path)
+
+    vplan_explain.validate_args(args)
+    vplan_explain.ensure_image_exists(args.image)
+
+    print(
+        f"vplan-explain-all: workloads={len(workloads)} catalog_dir={args.catalog_dir or '.'} "
+        f"db_dir={db_dir.name} aggregate={aggregate_db_path.name}"
+    )
+
+    workload_dbs: list[Path] = []
     failures = 0
     no_vf_rows = 0
     total_rows = 0
 
-    for index, bench in enumerate(benches, start=1):
+    for index, workload in enumerate(workloads, start=1):
         result = vplan_explain.run_vplan_explain(
-            bench=bench,
+            bench=workload.workload_id,
             image=args.image,
             platform=args.platform,
             arch=args.arch,
@@ -171,74 +311,24 @@ def main() -> None:
             extra_opt_flags=args.extra_opt_flags,
         )
 
-        log_text = str(result.get("vplan_log_text") or result.get("container_log_text") or "")
-        source = str(result.get("source") or "")
-        log_path = str(result.get("vplan_log") or "")
+        workload_db = workload_db_path(db_dir, workload.workload_id)
+        row_count, status = write_workload_db(workload_db, result)
+        workload_dbs.append(workload_db)
+        total_rows += row_count
 
-        if int(result["exit_code"]) != 0:
+        if status in {"fail", "no-vf", "unsupported"}:
             failures += 1
-            total_rows += 1
-            insert_vf_row(
-                conn,
-                bench=bench,
-                use_vf="",
-                raw_vf="",
-                cost="",
-                compare="",
-                plan_index=None,
-                selected=False,
-                failure="vplan_failed",
-                failure_message="vplan-explain failed",
-                source=source,
-                vplan_log_path=log_path,
-                vplan_log_text=log_text,
-            )
-            print(f"[vplan {index}/{len(benches)}] {bench} fail")
-            continue
-
-        vf_candidates = list(result["vf_candidates"])
-        if not vf_candidates:
+        if status in {"no-vf", "unsupported"}:
             no_vf_rows += 1
-            total_rows += 1
-            insert_vf_row(
-                conn,
-                bench=bench,
-                use_vf="",
-                raw_vf="",
-                cost="",
-                compare="",
-                plan_index=None,
-                selected=False,
-                failure="no_vf",
-                failure_message="no parseable VF entries found in vplan-explain output",
-                source=source,
-                vplan_log_path=log_path,
-                vplan_log_text=log_text,
-            )
-            print(f"[vplan {index}/{len(benches)}] {bench} no-vf")
-            continue
 
-        for candidate in vf_candidates:
-            total_rows += 1
-            insert_vf_row(
-                conn,
-                bench=bench,
-                use_vf=str(candidate["use_vf"]),
-                raw_vf=str(candidate["raw_vf"]),
-                cost=str(candidate["cost"]),
-                compare=str(candidate.get("compare") or ""),
-                plan_index=int(candidate["plan_index"]) if candidate["plan_index"] is not None else None,
-                selected=bool(candidate["selected"]),
-                failure="",
-                failure_message="",
-                source=source,
-                vplan_log_path=log_path,
-                vplan_log_text=log_text,
-            )
-        print(f"[vplan {index}/{len(benches)}] {bench} vf={len(vf_candidates)}")
+        print(f"[vplan {index}/{len(workloads)}] {workload.workload_id} {status}")
 
-    conn.close()
-    print(f"done: rows={total_rows} failures={failures} no_vf={no_vf_rows} db={db_path}")
+    export_aggregate_db(workload_dbs, aggregate_db_path)
+    print(
+        f"done: rows={total_rows} failures={failures} no_vf={no_vf_rows} "
+        f"aggregate={aggregate_db_path}"
+    )
+
 
 if __name__ == "__main__":
     main()

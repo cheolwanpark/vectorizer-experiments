@@ -1,15 +1,19 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import json
 import re
 from pathlib import Path
+from typing import Any
 
 
 RUN_SRC_ROOT = Path("emulator") / "run" / "src"
 GENERATED_RUN_SRC_ROOT = RUN_SRC_ROOT / "generated"
+TSVC_RUN_SRC_ROOT = RUN_SRC_ROOT / "tsvc"
 TSVC_LOOP_ROOT = Path("emulator") / "benchmarks" / "TSVC_2" / "src" / "loops"
 GENERATED_MINIMAL_MARKER = "TSVC_EMULATE_GENERATED"
 KERNEL_FUNCTION_NAME = "kernel"
+SUPPORTED_SOURCE_SUFFIXES = {".c", ".s", ".S"}
 
 IGNORE_LINE_PATTERNS = (
     re.compile(r"^\s*initialise_arrays\s*\(__func__\);\s*$"),
@@ -43,6 +47,24 @@ class BenchmarkSource:
 
 
 @dataclass(frozen=True)
+class CatalogWorkload:
+    workload_id: str
+    kind: str
+    manifest_path: Path | None = None
+    primary_source_path: Path | None = None
+    analysis_source_path: Path | None = None
+    source_kind: str = ""
+    function_name: str = KERNEL_FUNCTION_NAME
+    include_dirs: tuple[Path, ...] = ()
+    compile_flags: tuple[str, ...] = ()
+    llvm_flags: tuple[str, ...] = ()
+    opt_flags: tuple[str, ...] = ()
+    prevec_passes: str | None = None
+    analysis_failure: str = ""
+    analysis_failure_message: str = ""
+
+
+@dataclass(frozen=True)
 class ArgInfoSpec:
     kind: str
     expr: str | None = None
@@ -57,6 +79,10 @@ def manual_source_path(root: Path, bench: str) -> Path:
     return root / RUN_SRC_ROOT / f"{bench}.c"
 
 
+def categorized_manual_source_path(root: Path, bench: str) -> Path:
+    return root / TSVC_RUN_SRC_ROOT / bench / f"{bench}.c"
+
+
 def generated_source_path(root: Path, bench: str) -> Path:
     return root / GENERATED_RUN_SRC_ROOT / f"{bench}.c"
 
@@ -65,23 +91,251 @@ def loop_source_path(root: Path, bench: str) -> Path:
     return root / TSVC_LOOP_ROOT / f"{bench}.c"
 
 
-def discover_catalog_benches(root: Path) -> list[str]:
-    manual = {path.stem for path in (root / RUN_SRC_ROOT).glob("s*.c")}
-    loops = {path.stem for path in (root / TSVC_LOOP_ROOT).glob("s*.c")}
-    return sorted(manual | loops)
+def resolve_relative(base_dir: Path, value: str | None) -> Path | None:
+    if value is None:
+        return None
+    path = Path(value)
+    if path.is_absolute():
+        return path
+    return (base_dir / path).resolve()
+
+
+def ensure_list(value: Any, field_name: str) -> list[Any]:
+    if value is None:
+        return []
+    if not isinstance(value, list):
+        raise RuntimeError(f"{field_name} must be a list")
+    return value
+
+
+def load_mapping_file(path: Path) -> dict[str, Any]:
+    text = path.read_text(encoding="utf-8")
+    stripped = text.lstrip()
+    if stripped.startswith("{") or stripped.startswith("["):
+        data = json.loads(text)
+    else:
+        try:
+            import yaml  # type: ignore
+        except ImportError as exc:
+            raise RuntimeError(
+                f"Failed to parse {path}. Install PyYAML or keep the file in strict JSON syntax."
+            ) from exc
+        data = yaml.safe_load(text)
+    if not isinstance(data, dict):
+        raise RuntimeError(f"manifest root must be a mapping: {path}")
+    return data
+
+
+def _analysis_source_result(
+    *,
+    manifest_path: Path,
+    resolved_sources: list[Path],
+    build: dict[str, Any],
+) -> tuple[Path | None, str, str]:
+    analysis_source_raw = build.get("analysis_source")
+    if analysis_source_raw is not None:
+        analysis_source = resolve_relative(manifest_path.parent.resolve(), str(analysis_source_raw))
+        if analysis_source is None or analysis_source.suffix != ".c":
+            raise RuntimeError(
+                f"build.analysis_source must point to a .c file in sources: {manifest_path}"
+            )
+        if analysis_source not in resolved_sources:
+            raise RuntimeError(
+                f"build.analysis_source must point to a declared source entry: {manifest_path}"
+            )
+        return analysis_source, "", ""
+
+    c_sources = [source for source in resolved_sources if source.suffix == ".c"]
+    if len(c_sources) == 1:
+        return c_sources[0], "", ""
+    if not c_sources:
+        return (
+            None,
+            "unsupported_analysis_source",
+            "manifest does not declare an analyzable C source",
+        )
+    return (
+        None,
+        "unsupported_analysis_source",
+        "manifest declares multiple C sources without build.analysis_source",
+    )
+
+
+def _load_manifest_workload(manifest_path: Path) -> CatalogWorkload:
+    data = load_mapping_file(manifest_path)
+    base_dir = manifest_path.parent.resolve()
+    build = data.get("build") or {}
+    entry = data.get("entry") or {}
+    if not isinstance(build, dict):
+        raise RuntimeError(f"build must be a mapping: {manifest_path}")
+    if not isinstance(entry, dict):
+        raise RuntimeError(f"entry must be a mapping: {manifest_path}")
+
+    sources = ensure_list(data.get("sources"), "sources")
+    if not sources:
+        raise RuntimeError(f"manifest must declare at least one source: {manifest_path}")
+
+    resolved_sources = [resolve_relative(base_dir, str(source)) for source in sources]
+    for source in resolved_sources:
+        if source is None or not source.exists():
+            raise FileNotFoundError(f"source not found for manifest {manifest_path}: {source}")
+
+    primary_sources = [
+        source for source in resolved_sources if source.suffix in SUPPORTED_SOURCE_SUFFIXES
+    ]
+    analysis_source_path, analysis_failure, analysis_failure_message = _analysis_source_result(
+        manifest_path=manifest_path.resolve(),
+        resolved_sources=resolved_sources,
+        build=build,
+    )
+    workload_id = str(data.get("name") or base_dir.name)
+    entry_mode = str(entry.get("mode", "kernel"))
+    function_name = str(
+        entry.get("symbol", KERNEL_FUNCTION_NAME if entry_mode == "kernel" else "main")
+    )
+
+    return CatalogWorkload(
+        workload_id=workload_id,
+        kind="manifest",
+        manifest_path=manifest_path.resolve(),
+        primary_source_path=primary_sources[0] if len(primary_sources) == 1 else None,
+        analysis_source_path=analysis_source_path,
+        source_kind="manifest",
+        function_name=function_name,
+        include_dirs=tuple(
+            resolve_relative(base_dir, str(value))
+            for value in ensure_list(build.get("include_dirs"), "build.include_dirs")
+        ),
+        compile_flags=tuple(
+            str(value) for value in ensure_list(build.get("compile_flags"), "build.compile_flags")
+        ),
+        llvm_flags=tuple(
+            str(value) for value in ensure_list(build.get("llvm_flags"), "build.llvm_flags")
+        ),
+        opt_flags=tuple(
+            str(value) for value in ensure_list(build.get("opt_flags"), "build.opt_flags")
+        ),
+        prevec_passes=str(build.get("prevec_passes")) if build.get("prevec_passes") else None,
+        analysis_failure=analysis_failure,
+        analysis_failure_message=analysis_failure_message,
+    )
+
+
+def resolve_catalog_dir(root: Path, catalog_dir: str = "") -> Path:
+    run_src_root = (root / RUN_SRC_ROOT).resolve()
+    if not catalog_dir:
+        return run_src_root
+
+    candidate = (run_src_root / catalog_dir).resolve()
+    try:
+        candidate.relative_to(run_src_root)
+    except ValueError as exc:
+        raise RuntimeError(f"catalog dir must be inside {RUN_SRC_ROOT}: {catalog_dir}") from exc
+    if not candidate.exists():
+        raise FileNotFoundError(f"catalog dir not found: {candidate}")
+    if not candidate.is_dir():
+        raise RuntimeError(f"catalog dir must be a directory: {candidate}")
+    return candidate
+
+
+def _should_include_legacy_tsvc(catalog_dir: str) -> bool:
+    if not catalog_dir:
+        return True
+    return Path(catalog_dir).parts[:1] == ("tsvc",)
+
+
+def _find_manual_source_path(root: Path, bench: str) -> Path | None:
+    for candidate in (manual_source_path(root, bench), categorized_manual_source_path(root, bench)):
+        if candidate.exists():
+            return candidate
+    return None
+
+
+def discover_catalog_workloads(root: Path, catalog_dir: str = "") -> list[CatalogWorkload]:
+    workloads_by_id: dict[str, CatalogWorkload] = {}
+    search_root = resolve_catalog_dir(root, catalog_dir)
+
+    for manifest_path in sorted(path for path in search_root.rglob("manifest.yaml") if path.is_file()):
+        workload = _load_manifest_workload(manifest_path)
+        existing = workloads_by_id.get(workload.workload_id)
+        if existing is not None:
+            raise RuntimeError(
+                f"duplicate manifest workload id {workload.workload_id}: "
+                f"{existing.manifest_path} and {workload.manifest_path}"
+            )
+        workloads_by_id[workload.workload_id] = workload
+
+    if _should_include_legacy_tsvc(catalog_dir):
+        manual = {path.stem for path in (root / RUN_SRC_ROOT).glob("s*.c")}
+        manual.update(
+            path.parent.name
+            for path in (root / TSVC_RUN_SRC_ROOT).glob("*/s*.c")
+            if path.stem == path.parent.name
+        )
+        loops = {path.stem for path in (root / TSVC_LOOP_ROOT).glob("s*.c")}
+        for bench in sorted(manual | loops):
+            if bench in workloads_by_id:
+                continue
+            manual_source = _find_manual_source_path(root, bench)
+            if manual_source is not None:
+                workloads_by_id[bench] = CatalogWorkload(
+                    workload_id=bench,
+                    kind="legacy_source",
+                    primary_source_path=manual_source,
+                    analysis_source_path=manual_source,
+                    source_kind="manual",
+                )
+                continue
+            generated = ensure_generated_source(root, bench)
+            workloads_by_id[bench] = CatalogWorkload(
+                workload_id=bench,
+                kind="legacy_source",
+                primary_source_path=generated,
+                analysis_source_path=generated,
+                source_kind="generated",
+            )
+
+    return sorted(workloads_by_id.values(), key=lambda workload: workload.workload_id)
+
+
+def discover_catalog_benches(root: Path, catalog_dir: str = "") -> list[str]:
+    return [workload.workload_id for workload in discover_catalog_workloads(root, catalog_dir)]
+
+
+def discover_tsvc_benches(root: Path, catalog_dir: str = "") -> list[str]:
+    return [
+        workload.workload_id
+        for workload in discover_catalog_workloads(root, catalog_dir)
+        if re.fullmatch(r"s\d{3,5}", workload.workload_id)
+    ]
+
+
+def resolve_catalog_workload(root: Path, workload_id: str) -> CatalogWorkload:
+    for workload in discover_catalog_workloads(root):
+        if workload.workload_id == workload_id:
+            return workload
+    raise FileNotFoundError(f"workload not found for {workload_id}")
+
+
+def resolve_workload_input(root: Path, workload_id: str) -> Path:
+    workload = resolve_catalog_workload(root, workload_id)
+    if workload.manifest_path is not None:
+        return workload.manifest_path
+    if workload.primary_source_path is not None:
+        return workload.primary_source_path
+    raise FileNotFoundError(f"workload input not found for {workload_id}")
 
 
 def resolve_benchmark_source(root: Path, bench: str) -> BenchmarkSource:
-    manual = manual_source_path(root, bench)
-    if manual.exists():
-        return BenchmarkSource(bench=bench, source_path=manual, source_kind="manual")
-
-    loop = loop_source_path(root, bench)
-    if not loop.exists():
+    workload = resolve_catalog_workload(root, bench)
+    if workload.primary_source_path is None:
         raise FileNotFoundError(f"simplified benchmark source not found for {bench}")
-
-    generated = ensure_generated_source(root, bench)
-    return BenchmarkSource(bench=bench, source_path=generated, source_kind="generated")
+    return BenchmarkSource(
+        bench=bench,
+        source_path=workload.primary_source_path,
+        source_kind=workload.source_kind,
+        function_name=workload.function_name,
+    )
 
 
 def ensure_generated_source(root: Path, bench: str) -> Path:

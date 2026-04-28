@@ -116,7 +116,7 @@ def main() -> None:
     db_path = emulate_all.resolve_db_path(root, args.db_dir, run_id).with_name(
         f"profile-result-{run_id}.sqlite"
     )
-    benches = benchmark_sources.discover_catalog_benches(root)
+    benches = benchmark_sources.discover_tsvc_benches(root)
 
     emulate.ensure_image_exists(args.image)
 

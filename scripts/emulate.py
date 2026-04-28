@@ -78,11 +78,6 @@ def repo_root() -> Path:
     return Path(__file__).resolve().parents[1]
 
 
-def validate_bench_name(bench: str) -> None:
-    if not re.fullmatch(r"s\d{3,5}", bench):
-        fail(f"invalid benchmark name: {bench}")
-
-
 def ensure_image_exists(image: str) -> None:
     result = subprocess.run(
         ["docker", "image", "inspect", image],
@@ -244,10 +239,8 @@ def resolve_tsvc_src_root(root: Path) -> Path:
     return root / "emulator" / "benchmarks" / "TSVC_2" / "src"
 
 
-def resolve_benchmark_source(root: Path, bench: str) -> Path:
-    validate_bench_name(bench)
-    benchmark = benchmark_sources.resolve_benchmark_source(root, bench)
-    return benchmark.source_path
+def resolve_benchmark_input(root: Path, bench: str) -> Path:
+    return benchmark_sources.resolve_workload_input(root, bench)
 
 
 def resolve_source_path(root: Path, source: str | Path) -> Path:
@@ -352,7 +345,7 @@ def run_emulate(
 
     root = repo_root()
     try:
-        source = resolve_benchmark_source(root, bench)
+        source = resolve_benchmark_input(root, bench)
     except (FileNotFoundError, benchmark_sources.ConversionError) as exc:
         raise RuntimeError(str(exc)) from exc
     return run_emulate_source(

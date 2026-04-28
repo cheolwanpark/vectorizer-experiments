@@ -1,0 +1,21 @@
+{
+  "name": "mb4_two_phase",
+  "entry": {
+    "mode": "kernel",
+    "symbol": "kernel"
+  },
+  "sources": [
+    "mb4_two_phase.c"
+  ],
+  "metadata": {
+    "suite": "microbench",
+    "tags": [
+      "dlmul"
+    ]
+  },
+  "build": {
+    "include_dirs": [
+      "../../shared/dlmul"
+    ]
+  }
+}

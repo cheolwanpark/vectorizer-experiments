@@ -27,9 +27,9 @@ class DlmulMicrobenchTest(unittest.TestCase):
         case_paths = {case.case_name: case.source_path for case in manifest}
 
         self.assertEqual(len(jobs), 108)
-        self.assertTrue(case_paths["mb1-switch"].endswith("emulator/run/src/microbench/dlmul/mb1_switch.c"))
-        self.assertTrue(case_paths["mb4-two-phase"].endswith("emulator/run/src/microbench/dlmul/mb4_two_phase.c"))
-        self.assertTrue(case_paths["mb11-masked-execution"].endswith("emulator/run/src/microbench/dlmul/mb11_masked_execution.c"))
+        self.assertTrue(case_paths["mb1-switch"].endswith("emulator/run/src/dlmul-synthesis/microbench/mb1_switch/mb1_switch.c"))
+        self.assertTrue(case_paths["mb4-two-phase"].endswith("emulator/run/src/dlmul-synthesis/microbench/mb4_two_phase/mb4_two_phase.c"))
+        self.assertTrue(case_paths["mb11-masked-execution"].endswith("emulator/run/src/dlmul-synthesis/microbench/mb11_masked_execution/mb11_masked_execution.c"))
 
     def test_manifest_includes_mb5_through_mb11(self):
         manifest = dlmul_microbench.make_manifest()
@@ -117,7 +117,7 @@ class DlmulMicrobenchTest(unittest.TestCase):
                 "total_cycles": 456,
                 "wall_time_s": 1.25,
                 "sim_speed_khz": 4.5,
-                "source": "/repo/emulator/run/src/microbench/dlmul/mb4_two_phase.c",
+                "source": "/repo/emulator/run/src/dlmul-synthesis/microbench/mb4_two_phase/mb4_two_phase.c",
                 "artifact_dir": "/repo/artifacts/emulate/dlmul",
                 "container_log": "/repo/artifacts/emulate/dlmul/container.log",
                 "run_detail_path": "/repo/artifacts/emulate/dlmul/log.txt",
@@ -159,7 +159,7 @@ class DlmulMicrobenchTest(unittest.TestCase):
 
         kwargs = mocked.call_args.kwargs
         self.assertEqual(kwargs["benchmark"], "dlmul_mb2_memory_phase__m4")
-        self.assertTrue(kwargs["source"].endswith("emulator/run/src/microbench/dlmul/mb2_memory_phase.c"))
+        self.assertTrue(kwargs["source"].endswith("emulator/run/src/dlmul-synthesis/microbench/mb2_memory_phase/mb2_memory_phase.c"))
         self.assertEqual(kwargs["use_vf"], "")
         self.assertIn("-fno-vectorize", kwargs["extra_cflags"])
 

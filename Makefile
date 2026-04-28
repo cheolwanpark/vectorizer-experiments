@@ -15,8 +15,11 @@ LLVM_CUSTOM ?=
 VPLAN_LOG_ROOT ?= artifacts/vplan-explain
 VERBOSE ?= 0
 CONCURRENCY ?= 1
+DIR ?=
 _VFS_DB_SUFFIX := $(if $(filter INTEL,$(ARCH)),intel,$(if $(filter RVV,$(ARCH)),rvv,$(shell echo '$(ARCH)' | tr A-Z a-z)))
 VFS_DB ?= artifacts/vfs-$(_VFS_DB_SUFFIX).db
+VFS_DB_DIR ?= artifacts/vfs
+EMULATE_RESULT_DB_DIR ?= artifacts/emulate-results
 RESULT_DB ?=
 PLOT_VFS_DB ?=
 PLOT_OUTPUT_HTML ?=
@@ -76,9 +79,9 @@ help:
 	@echo ""
 	@echo "  emulate sXXX          Run one kernel on XiangShan emulator"
 	@echo "  emulate-asm xxx.s     Run one assembly kernel on XiangShan emulator"
-	@echo "  emulate-all           Run all kernels on emulator (uses VFS_DB)"
-	@echo "  vplan-explain sXXX    Generate VPlan cost explanation for one kernel"
-	@echo "  vplan-explain-all     Generate VPlan explanations for all kernels"
+	@echo "  emulate-all           Run all catalog workloads on emulator"
+	@echo "  vplan-explain sXXX    Generate VPlan cost explanation for one workload"
+	@echo "  vplan-explain-all     Generate VPlan explanations for all catalog workloads"
 	@echo "  profile sXXX          Profile one kernel natively on x86"
 	@echo "  profile-all           Profile all kernels on x86 (uses VFS_DB)"
 	@echo "  plot-results          Plot results from a single result DB"
@@ -96,6 +99,7 @@ help:
 	@echo "  LLVM_CUSTOM=...       Path to custom LLVM build/bin directory"
 	@echo "  X86_MARCH=emeraldrapids  x86 -march value"
 	@echo "  CONCURRENCY=1         Parallel job count (*-all targets and dlmul-microbench)"
+	@echo "  DIR=...               Optional workload subdirectory for *-all (e.g. tsvc, npb, dlmul-synthesis/bench)"
 	@echo "  VERBOSE=1             Enable verbose output (vplan-explain)"
 	@echo ""
 	@echo "RVV COST MODEL OPTIONS (require LLVM_CUSTOM with patched LLVM):"
@@ -180,7 +184,10 @@ emulate-all: $(VFS_DB)
 		--vlen "$(VLEN)" \
 		$(if $(strip $(LLVM_CUSTOM)),--llvm-custom "$(LLVM_CUSTOM)",) \
 		--concurrency "$(CONCURRENCY)" \
+		--db-dir "$(EMULATE_RESULT_DB_DIR)" \
+		--vfs-db-dir "$(VFS_DB_DIR)" \
 		--vfs-db "$(VFS_DB)" \
+		$(if $(strip $(DIR)),--catalog-dir "$(DIR)",) \
 		$(_EXTRA_CFLAGS_ARG) \
 		$(_EXTRA_OPT_FLAGS_ARG)
 
@@ -205,7 +212,7 @@ vplan-explain:
 		$(_EXTRA_CFLAGS_ARG) \
 		$(_EXTRA_OPT_FLAGS_ARG)
 
-$(VFS_DB):
+$(VFS_DB): FORCE
 	@$(PYTHON) scripts/vplan_explain_all.py \
 		--image "$(IMAGE)" \
 		--platform "$(PLATFORM)" \
@@ -216,7 +223,9 @@ $(VFS_DB):
 		--x86-march "$(X86_MARCH)" \
 		$(if $(strip $(LLVM_CUSTOM)),--llvm-custom "$(LLVM_CUSTOM)",) \
 		--output-root "$(VPLAN_LOG_ROOT)" \
+		--db-dir "$(VFS_DB_DIR)" \
 		--db-path "$(VFS_DB)" \
+		$(if $(strip $(DIR)),--catalog-dir "$(DIR)",) \
 		$(_EXTRA_CFLAGS_ARG) \
 		$(_EXTRA_OPT_FLAGS_ARG)
 
@@ -233,7 +242,9 @@ vplan-explain-all: FORCE
 		--x86-march "$(X86_MARCH)" \
 		$(if $(strip $(LLVM_CUSTOM)),--llvm-custom "$(LLVM_CUSTOM)",) \
 		--output-root "$(VPLAN_LOG_ROOT)" \
+		--db-dir "$(VFS_DB_DIR)" \
 		--db-path "$(VFS_DB)" \
+		$(if $(strip $(DIR)),--catalog-dir "$(DIR)",) \
 		$(_EXTRA_CFLAGS_ARG) \
 		$(_EXTRA_OPT_FLAGS_ARG)
 

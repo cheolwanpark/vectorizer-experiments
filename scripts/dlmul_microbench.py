@@ -54,7 +54,7 @@ DEFAULT_CONCURRENCY = dlmul_runner.DEFAULT_CONCURRENCY
 DEFAULT_TIMEOUT = dlmul_runner.DEFAULT_TIMEOUT
 DEFAULT_LEN_1D = dlmul_runner.DEFAULT_LEN_1D
 DEFAULT_LMUL = dlmul_runner.DEFAULT_LMUL
-CATALOG_ROOT = Path("emulator") / "run" / "src" / "microbench" / "dlmul"
+CATALOG_ROOT = Path("emulator") / "run" / "src" / "dlmul-synthesis" / "microbench"
 
 
 def parse_args() -> argparse.Namespace:
@@ -74,6 +74,10 @@ def parse_args() -> argparse.Namespace:
 
 def create_table(conn: sqlite3.Connection) -> None:
     dlmul_runner.create_table(conn, "microbench_results")
+
+
+def source_file(root: Path, source_name: str) -> Path:
+    return root / source_name / f"{source_name}.c"
 
 
 def make_manifest() -> tuple[CaseSpec, ...]:
@@ -285,17 +289,17 @@ def make_manifest() -> tuple[CaseSpec, ...]:
     )
 
     return (
-        CaseSpec("dynamic_lmul", "mb1-switch", str(root / "mb1_switch.c"), mb1_variants),
-        CaseSpec("dynamic_lmul", "mb2-memory-phase", str(root / "mb2_memory_phase.c"), mb2_variants),
-        CaseSpec("dynamic_lmul", "mb3-fractional-rescue", str(root / "mb3_fractional_rescue.c"), mb3_variants),
-        CaseSpec("dynamic_lmul", "mb4-two-phase", str(root / "mb4_two_phase.c"), mb4_variants),
-        CaseSpec("dynamic_lmul", "mb5-widening-cliff", str(root / "mb5_widening_cliff.c"), mb5_variants),
-        CaseSpec("dynamic_lmul", "mb6-stream-count-sweep", str(root / "mb6_stream_count_sweep.c"), mb6_variants),
-        CaseSpec("dynamic_lmul", "mb7-pure-compute", str(root / "mb7_pure_compute.c"), mb7_variants),
-        CaseSpec("dynamic_lmul", "mb8-live-temporary-sweep", str(root / "mb8_live_temporary_sweep.c"), mb8_variants),
-        CaseSpec("dynamic_lmul", "mb9-phase-length-sweep", str(root / "mb9_phase_length_sweep.c"), mb9_variants),
-        CaseSpec("dynamic_lmul", "mb10-spill-surrogate", str(root / "mb10_spill_surrogate.c"), mb10_variants),
-        CaseSpec("dynamic_lmul", "mb11-masked-execution", str(root / "mb11_masked_execution.c"), mb11_variants),
+        CaseSpec("dynamic_lmul", "mb1-switch", str(source_file(root, "mb1_switch")), mb1_variants),
+        CaseSpec("dynamic_lmul", "mb2-memory-phase", str(source_file(root, "mb2_memory_phase")), mb2_variants),
+        CaseSpec("dynamic_lmul", "mb3-fractional-rescue", str(source_file(root, "mb3_fractional_rescue")), mb3_variants),
+        CaseSpec("dynamic_lmul", "mb4-two-phase", str(source_file(root, "mb4_two_phase")), mb4_variants),
+        CaseSpec("dynamic_lmul", "mb5-widening-cliff", str(source_file(root, "mb5_widening_cliff")), mb5_variants),
+        CaseSpec("dynamic_lmul", "mb6-stream-count-sweep", str(source_file(root, "mb6_stream_count_sweep")), mb6_variants),
+        CaseSpec("dynamic_lmul", "mb7-pure-compute", str(source_file(root, "mb7_pure_compute")), mb7_variants),
+        CaseSpec("dynamic_lmul", "mb8-live-temporary-sweep", str(source_file(root, "mb8_live_temporary_sweep")), mb8_variants),
+        CaseSpec("dynamic_lmul", "mb9-phase-length-sweep", str(source_file(root, "mb9_phase_length_sweep")), mb9_variants),
+        CaseSpec("dynamic_lmul", "mb10-spill-surrogate", str(source_file(root, "mb10_spill_surrogate")), mb10_variants),
+        CaseSpec("dynamic_lmul", "mb11-masked-execution", str(source_file(root, "mb11_masked_execution")), mb11_variants),
     )
 
 

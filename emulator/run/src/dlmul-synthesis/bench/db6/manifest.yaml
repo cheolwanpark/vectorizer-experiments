@@ -1,0 +1,22 @@
+{
+  "name": "db6",
+  "entry": {
+    "mode": "kernel",
+    "symbol": "kernel"
+  },
+  "sources": [
+    "db6.c"
+  ],
+  "metadata": {
+    "suite": "bench",
+    "tags": [
+      "dlmul",
+      "legacy"
+    ]
+  },
+  "build": {
+    "include_dirs": [
+      "../../shared/dlmul"
+    ]
+  }
+}

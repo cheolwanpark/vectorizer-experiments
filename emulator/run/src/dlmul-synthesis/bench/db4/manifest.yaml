@@ -1,0 +1,22 @@
+{
+  "name": "db4",
+  "entry": {
+    "mode": "kernel",
+    "symbol": "kernel"
+  },
+  "sources": [
+    "db4.c"
+  ],
+  "metadata": {
+    "suite": "bench",
+    "tags": [
+      "dlmul",
+      "legacy"
+    ]
+  },
+  "build": {
+    "include_dirs": [
+      "../../shared/dlmul"
+    ]
+  }
+}

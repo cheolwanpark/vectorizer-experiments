@@ -41,10 +41,10 @@ After it completes, `source env.sh` and then `./build-sim.sh` to build the RTL s
 
 ### Step 1: Write (or pick) a kernel
 
-Kernel workloads live under `run/src/<bench>/` with a `manifest.yaml` and local sources. A simple kernel source still looks like:
+Kernel workloads live under categorized directories such as `run/src/tsvc/<bench>/`, `run/src/npb/<bench>/`, or `run/src/dlmul-synthesis/...`, with a `manifest.yaml` and local sources. A simple kernel source still looks like:
 
 ```c
-// run/src/s351/s351.c
+// run/src/tsvc/s351/s351.c
 #include "common.h"
 
 void kernel(void) {
@@ -55,13 +55,13 @@ void kernel(void) {
 }
 ```
 
-Existing workloads: `run/src/s000/`, `run/src/s111/`, `run/src/s112/`, `run/src/s271/`, `run/src/mb1_switch/`, `run/src/npb_is_s/`, etc.
+Existing workloads: `run/src/tsvc/s000/`, `run/src/tsvc/s271/`, `run/src/dlmul-synthesis/microbench/mb1_switch/`, `run/src/npb/npb_is_s/`, etc.
 
 ### Step 2: Run simulation
 
 ```bash
 # Basic: one target, one LMUL
-./run-sim.sh saturn run/src/example/manifest.yaml --lmul=2 --len=4096
+./run-sim.sh saturn run/src/examples/example/manifest.yaml --lmul=2 --len=4096
 
 # Output:
 #   Building: example (target=saturn, lmul=2)
@@ -77,7 +77,7 @@ Existing workloads: `run/src/s000/`, `run/src/s111/`, `run/src/s112/`, `run/src/
 ```bash
 for target in saturn xiangshan t1; do
     for lmul in 1 2 4 8; do
-        ./run-sim.sh $target run/src/s351/manifest.yaml --lmul=$lmul --len=4096
+        ./run-sim.sh $target run/src/tsvc/s351/manifest.yaml --lmul=$lmul --len=4096
     done
 done
 ```

@@ -1,4 +1,5 @@
 import unittest
+import json
 from io import StringIO
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -82,7 +83,7 @@ class EmulateDockerCommandTest(unittest.TestCase):
     def test_resolve_source_path_accepts_arbitrary_repo_c_file(self):
         with TemporaryDirectory() as tmp:
             root = Path(tmp)
-            source = root / "emulator" / "run" / "src" / "microbench" / "dlmul" / "mb1_switch.c"
+            source = root / "emulator" / "run" / "src" / "dlmul-synthesis" / "microbench" / "mb1_switch.c"
             source.parent.mkdir(parents=True, exist_ok=True)
             source.write_text("void kernel(void) {}\n", encoding="utf-8")
 
@@ -133,6 +134,30 @@ class EmulateDockerCommandTest(unittest.TestCase):
         kwargs = mocked.call_args.kwargs
         self.assertEqual(kwargs["benchmark"], "kernel")
         self.assertEqual(kwargs["source"], source.resolve())
+
+    def test_resolve_benchmark_input_prefers_manifest_for_manifest_workloads(self):
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            workload_dir = root / "emulator" / "run" / "src" / "npb" / "npb_is_s"
+            workload_dir.mkdir(parents=True, exist_ok=True)
+            (workload_dir / "is.c").write_text("int main(void) { return 0; }\n", encoding="utf-8")
+            (workload_dir / "helper.c").write_text("void helper(void) {}\n", encoding="utf-8")
+            manifest = workload_dir / "manifest.yaml"
+            manifest.write_text(
+                json.dumps(
+                    {
+                        "name": "npb_is_s",
+                        "entry": {"mode": "main", "symbol": "main"},
+                        "sources": ["is.c", "helper.c"],
+                        "build": {"analysis_source": "is.c"},
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            resolved = emulate.resolve_benchmark_input(root, "npb_is_s")
+
+        self.assertEqual(resolved, manifest.resolve())
 
 
 if __name__ == "__main__":

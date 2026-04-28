@@ -39,9 +39,9 @@ def repo_root() -> Path:
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Run TSVC_2 vplan-explain inside Docker with a standalone root-level wrapper."
+        description="Run vplan-explain for one catalog workload inside Docker."
     )
-    parser.add_argument("--bench", required=True, help="Benchmark name, for example s000")
+    parser.add_argument("--bench", required=True, help="Workload id, for example s000")
     parser.add_argument("--image", default=DEFAULT_IMAGE, help="Docker image tag")
     parser.add_argument("--platform", default=DEFAULT_PLATFORM, help="Docker platform")
     parser.add_argument("--arch", default="RVV", choices=["RVV", "MAC", "INTEL"], help="Target architecture")
@@ -128,6 +128,60 @@ def resolve_output_dir(root: Path, output_root: str, func: str) -> Path:
     out_dir = base / func
     out_dir.mkdir(parents=True, exist_ok=True)
     return out_dir
+
+
+def _container_project_path(root: Path, path: Path) -> Path:
+    resolved_root = root.resolve()
+    resolved_path = path.resolve()
+    return CONTAINER_PROJECT_ROOT / resolved_path.relative_to(resolved_root)
+
+
+def build_compile_flags(
+    *,
+    root: Path,
+    workload: benchmark_sources.CatalogWorkload,
+    arch: str,
+    len_1d: int,
+    lmul: int,
+    x86_march: str,
+    extra_cflags: str,
+) -> list[str]:
+    if workload.kind == "manifest":
+        compile_flags = llvm_pipeline.build_vplan_compile_flags(
+            run_common_include=CONTAINER_RUN_COMMON_ROOT,
+            arch=arch,
+            len_1d=len_1d,
+            lmul=lmul,
+            x86_march=x86_march,
+        )
+        for include_dir in workload.include_dirs:
+            compile_flags.extend(["-I", str(_container_project_path(root, include_dir))])
+        compile_flags.extend(workload.llvm_flags)
+        compile_flags.extend(workload.compile_flags)
+        if extra_cflags:
+            compile_flags.extend(extra_cflags.split())
+        return compile_flags
+
+    return llvm_pipeline.build_vplan_compile_flags(
+        run_common_include=CONTAINER_RUN_COMMON_ROOT,
+        tsvc_include=CONTAINER_TSVC_SRC_ROOT,
+        arch=arch,
+        len_1d=len_1d,
+        lmul=lmul,
+        x86_march=x86_march,
+        extra_cflags=extra_cflags,
+    )
+
+
+def build_opt_flags(
+    *,
+    workload: benchmark_sources.CatalogWorkload,
+    extra_opt_flags: str,
+) -> list[str]:
+    opt_flags = list(workload.opt_flags) if workload.kind == "manifest" else []
+    if extra_opt_flags:
+        opt_flags.extend(extra_opt_flags.split())
+    return opt_flags
 
 
 def run_container_and_capture(
@@ -243,7 +297,7 @@ def run_vplan_explain(
 
     root = repo_root()
     try:
-        benchmark = benchmark_sources.resolve_benchmark_source(root, bench)
+        workload = benchmark_sources.resolve_catalog_workload(root, bench)
     except FileNotFoundError as exc:
         return {
             "bench": bench,
@@ -252,6 +306,8 @@ def run_vplan_explain(
             "source": "",
             "source_kind": "",
             "function_name": "",
+            "analysis_failure": "",
+            "analysis_failure_message": "",
             "container_log": "",
             "container_log_text": str(exc),
             "vplan_log": "",
@@ -268,6 +324,8 @@ def run_vplan_explain(
             "source": "",
             "source_kind": "",
             "function_name": "",
+            "analysis_failure": "",
+            "analysis_failure_message": "",
             "container_log": "",
             "container_log_text": str(exc),
             "vplan_log": "",
@@ -276,7 +334,45 @@ def run_vplan_explain(
             "docker_command": "",
             "vf_candidates": [],
         }
-    source_path = benchmark.source_path
+
+    source_path = workload.analysis_source_path
+    if workload.kind == "manifest" and source_path is None:
+        return {
+            "bench": bench,
+            "exit_code": 0,
+            "output_dir": "",
+            "source": str(workload.manifest_path or workload.primary_source_path or ""),
+            "source_kind": workload.source_kind,
+            "function_name": workload.function_name,
+            "analysis_failure": workload.analysis_failure,
+            "analysis_failure_message": workload.analysis_failure_message,
+            "container_log": "",
+            "container_log_text": "",
+            "vplan_log": "",
+            "vplan_log_text": "",
+            "prevec_ir": "",
+            "docker_command": "",
+            "vf_candidates": [],
+        }
+    if source_path is None:
+        return {
+            "bench": bench,
+            "exit_code": 1,
+            "output_dir": "",
+            "source": "",
+            "source_kind": workload.source_kind,
+            "function_name": workload.function_name,
+            "analysis_failure": "",
+            "analysis_failure_message": "",
+            "container_log": "",
+            "container_log_text": f"analysis source not found for {bench}",
+            "vplan_log": "",
+            "vplan_log_text": "",
+            "prevec_ir": "",
+            "docker_command": "",
+            "vf_candidates": [],
+        }
+
     llvm_custom_dir = resolve_llvm_custom(root, llvm_custom)
     out_dir = resolve_output_dir(root, output_root, bench)
 
@@ -284,14 +380,14 @@ def run_vplan_explain(
     container_log = out_dir / "container.log"
     command_file = out_dir / "command.txt"
 
-    container_source = CONTAINER_PROJECT_ROOT / source_path.relative_to(root)
+    container_source = _container_project_path(root, source_path)
     container_vplan_log = CONTAINER_OUTPUT_ROOT / vplan_log.name
     container_pipeline_helper = CONTAINER_PROJECT_ROOT / "scripts" / "llvm_pipeline.py"
 
     forced_vf_arg = f"-vplan-use-vf={shlex.quote(vf_use)}" if vf_use else ""
-    compile_flags = llvm_pipeline.build_vplan_compile_flags(
-        run_common_include=CONTAINER_RUN_COMMON_ROOT,
-        tsvc_include=CONTAINER_TSVC_SRC_ROOT,
+    compile_flags = build_compile_flags(
+        root=root,
+        workload=workload,
         arch=arch,
         len_1d=len_1d,
         lmul=lmul,
@@ -301,9 +397,10 @@ def run_vplan_explain(
     compile_flag_args = " ".join(
         f"--compile-flag={shlex.quote(flag)}" for flag in compile_flags
     )
-    opt_flag_args = " ".join(
-        shlex.quote(flag) for flag in extra_opt_flags.split()
-    )
+    opt_flag_args = " ".join(shlex.quote(flag) for flag in build_opt_flags(
+        workload=workload,
+        extra_opt_flags=extra_opt_flags,
+    ))
     if llvm_custom_dir is not None:
         clang_cmd = shlex.quote(str(CONTAINER_LLVM_CUSTOM_ROOT / "clang"))
         opt_cmd = shlex.quote(str(CONTAINER_LLVM_CUSTOM_ROOT / "opt"))
@@ -322,7 +419,7 @@ def run_vplan_explain(
             f'--prevec-ll "$PREVEC_LL" '
             f'--clang-bin "$CLANG_BIN" '
             f'--opt-bin "$OPT_BIN" '
-            f'--prevec-passes {shlex.quote(llvm_pipeline.PREVEC_PASSES)} '
+            f'--prevec-passes {shlex.quote(workload.prevec_passes or llvm_pipeline.PREVEC_PASSES)} '
             f'{compile_flag_args}',
             f'"$OPT_BIN" {opt_flag_args} {VPLAN_EXPLAIN_ARGS} {forced_vf_arg} "$PREVEC_LL" 2>&1 | tee {shlex.quote(str(container_vplan_log))}',
             'rm -f "$PREVEC_LL"',
@@ -369,8 +466,10 @@ def run_vplan_explain(
         "exit_code": exit_code,
         "output_dir": str(out_dir),
         "source": str(source_path),
-        "source_kind": benchmark.source_kind,
-        "function_name": benchmark.function_name,
+        "source_kind": workload.source_kind,
+        "function_name": workload.function_name,
+        "analysis_failure": workload.analysis_failure,
+        "analysis_failure_message": workload.analysis_failure_message,
         "container_log": str(container_log),
         "container_log_text": combined_output,
         "vplan_log": str(vplan_log),

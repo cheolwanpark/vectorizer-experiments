@@ -52,7 +52,7 @@ DEFAULT_DB_PATH = "artifacts/dlmul-bench.sqlite"
 DEFAULT_LOG_ROOT = "artifacts/dlmul-bench"
 DEFAULT_CONCURRENCY = dlmul_runner.DEFAULT_CONCURRENCY
 DEFAULT_TIMEOUT = dlmul_runner.DEFAULT_TIMEOUT
-CATALOG_ROOT = Path("emulator") / "run" / "src" / "bench" / "dlmul"
+CATALOG_ROOT = Path("emulator") / "run" / "src" / "dlmul-synthesis" / "bench"
 DEFAULT_CASE_NAMES = (
     "db1",
     "db11",
@@ -98,6 +98,10 @@ def lmul_patterns(*lmuls: str) -> tuple[str, ...]:
     return tuple(patterns)
 
 
+def source_file(root: Path, source_name: str) -> Path:
+    return root / source_name / f"{source_name}.c"
+
+
 def db_variant(
     *,
     root: Path,
@@ -134,7 +138,7 @@ def db_variant(
         defines=(f"DLB_BENCH_VARIANT={define_value}",) + extra_defines,
         params=params,
         asm_patterns=lmul_patterns(*phase_lmuls) if asm_patterns is None else asm_patterns,
-        source_path=str(root / f"{source_name}.c"),
+        source_path=str(source_file(root, source_name)),
     )
 
 
@@ -148,7 +152,7 @@ def db_case(
     return CaseSpec(
         "dynamic_lmul_workload",
         case_name,
-        str(root / f"{source_name}.c"),
+        str(source_file(root, source_name)),
         variants,
     )
 

@@ -1,0 +1,22 @@
+{
+  "name": "db10",
+  "entry": {
+    "mode": "kernel",
+    "symbol": "kernel"
+  },
+  "sources": [
+    "db10.c"
+  ],
+  "metadata": {
+    "suite": "bench",
+    "tags": [
+      "dlmul",
+      "legacy"
+    ]
+  },
+  "build": {
+    "include_dirs": [
+      "../../shared/dlmul"
+    ]
+  }
+}

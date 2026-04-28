@@ -1,4 +1,5 @@
 import unittest
+import json
 from pathlib import Path
 from io import StringIO
 from tempfile import TemporaryDirectory
@@ -133,6 +134,86 @@ class VPlanExplainTest(unittest.TestCase):
                     vplan_explain.main()
 
         self.assertTrue(run_mock.call_args.kwargs["echo_output"])
+
+    def test_run_vplan_explain_uses_manifest_analysis_source_and_flags(self):
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            workload_dir = root / "emulator" / "run" / "src" / "npb" / "npb_is_s"
+            workload_dir.mkdir(parents=True, exist_ok=True)
+            (workload_dir / "is.c").write_text("int main(void) { return 0; }\n", encoding="utf-8")
+            (workload_dir / "helper.c").write_text("void helper(void) {}\n", encoding="utf-8")
+            (workload_dir / "manifest.yaml").write_text(
+                json.dumps(
+                    {
+                        "name": "npb_is_s",
+                        "entry": {"mode": "main", "symbol": "main"},
+                        "sources": ["is.c", "helper.c"],
+                        "build": {
+                            "analysis_source": "is.c",
+                            "include_dirs": ["."],
+                            "compile_flags": ["-DNPB=1"],
+                            "llvm_flags": ["-mllvm", "-force-vector-width=4"],
+                            "opt_flags": ["-debug-pass-manager"],
+                            "prevec_passes": "mem2reg",
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            captured_command = {}
+
+            def fake_run_container(command, log_path, *, echo_output=False):
+                del log_path, echo_output
+                captured_command["command"] = command
+                return 0, "LV: VPlan[0] VFs={4}\nLV: VF=4 cost=8 compare=2000\nLV: selected VF=4 plan=0\n"
+
+            with patch.object(vplan_explain, "repo_root", return_value=root):
+                with patch.object(vplan_explain, "run_container_and_capture", side_effect=fake_run_container):
+                    result = vplan_explain.run_vplan_explain(
+                        bench="npb_is_s",
+                        image="example:latest",
+                        ensure_image=False,
+                        output_root=str(root / "artifacts" / "vplan"),
+                        extra_opt_flags="-precise-mem-cost",
+                    )
+
+        inner_command = captured_command["command"][-1]
+        self.assertIn("--source /workspace/host-project/emulator/run/src/npb/npb_is_s/is.c", inner_command)
+        self.assertIn("--compile-flag=-DNPB=1", inner_command)
+        self.assertIn("--compile-flag=-mllvm", inner_command)
+        self.assertIn("--compile-flag=-force-vector-width=4", inner_command)
+        self.assertIn("--prevec-passes mem2reg", inner_command)
+        self.assertIn('"$OPT_BIN" -debug-pass-manager -precise-mem-cost -passes=loop-vectorize -vplan-explain -disable-output', inner_command)
+        self.assertEqual(result["function_name"], "main")
+
+    def test_run_vplan_explain_returns_nonfatal_unsupported_manifest_result(self):
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            workload_dir = root / "emulator" / "run" / "src" / "multi"
+            workload_dir.mkdir(parents=True, exist_ok=True)
+            (workload_dir / "a.c").write_text("void a(void) {}\n", encoding="utf-8")
+            (workload_dir / "b.c").write_text("void b(void) {}\n", encoding="utf-8")
+            (workload_dir / "manifest.yaml").write_text(
+                json.dumps(
+                    {
+                        "name": "multi",
+                        "sources": ["a.c", "b.c"],
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            with patch.object(vplan_explain, "repo_root", return_value=root):
+                result = vplan_explain.run_vplan_explain(
+                    bench="multi",
+                    image="example:latest",
+                    ensure_image=False,
+                )
+
+        self.assertEqual(result["exit_code"], 0)
+        self.assertEqual(result["analysis_failure"], "unsupported_analysis_source")
+        self.assertEqual(result["vf_candidates"], [])
 
 
 if __name__ == "__main__":

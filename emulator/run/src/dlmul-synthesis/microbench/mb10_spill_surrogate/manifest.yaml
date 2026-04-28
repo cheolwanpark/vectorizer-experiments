@@ -1,0 +1,21 @@
+{
+  "name": "mb10_spill_surrogate",
+  "entry": {
+    "mode": "kernel",
+    "symbol": "kernel"
+  },
+  "sources": [
+    "mb10_spill_surrogate.c"
+  ],
+  "metadata": {
+    "suite": "microbench",
+    "tags": [
+      "dlmul"
+    ]
+  },
+  "build": {
+    "include_dirs": [
+      "../../shared/dlmul"
+    ]
+  }
+}
