@@ -13,7 +13,7 @@ TSVC_RUN_SRC_ROOT = RUN_SRC_ROOT / "tsvc"
 TSVC_LOOP_ROOT = Path("emulator") / "benchmarks" / "TSVC_2" / "src" / "loops"
 GENERATED_MINIMAL_MARKER = "TSVC_EMULATE_GENERATED"
 KERNEL_FUNCTION_NAME = "kernel"
-SUPPORTED_SOURCE_SUFFIXES = {".c", ".s", ".S"}
+SUPPORTED_SOURCE_SUFFIXES = {".c", ".cc", ".cpp", ".cxx", ".s", ".S"}
 
 IGNORE_LINE_PATTERNS = (
     re.compile(r"^\s*initialise_arrays\s*\(__func__\);\s*$"),

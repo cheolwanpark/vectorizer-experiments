@@ -423,6 +423,8 @@ def build_workload(
         raise FileNotFoundError(f"Build succeeded but ELF not found: {output_path}")
 
     print(f"Built: {output_path}")
+    print(f"Asm outputs: {json.dumps(payload.get('asm_outputs', []))}")
+    print(f"IR outputs: {json.dumps(payload.get('ir_outputs', []))}")
     return output_path
 
 

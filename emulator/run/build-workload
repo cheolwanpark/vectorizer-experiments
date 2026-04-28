@@ -77,6 +77,11 @@ class BuildResult:
     build_dir: Path
 
 
+CXX_SOURCE_SUFFIXES = {".cc", ".cpp", ".cxx"}
+C_SOURCE_SUFFIXES = {".c"}
+PIPELINE_SOURCE_SUFFIXES = C_SOURCE_SUFFIXES | CXX_SOURCE_SUFFIXES
+
+
 TARGETS = {
     "ara": TargetConfig(
         name="ara",
@@ -656,6 +661,28 @@ def compile_pipeline_source(
     run_command(cmd)
 
 
+def compile_flags_for_source(
+    compile_flags: list[str],
+    *,
+    source: Path,
+    rename_main: bool,
+) -> list[str]:
+    source_flags = list(compile_flags)
+    if source.suffix in CXX_SOURCE_SUFFIXES:
+        source_flags.extend(
+            (
+                "-std=gnu++17",
+                "-fno-exceptions",
+                "-fno-rtti",
+                "-fno-threadsafe-statics",
+                "-fno-use-cxa-atexit",
+            )
+        )
+    if rename_main:
+        source_flags.append("-Dmain=workload_main")
+    return source_flags
+
+
 def source_object_name(source: Path) -> str:
     return f"{source.stem}.o"
 
@@ -719,10 +746,12 @@ def compile_workload(root_dir: Path, script_dir: Path, spec: WorkloadSpec, targe
             shutil.copy2(source, obj_out)
             object_outputs.append(obj_out)
             continue
-        if source.suffix == ".c":
-            source_flags = list(compile_flags)
-            if rename_main:
-                source_flags.append("-Dmain=workload_main")
+        if source.suffix in PIPELINE_SOURCE_SUFFIXES:
+            source_flags = compile_flags_for_source(
+                compile_flags,
+                source=source,
+                rename_main=rename_main,
+            )
             compile_pipeline_source(
                 root_dir,
                 script_dir,
@@ -762,7 +791,16 @@ def compile_workload(root_dir: Path, script_dir: Path, spec: WorkloadSpec, targe
 
     for source in support_sources(root_dir, spec, target, target_name):
         obj_out = build_dir / f"{source.stem}.support.o"
-        compile_support_source(cc, support_compile_flags, source, obj_out)
+        compile_support_source(
+            cc,
+            compile_flags_for_source(
+                support_compile_flags,
+                source=source,
+                rename_main=False,
+            ),
+            source,
+            obj_out,
+        )
         support_objs.append(obj_out)
 
     if output is None:

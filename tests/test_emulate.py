@@ -88,6 +88,39 @@ class EmulateDockerCommandTest(unittest.TestCase):
 
         self.assertEqual(texts, expected)
 
+    def test_load_build_artifact_texts_prefers_explicit_manifest_artifact_paths(self):
+        with TemporaryDirectory() as tmp:
+            out_dir = Path(tmp)
+            asm_path = out_dir / "build" / "asm" / "streamcluster.s"
+            ir_path = out_dir / "build" / "ir" / "streamcluster.opt.ll"
+            asm_path.parent.mkdir(parents=True)
+            ir_path.parent.mkdir(parents=True)
+            asm_path.write_text("asm", encoding="utf-8")
+            ir_path.write_text("opt", encoding="utf-8")
+
+            texts = emulate.load_build_artifact_texts(
+                out_dir,
+                "",
+                asm_outputs=[str(emulate.CONTAINER_OUTPUT_ROOT / "build" / "asm" / "streamcluster.s")],
+                ir_outputs=[str(emulate.CONTAINER_OUTPUT_ROOT / "build" / "ir" / "streamcluster.opt.ll")],
+            )
+
+        self.assertEqual(texts, {"opt_ll_text": "opt", "asm_text": "asm"})
+
+    def test_parse_run_sim_output_reads_explicit_artifact_lists(self):
+        parsed = emulate.parse_run_sim_output(
+            "\n".join(
+                [
+                    "Built: /workspace/output/build/bench.elf",
+                    "Asm outputs: [\"/workspace/output/build/asm/bench.s\"]",
+                    "IR outputs: [\"/workspace/output/build/ir/bench.opt.ll\"]",
+                ]
+            )
+        )
+
+        self.assertEqual(parsed["asm_outputs"], ["/workspace/output/build/asm/bench.s"])
+        self.assertEqual(parsed["ir_outputs"], ["/workspace/output/build/ir/bench.opt.ll"])
+
     def test_resolve_source_path_accepts_arbitrary_repo_c_file(self):
         with TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -105,6 +138,18 @@ class EmulateDockerCommandTest(unittest.TestCase):
             source = root / "emulator" / "run" / "out" / "kernel.s"
             source.parent.mkdir(parents=True, exist_ok=True)
             source.write_text(".globl kernel\nkernel:\n\tret\n", encoding="utf-8")
+
+            resolved = emulate.resolve_source_path(root, source)
+            emulate.validate_source_suffix(resolved)
+
+        self.assertEqual(resolved, source.resolve())
+
+    def test_resolve_source_path_accepts_arbitrary_repo_cpp_file(self):
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            source = root / "emulator" / "run" / "src" / "parsec" / "streamcluster.cpp"
+            source.parent.mkdir(parents=True, exist_ok=True)
+            source.write_text("int main() { return 0; }\n", encoding="utf-8")
 
             resolved = emulate.resolve_source_path(root, source)
             emulate.validate_source_suffix(resolved)

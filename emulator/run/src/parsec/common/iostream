@@ -1,0 +1,7 @@
+#ifndef PARSEC_BAREMETAL_IOSTREAM
+#define PARSEC_BAREMETAL_IOSTREAM
+
+namespace std {
+}
+
+#endif

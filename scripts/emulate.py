@@ -32,7 +32,7 @@ BUILD_ARTIFACT_SUFFIXES = {
     "opt_ll_text": ".opt.ll",
     "asm_text": ".s",
 }
-SUPPORTED_SOURCE_SUFFIXES = {".c", ".s", ".S"}
+SUPPORTED_SOURCE_SUFFIXES = {".c", ".cc", ".cpp", ".cxx", ".s", ".S"}
 MANIFEST_FILENAME = "manifest.yaml"
 
 
@@ -142,6 +142,8 @@ def parse_run_sim_output(text: str) -> dict[str, object]:
         "run_detail_path": (r"^Log file:\s+(.+)$", str),
         "trace_file": (r"^Trace:\s+(.+)$", str),
         "built_workload": (r"^Built:\s+(.+)$", str),
+        "asm_outputs": (r"^Asm outputs:\s+(.+)$", json.loads),
+        "ir_outputs": (r"^IR outputs:\s+(.+)$", json.loads),
     }
     summary: dict[str, object] = {}
     for key, (pattern, caster) in patterns.items():
@@ -160,13 +162,31 @@ def map_container_output_path(path_text: str, host_output_dir: Path) -> Path:
     return host_output_dir / relative
 
 
-def load_build_artifact_texts(host_output_dir: Path, built_workload: str | None) -> dict[str, str]:
+def load_build_artifact_texts(
+    host_output_dir: Path,
+    built_workload: str | None,
+    *,
+    asm_outputs: list[str] | None = None,
+    ir_outputs: list[str] | None = None,
+) -> dict[str, str]:
+    texts = {name: "" for name in BUILD_ARTIFACT_SUFFIXES}
+
+    if ir_outputs:
+        host_ir = map_container_output_path(ir_outputs[0], host_output_dir)
+        if host_ir.exists():
+            texts["opt_ll_text"] = host_ir.read_text(encoding="utf-8")
+    if asm_outputs:
+        host_asm = map_container_output_path(asm_outputs[0], host_output_dir)
+        if host_asm.exists():
+            texts["asm_text"] = host_asm.read_text(encoding="utf-8")
+    if any(texts.values()) or not built_workload:
+        return texts
+
     if not built_workload:
         return {name: "" for name in BUILD_ARTIFACT_SUFFIXES}
 
     host_workload = map_container_output_path(built_workload, host_output_dir)
     base_path = host_workload.with_suffix("") if host_workload.suffix else host_workload
-    texts: dict[str, str] = {}
     for field_name, suffix in BUILD_ARTIFACT_SUFFIXES.items():
         artifact_path = base_path.parent / f"{base_path.name}{suffix}"
         texts[field_name] = (
@@ -450,7 +470,20 @@ def run_emulate_source(
         else None
     )
     run_detail = run_detail_path.read_text(encoding="utf-8") if run_detail_path and run_detail_path.exists() else ""
-    artifact_texts = load_build_artifact_texts(out_dir, str(parsed.get("built_workload") or ""))
+    artifact_texts = load_build_artifact_texts(
+        out_dir,
+        str(parsed.get("built_workload") or ""),
+        asm_outputs=[
+            str(value)
+            for value in parsed.get("asm_outputs", [])
+            if isinstance(value, str)
+        ],
+        ir_outputs=[
+            str(value)
+            for value in parsed.get("ir_outputs", [])
+            if isinstance(value, str)
+        ],
+    )
 
     summary: dict[str, object] = {
         "benchmark": benchmark,

@@ -219,6 +219,29 @@ class BenchmarkSourcesTest(unittest.TestCase):
         self.assertIsNone(workload.analysis_source_path)
         self.assertEqual(workload.analysis_failure, "unsupported_analysis_source")
 
+    def test_discover_catalog_workloads_accepts_cpp_manifest_sources(self):
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            workload_dir = root / "emulator" / "run" / "src" / "parsec" / "streamcluster"
+            workload_dir.mkdir(parents=True, exist_ok=True)
+            (workload_dir / "streamcluster.cpp").write_text("int main(void) { return 0; }\n", encoding="utf-8")
+            (workload_dir / "manifest.yaml").write_text(
+                json.dumps(
+                    {
+                        "name": "streamcluster",
+                        "entry": {"mode": "main", "symbol": "main"},
+                        "sources": ["streamcluster.cpp"],
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            workload = benchmark_sources.resolve_catalog_workload(root, "streamcluster")
+
+        self.assertEqual(workload.primary_source_path, (workload_dir / "streamcluster.cpp").resolve())
+        self.assertIsNone(workload.analysis_source_path)
+        self.assertEqual(workload.analysis_failure, "unsupported_analysis_source")
+
 
 if __name__ == "__main__":
     unittest.main()

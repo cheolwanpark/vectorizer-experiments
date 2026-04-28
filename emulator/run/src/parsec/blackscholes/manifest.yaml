@@ -1,0 +1,26 @@
+{
+  "name": "blackscholes",
+  "entry": {
+    "mode": "main",
+    "symbol": "main"
+  },
+  "sources": [
+    "blackscholes.c"
+  ],
+  "metadata": {
+    "suite": "parsec",
+    "tags": [
+      "parsec",
+      "blackscholes",
+      "serial"
+    ]
+  },
+  "build": {
+    "include_dirs": [
+      "../common"
+    ],
+    "support_sources": [
+      "../common/parsec_runtime.c"
+    ]
+  }
+}

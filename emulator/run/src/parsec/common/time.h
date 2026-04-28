@@ -1,0 +1,4 @@
+#ifndef PARSEC_BAREMETAL_TIME_H
+#define PARSEC_BAREMETAL_TIME_H
+
+#endif

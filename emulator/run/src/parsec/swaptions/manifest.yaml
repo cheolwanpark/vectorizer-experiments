@@ -1,0 +1,35 @@
+{
+  "name": "swaptions",
+  "entry": {
+    "mode": "main",
+    "symbol": "main"
+  },
+  "sources": [
+    "swaptions_main.cpp",
+    "../../../../../parsec-benchmark/pkgs/apps/swaptions/src/CumNormalInv.cpp",
+    "../../../../../parsec-benchmark/pkgs/apps/swaptions/src/MaxFunction.cpp",
+    "../../../../../parsec-benchmark/pkgs/apps/swaptions/src/RanUnif.cpp",
+    "../../../../../parsec-benchmark/pkgs/apps/swaptions/src/nr_routines.c",
+    "../../../../../parsec-benchmark/pkgs/apps/swaptions/src/HJM_SimPath_Forward_Blocking.cpp",
+    "../../../../../parsec-benchmark/pkgs/apps/swaptions/src/HJM.cpp",
+    "../../../../../parsec-benchmark/pkgs/apps/swaptions/src/HJM_Swaption_Blocking.cpp"
+  ],
+  "metadata": {
+    "suite": "parsec",
+    "tags": [
+      "parsec",
+      "swaptions",
+      "serial"
+    ]
+  },
+  "build": {
+    "include_dirs": [
+      "../common"
+    ],
+    "prevec_passes": "mem2reg,simplifycfg,loop-simplify,lcssa,indvars,loop-rotate,simplifycfg",
+    "support_sources": [
+      "../common/parsec_runtime.c",
+      "../common/parsec_runtime_cpp.cpp"
+    ]
+  }
+}

@@ -1,0 +1,6 @@
+#ifndef PARSEC_BAREMETAL_CSTRING
+#define PARSEC_BAREMETAL_CSTRING
+
+#include <string.h>
+
+#endif
